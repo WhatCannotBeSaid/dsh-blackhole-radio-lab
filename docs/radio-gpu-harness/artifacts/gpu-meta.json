@@ -1,0 +1,18 @@
+{
+  "driver": "bhrl-harness-run.mjs",
+  "driverMs": 8092,
+  "checks": 74,
+  "failures": 27,
+  "browser": {
+    "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+    "shadingLanguage": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+    "renderer": "WebKit WebGL",
+    "vendor": "WebKit",
+    "maxTexture": 16384,
+    "drawingBuffer": [
+      1280,
+      720
+    ],
+    "dpr": 1
+  }
+}

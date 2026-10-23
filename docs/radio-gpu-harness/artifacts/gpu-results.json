@@ -1,0 +1,802 @@
+{
+  "meta": {
+    "renderer": {
+      "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "shadingLanguage": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+      "renderer": "WebKit WebGL",
+      "vendor": "WebKit",
+      "maxTexture": 16384,
+      "drawingBuffer": [
+        1280,
+        720
+      ],
+      "dpr": 1
+    },
+    "tables": {
+      "hardwareFilter": true,
+      "filterMode": "hardware-bilinear",
+      "revision": "e72b3f293409893a6fa25528b29572c96fc57f57"
+    },
+    "timing": null,
+    "elapsedMs": 8371,
+    "checks": 74,
+    "failures": 27,
+    "nodesSeen": 1,
+    "sampled": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "checks": [
+    {
+      "name": "expected.json present",
+      "ok": true,
+      "detail": "69 CPU checks"
+    },
+    {
+      "name": "no GL error after 8 frames",
+      "ok": true,
+      "detail": "getError()=0"
+    },
+    {
+      "name": "anchor scan produced anchors",
+      "ok": true,
+      "detail": "9 anchors"
+    },
+    {
+      "name": "radio-near-side: anchor count",
+      "ok": true,
+      "detail": "got 1, expected 1"
+    },
+    {
+      "name": "radio-near-side: branch 1 position",
+      "ok": true,
+      "detail": "d=1.15 px (dx=-1.10, dy=-0.34) size=10.0x1.0 px"
+    },
+    {
+      "name": "radio-near-side: branch 1 is a strip, not a blob",
+      "ok": true,
+      "detail": "w=10.00 h=1.00"
+    },
+    {
+      "name": "radio-far-side: anchor count",
+      "ok": true,
+      "detail": "got 1, expected 1"
+    },
+    {
+      "name": "radio-far-side: branch 1 present",
+      "ok": false,
+      "detail": null
+    },
+    {
+      "name": "radio-near-axis: anchor count",
+      "ok": false,
+      "detail": "got 7, expected 2"
+    },
+    {
+      "name": "radio-near-axis: branch 1 present",
+      "ok": false,
+      "detail": null
+    },
+    {
+      "name": "radio-near-axis: branch 2 position",
+      "ok": false,
+      "detail": "d=74.31 px (dx=-73.00, dy=-13.90) size=2.0x1.0 px"
+    },
+    {
+      "name": "radio-near-axis: branch 2 is a strip, not a blob",
+      "ok": true,
+      "detail": "w=2.00 h=1.00"
+    },
+    {
+      "name": "radio-weak-field: anchor count",
+      "ok": false,
+      "detail": "got 0, expected 1"
+    },
+    {
+      "name": "radio-weak-field: branch 1 present",
+      "ok": false,
+      "detail": null
+    },
+    {
+      "name": "id sweep finds exactly the fixture ids",
+      "ok": false,
+      "detail": "present=[101,103] expected=[101,102,103,104]"
+    },
+    {
+      "name": "near-axis branches are 1 and 2",
+      "ok": false,
+      "detail": "branches=[2,2,2,2,2,2,2]"
+    },
+    {
+      "name": "both near-axis anchors carry one business id",
+      "ok": false,
+      "detail": "radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103"
+    },
+    {
+      "name": "source 0 isolates to its own id",
+      "ok": true,
+      "detail": "ids=[101]"
+    },
+    {
+      "name": "source 1 isolates to its own id",
+      "ok": true,
+      "detail": "ids=[102]"
+    },
+    {
+      "name": "source 2 isolates to its own id",
+      "ok": true,
+      "detail": "ids=[103]"
+    },
+    {
+      "name": "source 3 isolates to its own id",
+      "ok": false,
+      "detail": "ids=[]"
+    },
+    {
+      "name": "shadow centre carries no fixture id",
+      "ok": true,
+      "detail": "id=0"
+    },
+    {
+      "name": "shadow centre has no fixture radiance",
+      "ok": true,
+      "detail": "lum=0"
+    },
+    {
+      "name": "radio-far-side: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-far-side/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-axis: click on branch 2 returns that source",
+      "ok": true,
+      "detail": "radio-near-axis/branch 2"
+    },
+    {
+      "name": "radio-near-side: click on branch 1 returns that source",
+      "ok": true,
+      "detail": "radio-near-side/branch 1"
+    },
+    {
+      "name": "radio-far-side: +1 px along the strip still hits",
+      "ok": true,
+      "detail": "radio-far-side/branch 2"
+    },
+    {
+      "name": "radio-far-side: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-side: +1 px along the strip still hits",
+      "ok": true,
+      "detail": "radio-near-side/branch 1"
+    },
+    {
+      "name": "radio-near-side: 9 px off the strip is empty",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "shadow centre click is not a fixture",
+      "ok": true,
+      "detail": "null"
+    },
+    {
+      "name": "select() records the branch",
+      "ok": true,
+      "detail": "{\"businessId\":\"radio-near-axis\",\"branch\":2}"
+    },
+    {
+      "name": "clear() drops the selection",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "reset framing lands on the same anchors",
+      "ok": false,
+      "detail": "9 anchors after reset"
+    },
+    {
+      "name": "anchors survive a 960x540 viewport",
+      "ok": false,
+      "detail": "9 anchors at 960x540"
+    },
+    {
+      "name": "default page has no fixture overlay",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "default page reports radio disabled",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "dispose marks the ray tables disposed",
+      "ok": true,
+      "detail": "disposed=true"
+    },
+    {
+      "name": "second dispose is harmless",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "disposing the plain stage leaves the fixture stage alone",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "both ray tables upload to the GPU",
+      "ok": true,
+      "detail": "new textures=2 alive=[true,true]"
+    },
+    {
+      "name": "table textures released by dispose()",
+      "ok": true,
+      "detail": "alive=[false,false]"
+    },
+    {
+      "name": "dispose() is idempotent",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "main stage dispose marks its tables disposed",
+      "ok": true,
+      "detail": "disposed=true"
+    },
+    {
+      "name": "main stage dispose removes its canvas",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "radio-far-side: screenshot pixel at anchor is lit and the right hue",
+      "ok": true,
+      "detail": "rgba=[3,4,8] hue=blue expected=blue"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-axis: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[3,4,8] hue=blue expected=magenta"
+    },
+    {
+      "name": "radio-near-side: screenshot pixel at anchor is lit and the right hue",
+      "ok": false,
+      "detail": "rgba=[4,4,7] hue=blue expected=warm"
+    }
+  ],
+  "failures": [
+    {
+      "name": "radio-far-side: branch 1 present",
+      "ok": false,
+      "detail": null
+    },
+    {
+      "name": "radio-near-axis: anchor count",
+      "ok": false,
+      "detail": "got 7, expected 2"
+    },
+    {
+      "name": "radio-near-axis: branch 1 present",
+      "ok": false,
+      "detail": null
+    },
+    {
+      "name": "radio-near-axis: branch 2 position",
+      "ok": false,
+      "detail": "d=74.31 px (dx=-73.00, dy=-13.90) size=2.0x1.0 px"
+    },
+    {
+      "name": "radio-weak-field: anchor count",
+      "ok": false,
+      "detail": "got 0, expected 1"
+    },
+    {
+      "name": "radio-weak-field: branch 1 present",
+      "ok": false,
+      "detail": null
+    },
+    {
+      "name": "id sweep finds exactly the fixture ids",
+      "ok": false,
+      "detail": "present=[101,103] expected=[101,102,103,104]"
+    },
+    {
+      "name": "near-axis branches are 1 and 2",
+      "ok": false,
+      "detail": "branches=[2,2,2,2,2,2,2]"
+    },
+    {
+      "name": "both near-axis anchors carry one business id",
+      "ok": false,
+      "detail": "radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103"
+    },
+    {
+      "name": "source 3 isolates to its own id",
+      "ok": false,
+      "detail": "ids=[]"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "radio-near-axis: +1 px along the strip still hits",
+      "ok": false,
+      "detail": "null"
+    },
+    {
+      "name": "reset framing lands on the same anchors",
+      "ok": false,
+      "detail": "9 anchors after reset"
+    },
+    {
+      "name": "anchors survive a 960x540 viewport",
+      "ok": false,
+      "detail": "9 anchors at 960x540"
+    }
+  ],
+  "anchors": [
+    {
+      "businessId": "radio-far-side",
+      "gpuId": 102,
+      "kind": "far",
+      "label": "Far side",
+      "branch": 2,
+      "frameX": 384.5,
+      "frameY": 380.5,
+      "x": 384.5,
+      "y": 339.5,
+      "pixels": 5,
+      "widthPx": 5,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 567,
+      "frameY": 228.5,
+      "x": 567,
+      "y": 491.5,
+      "pixels": 2,
+      "widthPx": 2,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 713,
+      "frameY": 228.5,
+      "x": 713,
+      "y": 491.5,
+      "pixels": 2,
+      "widthPx": 2,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 563.5,
+      "frameY": 230.5,
+      "x": 563.5,
+      "y": 489.5,
+      "pixels": 1,
+      "widthPx": 1,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 716.5,
+      "frameY": 230.5,
+      "x": 716.5,
+      "y": 489.5,
+      "pixels": 1,
+      "widthPx": 1,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 638.5,
+      "frameY": 247.5,
+      "x": 638.5,
+      "y": 472.5,
+      "pixels": 1,
+      "widthPx": 1,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 563,
+      "frameY": 494.5,
+      "x": 563,
+      "y": 225.5,
+      "pixels": 2,
+      "widthPx": 2,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "label": "Near axis",
+      "branch": 2,
+      "frameX": 717,
+      "frameY": 494.5,
+      "x": 717,
+      "y": 225.5,
+      "pixels": 2,
+      "widthPx": 2,
+      "heightPx": 1
+    },
+    {
+      "businessId": "radio-near-side",
+      "gpuId": 101,
+      "kind": "near",
+      "label": "Near side",
+      "branch": 1,
+      "frameX": 850,
+      "frameY": 343.5,
+      "x": 850,
+      "y": 376.5,
+      "pixels": 10,
+      "widthPx": 10,
+      "heightPx": 1
+    }
+  ],
+  "picks": [
+    {
+      "businessId": "radio-far-side",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-far-side",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "hit": {
+        "businessId": "radio-near-axis",
+        "branch": 2
+      }
+    },
+    {
+      "businessId": "radio-near-side",
+      "branch": 1,
+      "hit": {
+        "businessId": "radio-near-side",
+        "branch": 1
+      }
+    }
+  ],
+  "colors": [
+    {
+      "businessId": "radio-far-side",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-axis",
+      "branch": 2,
+      "rgba": [
+        3,
+        4,
+        8,
+        255
+      ],
+      "hue": "blue"
+    },
+    {
+      "businessId": "radio-near-side",
+      "branch": 1,
+      "rgba": [
+        4,
+        4,
+        7,
+        255
+      ],
+      "hue": "blue"
+    }
+  ]
+}

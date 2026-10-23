@@ -1,0 +1,14 @@
+A vs B           6/6
+deflection       62/62
+capture          21/21
+radii            8/8
+inverse radius   73/73
+degenerate       7/7
+doppler          2/2
+blackbody        2/2
+observer         5/5
+redshift         2/2
+composite        3/3
+critical         3/3
+texture          3/3
+TOTAL            197/197

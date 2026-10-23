@@ -1,0 +1,41 @@
+# ── 依赖 ─────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# ── 凭据与环境（一律不进仓库，即使误建也拦住）───────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials*
+*secret*
+.secrets/
+.npmrc
+
+# ── 构建产物与缓存（本项目只有 tools/ 下显式产出，产物本身入库）──
+.cache/
+.tmp/
+dist/
+.esbuild/
+
+# ── 日志与测试输出（docs/ 下的历史验证日志是有意留档的，不拦）──
+*.log
+npm-debug.log*
+!docs/**/*.log
+
+# ── 编辑器与系统 ─────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.vscode/
+.idea/
+
+# ── 本地临时备份 ─────────────────────────────────────
+*.bak
+*.bak-*
+*.orig
+*.rej

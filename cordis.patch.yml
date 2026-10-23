@@ -1,0 +1,8 @@
+# Black Hole Radio — bundle patch layer.
+#
+# One plain loader entry: the package name is enough. dsh-client-modules
+# discovers the browser half through the package's `dsh.client` declaration,
+# exactly like the shipped ui-* packages do, so nothing here names client.js.
+- insert:
+    - id: blackhole-radio-lab
+      name: '@local/dsh-blackhole-radio-lab'

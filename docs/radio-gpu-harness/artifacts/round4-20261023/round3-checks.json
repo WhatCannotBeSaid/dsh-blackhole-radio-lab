@@ -1,0 +1,214 @@
+{
+ "checks": [
+  {
+   "name": "radio-far-side: emitter adds linear light",
+   "ok": true,
+   "detail": "max|Δlinear|=0.4660"
+  },
+  {
+   "name": "radio-far-side: colour survives tone mapping",
+   "ok": true,
+   "detail": "on=[0.673,0.789,0.818] off=[0.404,0.373,0.360]"
+  },
+  {
+   "name": "radio-near-axis: emitter adds linear light",
+   "ok": true,
+   "detail": "max|Δlinear|=0.2966"
+  },
+  {
+   "name": "radio-near-axis: colour survives tone mapping",
+   "ok": true,
+   "detail": "on=[0.771,0.582,0.717] off=[0.440,0.402,0.377]"
+  },
+  {
+   "name": "radio-near-side: emitter adds linear light",
+   "ok": true,
+   "detail": "max|Δlinear|=0.2869"
+  },
+  {
+   "name": "radio-near-side: colour survives tone mapping",
+   "ok": true,
+   "detail": "on=[0.712,0.593,0.421] off=[0.216,0.168,0.126]"
+  },
+  {
+   "name": "radio-weak-field: emitter adds linear light",
+   "ok": true,
+   "detail": "max|Δlinear|=0.1459"
+  },
+  {
+   "name": "radio-weak-field: colour survives tone mapping",
+   "ok": true,
+   "detail": "on=[0.326,0.490,0.314] off=[0.038,0.028,0.034]"
+  },
+  {
+   "name": "control pixel is unaffected by emitters",
+   "ok": true,
+   "detail": "max|Δ|=0.00e+0"
+  },
+  {
+   "name": "camera move bumps the frame version",
+   "ok": true,
+   "detail": "6 -> 7"
+  },
+  {
+   "name": "pick reports a live frame version",
+   "ok": true,
+   "detail": "frameVersion=7 (live 7)"
+  },
+  {
+   "name": "resize keeps anchors inside the new box",
+   "ok": true,
+   "detail": "5 anchors, 0 outside"
+  },
+  {
+   "name": "hit test follows the resized canvas",
+   "ok": true,
+   "detail": "radio-far-side at 288.11467889908255,254.5"
+  }
+ ],
+ "colour": [
+  {
+   "businessId": "radio-far-side",
+   "crossingIndex": 1,
+   "pixels": [
+    383.5,
+    339.5
+   ],
+   "sampledOffset": [
+    1,
+    -1
+   ],
+   "linearOn": [
+    0.25221,
+    0.4726,
+    0.55976
+   ],
+   "linearOff": [
+    0.11286,
+    0.09923,
+    0.09379
+   ],
+   "displayOn": [
+    0.6733,
+    0.7887,
+    0.8177
+   ],
+   "displayOff": [
+    0.4039,
+    0.3733,
+    0.3604
+   ]
+  },
+  {
+   "businessId": "radio-near-axis",
+   "crossingIndex": 1,
+   "pixels": [
+    639.5,
+    206.5
+   ],
+   "sampledOffset": [
+    -1,
+    -1
+   ],
+   "linearOn": [
+    0.4258,
+    0.20006,
+    0.351
+   ],
+   "linearOff": [
+    0.12916,
+    0.11046,
+    0.09939
+   ],
+   "displayOn": [
+    0.7711,
+    0.5823,
+    0.7171
+   ],
+   "displayOff": [
+    0.4404,
+    0.4019,
+    0.377
+   ]
+  },
+  {
+   "businessId": "radio-near-side",
+   "crossingIndex": 1,
+   "pixels": [
+    851.5,
+    376.5
+   ],
+   "sampledOffset": [
+    -1,
+    -1
+   ],
+   "linearOn": [
+    0.33747,
+    0.21405,
+    0.10474
+   ],
+   "linearOff": [
+    0.05061,
+    0.0365,
+    0.02563
+   ],
+   "displayOn": [
+    0.712,
+    0.5933,
+    0.421
+   ],
+   "displayOff": [
+    0.2159,
+    0.1684,
+    0.1264
+   ]
+  },
+  {
+   "businessId": "radio-weak-field",
+   "crossingIndex": 1,
+   "pixels": [
+    1176.5,
+    361.5
+   ],
+   "sampledOffset": [
+    -1,
+    -1
+   ],
+   "linearOn": [
+    0.07758,
+    0.15389,
+    0.07232
+   ],
+   "linearOff": [
+    0.00999,
+    0.00801,
+    0.00922
+   ],
+   "displayOn": [
+    0.3262,
+    0.4897,
+    0.3141
+   ],
+   "displayOff": [
+    0.038,
+    0.0279,
+    0.034
+   ]
+  }
+ ],
+ "notes": [
+  {
+   "pickBeforeReset": {
+    "businessId": "radio-far-side",
+    "frameVersion": 6
+   },
+   "pickAfterReset": {
+    "businessId": "radio-far-side",
+    "frameVersion": 7
+   }
+  }
+ ],
+ "elapsedMs": 1732,
+ "passed": 13,
+ "total": 13
+}

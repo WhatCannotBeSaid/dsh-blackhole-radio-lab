@@ -1,0 +1,63 @@
+{
+ "pixelRatioCap": 1.5,
+ "devicePixelRatio": 1.5,
+ "rendererPixelRatio": 1.5,
+ "drawingBuffer": [
+  1920,
+  1080
+ ],
+ "expected": [
+  1920,
+  1080
+ ],
+ "checks": [
+  {
+   "name": "drawing buffer follows DPR (cap 1.5)",
+   "ok": true,
+   "detail": "1920x1080 vs 1920x1080"
+  },
+  {
+   "name": "CSS anchors stay pickable at DPR 1.5 (cap 1.5)",
+   "ok": true,
+   "detail": "6/6 anchors picked"
+  }
+ ],
+ "anchors": [
+  {
+   "id": "radio-far-side",
+   "crossing": 1,
+   "x": 384,
+   "y": 340
+  },
+  {
+   "id": "radio-far-side",
+   "crossing": 2,
+   "x": 791,
+   "y": 372
+  },
+  {
+   "id": "radio-near-axis",
+   "crossing": 1,
+   "x": 640,
+   "y": 210
+  },
+  {
+   "id": "radio-near-axis",
+   "crossing": 2,
+   "x": 640,
+   "y": 506
+  },
+  {
+   "id": "radio-near-side",
+   "crossing": 1,
+   "x": 851,
+   "y": 377
+  },
+  {
+   "id": "radio-weak-field",
+   "crossing": 1,
+   "x": 1177,
+   "y": 362
+  }
+ ]
+}

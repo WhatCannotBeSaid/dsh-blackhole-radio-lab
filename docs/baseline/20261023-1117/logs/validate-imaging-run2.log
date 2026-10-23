@@ -1,0 +1,304 @@
+ray-tables revision : e72b3f293409893a6fa25528b29572c96fc57f57
+deflection          : 512x512, quantisation <= 1.02e-4 rad (angle), 1.14e-3 (time)
+inverse_radius      : 64x32, quantisation <= 7.06e-6 (u), 1.37e-3 (time)
+budget              : deflection 3.0e-4 rad absolute (normal), 1.0e-2 (critical)
+
+=== 0. formulations A and B must agree before either judges the table ===
+  b/b_crit   1.2  r_apsis A   2.370609  B   2.370652  rel 1.79e-5  PASS
+  b/b_crit   1.5  r_apsis A   3.240477  B   3.240557  rel 2.48e-5  PASS
+  b/b_crit     2  r_apsis A   4.596267  B   4.596290  rel 5.17e-6  PASS
+  b/b_crit     3  r_apsis A   7.235608  B   7.235633  rel 3.50e-6  PASS
+  b/b_crit     5  r_apsis A  12.458114  B  12.458116  rel 1.12e-7  PASS
+  b/b_crit    10  r_apsis A  25.465537  B  25.466702  rel 4.57e-5  PASS
+  worst apsis disagreement: 4.57e-5 (A is machine precise; B is RK4 at step 0.02r)
+
+=== 1. deflection: shipped table chain vs formulation A ===
+  r_cam   b/b_crit  dir      table(rad)   reference(rad)  absErr      relErr    verdict
+     8.2     1.005  in         4.910081         4.909918     1.63e-4   3.31e-5 PASS [crit]
+     8.2     1.005  out        0.001501         0.001513     1.23e-5   8.15e-3 PASS [crit]
+     8.2     1.010  in         4.228034         4.228126     9.20e-5   2.18e-5 PASS [crit]
+     8.2     1.010  out        0.001602         0.001536     6.57e-5   4.28e-2 PASS [crit]
+     8.2     1.020  in         3.555742         3.555658     8.42e-5   2.37e-5 PASS
+     8.2     1.020  out        0.001637         0.001583     5.47e-5   3.45e-2 PASS
+     8.2     1.050  in         2.693930         2.693744     1.86e-4   6.91e-5 PASS
+     8.2     1.050  out        0.001688         0.001729     4.13e-5   2.39e-2 PASS
+     8.2     1.100  in         2.078359         2.078540     1.81e-4   8.71e-5 PASS
+     8.2     1.100  out        0.002047         0.001994     5.30e-5   2.66e-2 PASS
+     8.2     1.300  in         1.222405         1.222360     4.58e-5   3.75e-5 PASS
+     8.2     1.300  out        0.003353         0.003333     1.95e-5   5.85e-3 PASS
+     8.2     1.600  in         0.794133         0.794154     2.14e-5   2.70e-5 PASS
+     8.2     1.600  out        0.006381         0.006369     1.19e-5   1.86e-3 PASS
+     8.2     2.000  in         0.543997         0.543881     1.16e-4   2.14e-4 PASS
+     8.2     2.000  out        0.013051         0.013029     2.20e-5   1.69e-3 PASS
+     8.2     3.000  in         0.262854         0.262831     2.32e-5   8.84e-5 PASS
+     8.2     3.000  out        0.057463         0.057481     1.82e-5   3.16e-4 PASS
+      20     1.005  in         4.911582         4.911389     1.92e-4   3.91e-5 PASS [crit]
+      20     1.005  out        0.000000         0.000042     4.19e-5   1.00e+0 PASS [crit]
+      20     1.010  in         4.229635         4.229619     1.62e-5   3.84e-6 PASS [crit]
+      20     1.010  out        0.000000         0.000043     4.26e-5   1.00e+0 PASS [crit]
+      20     1.020  in         3.557379         3.557196     1.83e-4   5.14e-5 PASS
+      20     1.020  out        0.000000         0.000044     4.38e-5   1.00e+0 PASS
+      20     1.050  in         2.695618         2.695426     1.93e-4   7.14e-5 PASS
+      20     1.050  out        0.000000         0.000048     4.78e-5   1.00e+0 PASS
+      20     1.100  in         2.080406         2.080479     7.29e-5   3.51e-5 PASS
+      20     1.100  out        0.000000         0.000055     5.50e-5   1.00e+0 PASS
+      20     1.300  in         1.225758         1.225602     1.56e-4   1.28e-4 PASS
+      20     1.300  out        0.000000         0.000091     9.11e-5   1.00e+0 PASS
+      20     1.600  in         0.800309         0.800353     4.37e-5   5.46e-5 PASS
+      20     1.600  out        0.000205         0.000171     3.42e-5   2.00e-1 PASS
+      20     2.000  in         0.556639         0.556575     6.43e-5   1.16e-4 PASS
+      20     2.000  out        0.000409         0.000336     7.39e-5   2.20e-1 PASS
+      20     3.000  in         0.319122         0.319148     2.68e-5   8.38e-5 PASS
+      20     3.000  out        0.001195         0.001163     3.18e-5   2.73e-2 PASS
+      20     5.000  in         0.168139         0.168321     1.82e-4   1.08e-3 PASS
+      20     5.000  out        0.005982         0.005972     9.66e-6   1.62e-3 PASS
+      60     1.005  in         4.911582         4.911431     1.51e-4   3.07e-5 PASS [crit]
+      60     1.005  out        0.000000         0.000001     5.15e-7   1.00e+0 PASS [crit]
+      60     1.010  in         4.229635         4.229661     2.58e-5   6.10e-6 PASS [crit]
+      60     1.010  out        0.000000         0.000001     5.23e-7   1.00e+0 PASS [crit]
+      60     1.020  in         3.557379         3.557240     1.39e-4   3.92e-5 PASS
+      60     1.020  out        0.000000         0.000001     5.39e-7   1.00e+0 PASS
+      60     1.050  in         2.695618         2.695473     1.45e-4   5.39e-5 PASS
+      60     1.050  out        0.000000         0.000001     5.88e-7   1.00e+0 PASS
+      60     1.100  in         2.080406         2.080533     1.27e-4   6.12e-5 PASS
+      60     1.100  out        0.000000         0.000001     6.76e-7   1.00e+0 PASS
+      60     1.300  in         1.225758         1.225692     6.64e-5   5.42e-5 PASS
+      60     1.300  out        0.000000         0.000001     1.12e-6   1.00e+0 PASS
+      60     1.600  in         0.800514         0.800521     7.45e-6   9.31e-6 PASS
+      60     1.600  out        0.000000         0.000002     2.08e-6   1.00e+0 PASS
+      60     2.000  in         0.557049         0.556907     1.42e-4   2.55e-4 PASS
+      60     2.000  out        0.000000         0.000004     4.07e-6   1.00e+0 PASS
+      60     3.000  in         0.320317         0.320298     1.88e-5   5.87e-5 PASS
+      60     3.000  out        0.000000         0.000014     1.38e-5   1.00e+0 PASS
+      60     5.000  in         0.174120         0.174228     1.08e-4   6.19e-4 PASS
+      60     5.000  out        0.000000         0.000064     6.44e-5   1.00e+0 PASS
+      60     8.000  in         0.103394         0.103430     3.57e-5   3.45e-4 PASS
+      60     8.000  out        0.000205         0.000270     6.58e-5   2.43e-1 PASS
+      60    15.000  in         0.051264         0.051335     7.14e-5   1.39e-3 PASS
+      60    15.000  out        0.001974         0.002019     4.49e-5   2.22e-2 PASS
+  worst abs error, normal region   : 1.926e-4 rad  (bound 3.0e-4)
+  worst abs error, critical region : 1.923e-4 rad  (bound 1.0e-2, reported separately)
+
+=== 2. capture classification ===
+  r_cam   b/b_crit   e^2 >= kMu   table says   verdict
+     8.2    0.3000        true         true   PASS
+     8.2    0.7000        true         true   PASS
+     8.2    0.9500        true         true   PASS
+     8.2    0.9990        true         true   PASS
+     8.2    1.0000        true         true   PASS [ambiguous band]
+     8.2    1.0010       false        false   PASS [ambiguous band]
+     8.2    1.0200       false        false   PASS
+     8.2    1.2000       false        false   PASS
+     8.2    2.0000       false        false   PASS
+      60    0.3000        true         true   PASS
+      60    0.7000        true         true   PASS
+      60    0.9500        true         true   PASS
+      60    0.9990        true         true   PASS
+      60    1.0000       false        false   PASS [ambiguous band]
+      60    1.0010       false        false   PASS [ambiguous band]
+      60    1.0200       false        false   PASS
+      60    1.2000       false        false   PASS
+      60    2.0000       false        false   PASS
+      60    5.0000       false        false   PASS
+
+=== 3. horizon / photon sphere / critical impact parameter / screen edge ===
+  horizon radius Rs                       1.000000000  PASS
+  photon sphere 3M                        1.500000000  PASS
+  critical impact parameter 3sqrt(3)M     2.598076211  PASS
+  ISCO 6M (disc inner edge)               3.000000000  PASS
+  these are four DIFFERENT numbers; the shadow edge on screen is a fifth.
+  psi_local = asin(b_crit sqrt(1-Rs/r)/r) is the on-screen edge:
+    r = 8.2    psi_local  17.2710 deg   psi_coord  18.3558 deg   b_crit/r  18.4718 deg   naive oversizes by 6.95%
+                e^2 at psi_coord deviates from kMu by 3.75e-16  PASS
+    r = 20     psi_local   7.2740 deg   psi_coord   7.4609 deg   b_crit/r   7.4640 deg   naive oversizes by 2.61%
+                e^2 at psi_coord deviates from kMu by 3.75e-16  PASS
+    r = 21.3   psi_local   6.8389 deg   psi_coord   7.0037 deg   b_crit/r   7.0061 deg   naive oversizes by 2.45%
+                e^2 at psi_coord deviates from kMu by 1.87e-15  PASS
+    r = 60     psi_local   2.4610 deg   psi_coord   2.4817 deg   b_crit/r   2.4818 deg   naive oversizes by 0.84%
+                e^2 at psi_coord deviates from kMu by 5.62e-16  PASS
+
+=== 4. inverse_radius table: u and dt vs the orbit equation ===
+  This is a property of the ray alone; no disc geometry is involved.
+  Convention (read off the shipped generator, not assumed): phi runs from
+  0 at r = infinity to phi_ub at the apsis.
+  apsis position in row units (phi_apsis / phi_ub):
+    b/b_crit  1.05  apsis at row f = 1.1111  -> rows above 34 are outbound
+    b/b_crit  2.00  apsis at row f = 0.6198  -> rows above 19 are outbound
+    b/b_crit  5.00  apsis at row f = 0.5509  -> rows above 17 are outbound
+    b/b_crit 15.00  apsis at row f = 0.5322  -> rows above 16 are outbound
+  b/b_crit  1.05  phi  0.1313  table u  0.047975  ref u  0.048012  |du|   3.65e-5  inbound  PASS
+  b/b_crit  1.05  phi  0.3940  table u  0.141025  ref u  0.141122  |du|   9.72e-5  inbound  PASS
+  b/b_crit  1.05  phi  0.7880  table u  0.265668  ref u  0.265799  |du|   1.31e-4  inbound  PASS
+  b/b_crit  1.05  phi  1.1821  table u  0.366183  ref u  0.366225  |du|   4.20e-5  inbound  PASS
+  b/b_crit  1.05  phi  1.5761  table u  0.441153  ref u  0.441295  |du|   1.42e-4  inbound  PASS
+  b/b_crit  1.05  phi  1.9701  table u  0.493174  ref u  0.493265  |du|   9.11e-5  inbound  PASS
+  b/b_crit  1.05  phi  2.3641  table u  0.525233  ref u  0.525262  |du|   2.91e-5  inbound  PASS
+  b/b_crit  1.05  phi  2.5480  table u  0.534112  ref u  0.534124  |du|   1.17e-5  inbound  PASS
+  b/b_crit  1.20  phi  0.1381  table u  0.044113  ref u  0.044157  |du|   4.33e-5  inbound  PASS
+  b/b_crit  1.20  phi  0.4143  table u  0.129385  ref u  0.129478  |du|   9.34e-5  inbound  PASS
+  b/b_crit  1.20  phi  0.8285  table u  0.241712  ref u  0.241847  |du|   1.36e-4  inbound  PASS
+  b/b_crit  1.20  phi  1.2428  table u  0.328271  ref u  0.328302  |du|   3.07e-5  inbound  PASS
+  b/b_crit  1.20  phi  1.6571  table u  0.386239  ref u  0.386393  |du|   1.53e-4  inbound  PASS
+  b/b_crit  1.20  phi  2.0714  table u  0.416520  ref u  0.416628  |du|   1.08e-4  inbound  PASS
+  b/b_crit  1.20  phi  2.4856  table u  0.419925  ref u  0.419965  |du|   3.91e-5  outbound PASS
+  b/b_crit  1.20  phi  2.6790  table u  0.412379  ref u  0.412396  |du|   1.73e-5  outbound PASS
+  b/b_crit  1.50  phi  0.1452  table u  0.037086  ref u  0.037121  |du|   3.58e-5  inbound  PASS
+  b/b_crit  1.50  phi  0.4355  table u  0.108440  ref u  0.108534  |du|   9.42e-5  inbound  PASS
+  b/b_crit  1.50  phi  0.8710  table u  0.200363  ref u  0.200507  |du|   1.43e-4  inbound  PASS
+  b/b_crit  1.50  phi  1.3065  table u  0.266324  ref u  0.266360  |du|   3.58e-5  inbound  PASS
+  b/b_crit  1.50  phi  1.7419  table u  0.301936  ref u  0.302106  |du|   1.70e-4  inbound  PASS
+  b/b_crit  1.50  phi  2.1774  table u  0.306481  ref u  0.306591  |du|   1.11e-4  outbound PASS
+  b/b_crit  1.50  phi  2.6129  table u  0.279718  ref u  0.279723  |du|   5.49e-6  outbound PASS
+  b/b_crit  1.50  phi  2.8161  table u  0.256640  ref u  0.256604  |du|   3.63e-5  outbound PASS
+  b/b_crit  2.00  phi  0.1492  table u  0.028575  ref u  0.028605  |du|   3.02e-5  inbound  PASS
+  b/b_crit  2.00  phi  0.4475  table u  0.083375  ref u  0.083460  |du|   8.57e-5  inbound  PASS
+  b/b_crit  2.00  phi  0.8951  table u  0.152643  ref u  0.152780  |du|   1.38e-4  inbound  PASS
+  b/b_crit  2.00  phi  1.3426  table u  0.198848  ref u  0.198899  |du|   5.14e-5  inbound  PASS
+  b/b_crit  2.00  phi  1.7901  table u  0.217140  ref u  0.217312  |du|   1.72e-4  inbound  PASS
+  b/b_crit  2.00  phi  2.2376  table u  0.206469  ref u  0.206563  |du|   9.35e-5  outbound PASS
+  b/b_crit  2.00  phi  2.6852  table u  0.167505  ref u  0.167478  |du|   2.72e-5  outbound PASS
+  b/b_crit  2.00  phi  2.8940  table u  0.140490  ref u  0.140408  |du|   8.18e-5  outbound PASS
+  b/b_crit  3.00  phi  0.1506  table u  0.019213  ref u  0.019245  |du|   3.26e-5  inbound  PASS
+  b/b_crit  3.00  phi  0.4517  table u  0.055989  ref u  0.056083  |du|   9.48e-5  inbound  PASS
+  b/b_crit  3.00  phi  0.9034  table u  0.101810  ref u  0.101972  |du|   1.62e-4  inbound  PASS
+  b/b_crit  3.00  phi  1.3551  table u  0.130408  ref u  0.130519  |du|   1.11e-4  inbound  PASS
+  b/b_crit  3.00  phi  1.8067  table u  0.137688  ref u  0.137891  |du|   2.03e-4  outbound PASS
+  b/b_crit  3.00  phi  2.2584  table u  0.123048  ref u  0.123174  |du|   1.26e-4  outbound PASS
+  b/b_crit  3.00  phi  2.7101  table u  0.088213  ref u  0.088223  |du|   1.02e-5  outbound PASS
+  b/b_crit  3.00  phi  2.9209  table u  0.066279  ref u  0.066243  |du|   3.54e-5  outbound PASS
+  b/b_crit  5.00  phi  0.1505  table u  0.011490  ref u  0.011540  |du|   5.07e-5  inbound  PASS
+  b/b_crit  5.00  phi  0.4514  table u  0.033478  ref u  0.033613  |du|   1.35e-4  inbound  PASS
+  b/b_crit  5.00  phi  0.9029  table u  0.060638  ref u  0.060868  |du|   2.30e-4  inbound  PASS
+  b/b_crit  5.00  phi  1.3543  table u  0.076801  ref u  0.077033  |du|   2.32e-4  inbound  PASS
+  b/b_crit  5.00  phi  1.8057  table u  0.079213  ref u  0.079499  |du|   2.86e-4  outbound PASS
+  b/b_crit  5.00  phi  2.2572  table u  0.067668  ref u  0.067882  |du|   2.13e-4  outbound PASS
+  b/b_crit  5.00  phi  2.7086  table u  0.043935  ref u  0.044024  |du|   8.85e-5  outbound PASS
+  b/b_crit  5.00  phi  2.9193  table u  0.029731  ref u  0.029756  |du|   2.47e-5  outbound PASS
+  b/b_crit  8.00  phi  0.1502  table u  0.006955  ref u  0.007202  |du|   2.47e-4  inbound  PASS
+  b/b_crit  8.00  phi  0.4507  table u  0.020259  ref u  0.020971  |du|   7.11e-4  inbound  PASS
+  b/b_crit  8.00  phi  0.9015  table u  0.036616  ref u  0.037899  |du|   1.28e-3  inbound  PASS
+  b/b_crit  8.00  phi  1.3522  table u  0.046129  ref u  0.047683  |du|   1.55e-3  inbound  PASS
+  b/b_crit  8.00  phi  1.8030  table u  0.047022  ref u  0.048604  |du|   1.58e-3  outbound PASS
+  b/b_crit  8.00  phi  2.2537  table u  0.039270  ref u  0.040503  |du|   1.23e-3  outbound PASS
+  b/b_crit  8.00  phi  2.7044  table u  0.024164  ref u  0.024795  |du|   6.31e-4  outbound PASS
+  b/b_crit  8.00  phi  2.9148  table u  0.015317  ref u  0.015617  |du|   3.00e-4  outbound PASS
+  b/b_crit 15.00  phi  0.1501  table u  0.003370  ref u  0.003837  |du|   4.66e-4  inbound  PASS
+  b/b_crit 15.00  phi  0.4503  table u  0.009821  ref u  0.011170  |du|   1.35e-3  inbound  PASS
+  b/b_crit 15.00  phi  0.9005  table u  0.017735  ref u  0.020155  |du|   2.42e-3  inbound  PASS
+  b/b_crit 15.00  phi  1.3508  table u  0.022265  ref u  0.025243  |du|   2.98e-3  inbound  PASS
+  b/b_crit 15.00  phi  1.8010  table u  0.022556  ref u  0.025484  |du|   2.93e-3  outbound PASS
+  b/b_crit 15.00  phi  2.2513  table u  0.018596  ref u  0.020834  |du|   2.24e-3  outbound PASS
+  b/b_crit 15.00  phi  2.7015  table u  0.011085  ref u  0.012159  |du|   1.07e-3  outbound PASS
+  b/b_crit 15.00  phi  2.9116  table u  0.006744  ref u  0.007174  |du|   4.30e-4  outbound PASS
+  compared 64 points, worst |du| 2.98e-3 (bound 3.0e-3)
+
+  time channel, as a difference only (its zero point is arbitrary):
+    b 1.30  phi 0.50..0.70  table dt    2.0888  ref dt    2.0867  |err|   2.13e-3  PASS
+    b 1.30  phi 0.60..0.85  table dt    2.4319  ref dt    2.4310  |err|   9.04e-4  PASS
+    b 1.30  phi 0.75..0.95  table dt    1.9543  ref dt    1.9529  |err|   1.43e-3  PASS
+    b 2.00  phi 0.50..0.70  table dt    3.1695  ref dt    3.1652  |err|   4.33e-3  PASS
+    b 2.00  phi 0.60..0.85  table dt    4.2632  ref dt    4.2536  |err|   9.65e-3  PASS
+    b 2.00  phi 0.75..0.95  table dt    4.3851  ref dt    4.3604  |err|   2.47e-2  PASS
+    b 4.00  phi 0.50..0.70  table dt    6.5602  ref dt    6.5310  |err|   2.91e-2  PASS
+    b 4.00  phi 0.60..0.85  table dt   10.4838  ref dt   10.3919  |err|   9.19e-2  PASS
+    b 4.00  phi 0.75..0.95  table dt   14.6984  ref dt   14.3825  |err|   3.16e-1  PASS
+  9 pairs examined, worst usable |dt err| 3.16e-1 (bound 5.0e-1)
+
+=== 5. degenerate rays: finite, no NaN, no division by zero ===
+  exactly radial inward          def  -1.000000 u0   0.5029 u1  -1.0000 PASS
+  exactly radial outward         def   0.000000 u0  -1.0000 u1  -1.0000 PASS
+  tangential delta = pi/2        def   0.138629 u0   0.1212 u1  -1.0000 PASS
+  near-tangential inward         def   0.138629 u0   0.1212 u1  -1.0000 PASS
+  camera just outside horizon    def  -1.000000 u0  -1.0000 u1  -1.0000 PASS
+  camera at photon sphere        def   6.397506 u0   0.4692 u1  -1.0000 PASS
+  anti-aliasing alpha stays within [0,1] and is 0 for u = -1  PASS
+
+=== 6. Doppler factor g: computed from the ray, asymmetric, physically bounded ===
+  g = nu_obs / nu_emit. For a static observer k_s = (1,0,0,0), so
+  g_receiver = e and g_source follows from u at the crossing.
+  The camera frame is built exactly as the shader builds it, including the
+  azimuth offset alpha of the ray plane. Omitting alpha moves every crossing
+  by pi/2 in the table coordinate and finds the wrong crossings.
+  r_cam 21.16 Rs, inclination 80 deg, shadow half-angle 6.88 deg (sin(psi) = b_crit*sqrt(1-Rs/r)/r = 0.119846)
+  offset  -40 deg  b/b_crit   5.287  alpha 1.571  no shading crossing
+  offset  -34 deg  b/b_crit   4.588  alpha 1.571  no shading crossing
+  offset  -29 deg  b/b_crit   3.971  u1  r  10.4869  phi   1.571  g 0.764094
+  offset  -25 deg  b/b_crit   3.457  u1  r   8.7798  phi   1.571  g 0.734107
+  offset  -21 deg  b/b_crit   2.928  u1  r   7.1666  phi   1.571  g 0.696830
+  offset  -18 deg  b/b_crit   2.522  u1  r   6.0131  phi   1.571  g 0.661578
+  offset   18 deg  b/b_crit   2.522  u1  r   6.0131  phi   1.571  g 1.254667
+  offset   21 deg  b/b_crit   2.928  u1  r   7.1666  phi   1.571  g 1.228327
+  offset   25 deg  b/b_crit   3.457  u1  r   8.7798  phi   1.571  g 1.198744
+  offset   29 deg  b/b_crit   3.971  u1  r  10.4869  phi   1.571  g 1.174079
+  offset   34 deg  b/b_crit   4.588  alpha 1.571  no shading crossing
+  offset   40 deg  b/b_crit   5.287  alpha 1.571  no shading crossing
+  g range 0.6616 .. 1.2547, ratio 1.896
+  samples 8; finite, positive, below 8: PASS
+  asymmetry present (max/min > 1.05): PASS -- produced by the computed g, not by a screen-space gradient
+
+=== 7. blackbody chromaticity at the temperatures the disc actually reaches ===
+  T   1500 K   x 0.58572  y 0.39308  x+y 0.97880  PASS
+  T   2500 K   x 0.47697  y 0.41363  x+y 0.89060  PASS
+  T   3500 K   x 0.40534  y 0.39074  x+y 0.79608  PASS
+  T   5000 K   x 0.34510  y 0.35168  x+y 0.69678  PASS
+  T   6500 K   x 0.31354  y 0.32365  x+y 0.63719  PASS
+  T   9200 K   x 0.28559  y 0.29408  x+y 0.57966  PASS
+  T  15000 K   x 0.26372  y 0.26739  x+y 0.53111  PASS
+  T  25000 K   x 0.25256  y 0.25236  x+y 0.50492  PASS
+  T  40000 K   x 0.24719  y 0.24490  x+y 0.49209  PASS
+  inside the spectral locus: PASS
+  x strictly decreasing with T (blue with rising temperature): PASS
+
+=== static observer frame ===
+  orbit constant from the converted angle: worst rel 6.22e-15
+  r     6.5 Rs   psi_crit 2.765086   analytic 2.765086   rel 7.59e-10
+  r     8.2 Rs   psi_crit 2.840157   analytic 2.840157   rel 5.76e-10
+  r   21.31 Rs   psi_crit 3.022287   analytic 3.022287   rel 2.05e-10
+  r     100 Rs   psi_crit 3.115739   analytic 3.115739   rel 4.27e-11
+  r     6.5 Rs   old/new sin 1.073996   exact 1.073996   1/sqrt(f) 1.087115
+  r     8.2 Rs   old/new sin 1.060714   exact 1.060714   1/sqrt(f) 1.067187
+  r   21.31 Rs   old/new sin 1.023966   exact 1.023966   1/sqrt(f) 1.024323
+  r     100 Rs   old/new sin 1.005034   exact 1.005034   1/sqrt(f) 1.005038
+  smallest distortion the bug produced: 0.503%
+  r 1e6 Rs   sin(psi)*r 2.598074912   b_crit 2.598076211   rel 5.00e-7
+  static emitter r    4 Rs   g 0.887089   want 0.887089
+  static emitter r    6 Rs   g 0.935074   want 0.935074
+  static emitter r    9 Rs   g 0.965741   want 0.965741
+  static emitter r   12 Rs   g 0.980714   want 0.980714
+  static emitter r   20 Rs   g 0.998386   want 0.998386
+  old receiver factor is off by 2.37% (this is the bug the test must see)
+
+=== compositing ===
+  material alpha 0: no occlusion, no emission          got 0.800000  want 0.800000
+  coverage 0: the crossing does not exist              got 0.800000  want 0.800000
+  opaque and full: the material replaces the sky       got 0.700000  want 0.700000
+  half alpha, premultiplied 0.35                       got 0.750000  want 0.750000
+  partial coverage x partial alpha                     got 0.746240  want 0.746240
+  faint emission over black                            got 0.010000  want 0.010000
+  old rule, alpha 0: 0.000700 (sky erased)
+
+=== critical band ===
+  e^2 = kMu -> 0.000000, far below -> 1.000000, collapsed band -> 1.000000
+
+=== capture gate ===
+  outward, b << b_crit: e^2 5.2476  old captured true  new false
+  inward,  b << b_crit: e^2 5.2476  old captured true  new true
+
+=== texture lifetime ===
+  azimuth wander per layer 6.2832 rad (<= 3 pi = 9.4248 for a unique solution)
+  |d phase / dr| bound 3.1416 rad per Rs, INDEPENDENT of t
+
+ALL CHECKS PASSED
+  A vs B            6/6    passed
+  deflection       62/62   passed
+  capture          21/21   passed
+  radii             8/8    passed
+  inverse radius   73/73   passed
+  degenerate        7/7    passed
+  doppler           2/2    passed
+  blackbody         2/2    passed
+  observer          5/5    passed
+  redshift          2/2    passed
+  composite         3/3    passed
+  critical          3/3    passed
+  texture           3/3    passed

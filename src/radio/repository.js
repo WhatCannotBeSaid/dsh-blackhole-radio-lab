@@ -1,0 +1,656 @@
+/**
+ * The data-access boundary for the station map.
+ *
+ * Everything above this line (scene, picking, labels, panel) talks to the same
+ * small interface:
+ *
+ *   list()                    → all stations, stable order
+ *   getById(id)               → one station or null
+ *   search(query, limit)      → ranked matches, local only
+ *   categories()              → taxonomy with per-category counts
+ *   featured()                → the photon-ring subset
+ *   anchors()                 → spatial cluster centres, for labels
+ *   stats()                   → counts the rail reports
+ *   kind                      → 'mock' | 'radio-browser'
+ *   seed                      → the seed the layout was computed with
+ *
+ * Ids stay the stable key; three.js instance indices live in the renderer,
+ * never here.
+ *
+ * Two sources, one contract:
+ *
+ *   createMockRadioRepository(options)
+ *       Synchronous, deterministic, offline. Unchanged from earlier phases and
+ *       still the fallback entry point.
+ *
+ *   createRadioBrowserRepository(options) / await createRadioRepository(options)
+ *       Live data from Radio Browser, mapped through ./radio-browser.js and
+ *       placed by the *same* `assignPositions` the mock catalogue uses, so a
+ *       real station sits in the disk the scene already renders. Never throws:
+ *       a failed fetch resolves to a mock repository whose `fallback.reason`
+ *       says why, and `stats().source` stays honest about what is on screen.
+ *
+ * Search runs entirely against the loaded catalogue: no fetch, no index
+ * library, no dependency. The haystack is precomputed once per station, and
+ * every source builds `haystacks`/`byId` through the same assembly step so the
+ * search behaves identically on mock and real data.
+ *
+ * A mixed catalogue is impossible by construction: `createRadioRepository`
+ * either returns the real repository or the mock one, never a blend.
+ */
+
+import { generateCatalog, normalizeCatalogOptions, categoryText } from './station.js';
+import { assignPositions } from './distribution.js';
+import { CATEGORIES } from './taxonomy.js';
+import { mapStations, streamUrlFor, MAPPING } from './radio-browser.js';
+
+/**
+ * Radio Browser mirrors are round-robin DNS names, not fixed hosts: a mirror
+ * can disappear without notice (two of the five official names did not answer
+ * when this phase was written). The list is therefore ordered and tried in
+ * sequence, and every request carries a timeout — a mirror that hangs must not
+ * hold the panel open.
+ *
+ * `all.api.radio-browser.info` is first: it fans out across the healthy set
+ * server-side, so a single dead mirror rarely costs a request.
+ */
+export const RADIO_BROWSER_HOSTS = Object.freeze([
+  'all.api.radio-browser.info',
+  'de1.api.radio-browser.info',
+  'de2.api.radio-browser.info',
+  'at1.api.radio-browser.info',
+  'nl1.api.radio-browser.info',
+]);
+
+/** Defaults for the real source; every knob is overridable. */
+export const RADIO_BROWSER_DEFAULTS = Object.freeze({
+  /** How many usable stations to aim for (the brief asks for at least 200). */
+  limit: 240,
+  /** API page size; 500 keeps a whole station list in one request. */
+  pageSize: 500,
+  /** Per-request timeout, ms. */
+  timeoutMs: 6000,
+  /** Total time budget across mirrors and pages, ms. */
+  budgetMs: 20000,
+  /** Hosts tried before giving up. */
+  maxHosts: 3,
+  seed: 20261022,
+  featuredCount: 18,
+  /**
+   * The order the API is asked in. Click count is popularity in the last 28
+   * days and carries real diversity (France/US/GB/ID/IT/ES …); raw vote count
+   * is dominated by a few national broadcasters and a large tag-less block.
+   */
+  order: 'clickcount',
+  /** Query parameters every station request shares. */
+  hidebroken: true,
+  /**
+   * `curl` / `https` — the API's own preference for identifiable clients.
+   * The browser cannot set User-Agent, and the field is only advisory.
+   */
+  userAgent: 'dsh-blackhole-radio-lab/0.5 (phase 5 data intake)',
+});
+
+/** Fixed 200/202 status causes worth a second look at another mirror. */
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 521, 522, 524]);
+
+function clampNumber(value, fallback, min, max) {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function normalizeRealOptions(options) {
+  const source = options || {};
+  const hosts =
+    Array.isArray(source.hosts) && source.hosts.length > 0
+      ? source.hosts.map((host) => String(host).replace(/^https?:\/\//, '').replace(/\/+$/, '')).filter(Boolean)
+      : RADIO_BROWSER_HOSTS.slice();
+  const limit = Math.round(clampNumber(source.limit, RADIO_BROWSER_DEFAULTS.limit, 50, 5000));
+  const pageSize = Math.round(clampNumber(source.pageSize, RADIO_BROWSER_DEFAULTS.pageSize, 20, 2000));
+  return {
+    hosts,
+    maxHosts: Math.round(clampNumber(source.maxHosts, RADIO_BROWSER_DEFAULTS.maxHosts, 1, hosts.length)),
+    limit,
+    pageSize,
+    timeoutMs: Math.round(clampNumber(source.timeoutMs, RADIO_BROWSER_DEFAULTS.timeoutMs, 250, 60000)),
+    budgetMs: Math.round(clampNumber(source.budgetMs, RADIO_BROWSER_DEFAULTS.budgetMs, 500, 120000)),
+    seed: typeof source.seed === 'number' && Number.isFinite(source.seed)
+      ? Math.abs(Math.round(source.seed)) >>> 0
+      : typeof source.seed === 'string' && source.seed.length > 0
+        ? Math.abs(hashText(source.seed)) >>> 0
+        : RADIO_BROWSER_DEFAULTS.seed >>> 0,
+    featuredCount: Math.round(
+      clampNumber(source.featuredCount, RADIO_BROWSER_DEFAULTS.featuredCount, 4, Math.min(40, limit)),
+    ),
+    order: typeof source.order === 'string' && source.order.length > 0 ? source.order : RADIO_BROWSER_DEFAULTS.order,
+    hidebroken: source.hidebroken !== false,
+    userAgent: typeof source.userAgent === 'string' && source.userAgent.length > 0
+      ? source.userAgent
+      : RADIO_BROWSER_DEFAULTS.userAgent,
+    fetchImpl: typeof source.fetch === 'function' ? source.fetch : defaultFetch(),
+  };
+}
+
+function hashText(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function defaultFetch() {
+  if (typeof fetch === 'function') return fetch.bind(globalThis);
+  return null;
+}
+
+/**
+ * One HTTP request with a hard timeout.
+ *
+ * Radio Browser answers `text/plain` without charset on some mirrors, and
+ * `response.json()` then guesses; the body is decoded as UTF-8 explicitly so a
+ * non-ASCII station name survives.
+ */
+/**
+ * One HTTP request with a hard timeout.
+ *
+ * Radio Browser answers `text/plain` without charset on some mirrors, and
+ * `response.json()` then guesses; the body is decoded as UTF-8 explicitly so a
+ * non-ASCII station name survives.
+ *
+ * A `fetch` that never settles — a proxy swallowing the connection, a host
+ * that accepts and then says nothing — cannot be rescued by the abort signal
+ * alone: the signal is only useful to an implementation that honours it. So the
+ * request is also raced against its own timer, and the loser is discarded. The
+ * abandoned request keeps running until the transport gives up, which costs one
+ * idle socket; refusing to fall back costs the whole panel.
+ */
+async function fetchJson(fetchImpl, url, { signal, timeoutMs, headers }) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timedOut = false;
+  let timer = null;
+
+  const onAbort = () => {
+    if (controller) controller.abort();
+  };
+  if (signal && typeof signal.addEventListener === 'function') {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  const request = (async () => {
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      headers,
+      signal: controller ? controller.signal : signal,
+      credentials: 'omit',
+      // The API is third-party; no cookies, no caching of a moving catalogue.
+      mode: 'cors',
+      cache: 'no-store',
+    });
+    if (!response || !response.ok) {
+      const status = response ? response.status : 0;
+      const error = new Error(`HTTP ${status || 'no response'}`);
+      error.status = status;
+      error.retryable = status === 0 || RETRYABLE_STATUS.has(status);
+      throw error;
+    }
+    const text = await response.text();
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) {
+      const error = new Error('response is not a station array');
+      error.retryable = true;
+      throw error;
+    }
+    return parsed;
+  })();
+  // A rejected loser must not surface as an unhandled rejection.
+  request.catch(() => {});
+
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      onAbort();
+      const error = new Error(`no answer within ${timeoutMs} ms`);
+      error.name = 'TimeoutError';
+      error.timedOut = true;
+      reject(error);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([request, deadline]);
+  } catch (error) {
+    if (error && (error.name === 'AbortError' || /abort/i.test(String(error.message || '')))) {
+      error.timedOut = timedOut || (signal ? signal.aborted !== true : true);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function stationQuery(opts, offset) {
+  const params = new URLSearchParams({
+    limit: String(Math.min(opts.pageSize, opts.limit - offset + 20)),
+    offset: String(offset),
+    order: opts.order,
+    reverse: 'true',
+    hidebroken: opts.hidebroken ? 'true' : 'false',
+  });
+  return `/json/stations/search?${params.toString()}`;
+}
+
+/**
+ * Collect stations across mirrors until `limit` usable rows are held or the
+ * budget runs out. Every failure is recorded; a mirror that answered partial
+ * data is not tried again.
+ *
+ * @returns {{rows, attempts, hostsUsed, exhaustedBudget}}
+ */
+async function collectRows(opts, signal) {
+  const attempts = [];
+  const rows = [];
+  const seen = new Set();
+  const hostsUsed = [];
+  const hosts = opts.hosts.slice(0, opts.maxHosts);
+  const deadline = Date.now() + opts.budgetMs;
+  const headers = { accept: 'application/json', 'user-agent': opts.userAgent };
+  const fetchImpl = opts.fetchImpl;
+
+  if (typeof fetchImpl !== 'function') {
+    return {
+      rows,
+      attempts: [{ host: null, url: null, ok: false, error: 'fetch is unavailable in this environment' }],
+      hostsUsed,
+      exhaustedBudget: false,
+    };
+  }
+
+  for (const host of hosts) {
+    if (rows.length >= opts.limit) break;
+    if (signal && signal.aborted) break;
+    if (Date.now() >= deadline) break;
+    hostsUsed.push(host);
+    let offset = 0;
+    let hostFailed = false;
+
+    while (rows.length < opts.limit && !hostFailed) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0 || (signal && signal.aborted)) break;
+      const path = stationQuery(opts, offset);
+      const url = `https://${host}${path}`;
+      try {
+        const page = await fetchJson(fetchImpl, url, {
+          signal,
+          timeoutMs: Math.min(opts.timeoutMs, remaining),
+          headers,
+        });
+        let added = 0;
+        for (const row of page) {
+          const id = row && row.stationuuid ? String(row.stationuuid) : '';
+          if (id.length === 0 || seen.has(id)) continue;
+          seen.add(id);
+          rows.push(row);
+          added += 1;
+        }
+        attempts.push({ host, path, ok: true, received: page.length, added });
+        // A short page means the mirror has nothing more to give, and a page
+        // that added nothing new means the catalogue is exhausted at this
+        // offset: either way, stop paging this mirror and let the next one top
+        // up. A few unusable rows further down the list are not worth a second
+        // round trip — the mapping drops them after the fact.
+        if (page.length < opts.pageSize) break;
+        offset += page.length;
+      } catch (error) {
+        const timedOut = Boolean(error && (error.timedOut || error.name === 'TimeoutError' || error.name === 'AbortError'));
+        attempts.push({
+          host,
+          path,
+          ok: false,
+          status: error && error.status ? error.status : null,
+          error: error && error.message ? error.message : String(error),
+          timedOut,
+        });
+        hostFailed = true;
+      }
+    }
+  }
+
+  return {
+    rows,
+    attempts,
+    hostsUsed,
+    exhaustedBudget: Date.now() >= deadline && rows.length < opts.limit,
+  };
+}
+
+/** Assemble the shared repository surface over an already-placed catalogue. */
+function buildRepository({ stations, catalog, layout, extra }) {
+  const byId = new Map();
+  const haystacks = new Array(stations.length);
+
+  const countries = new Set();
+  const languages = new Set();
+
+  for (let index = 0; index < stations.length; index += 1) {
+    const station = stations[index];
+    byId.set(station.id, station);
+    const categoryWords = (station.categories || [])
+      .map((id) => `${categoryText(id, 'zh')} ${categoryText(id, 'en')}`)
+      .join(' ');
+    const tags = station.metadata && Array.isArray(station.metadata.tags) ? station.metadata.tags.join(' ') : '';
+    haystacks[index] = [
+      station.name,
+      station.country.zh,
+      station.country.en,
+      station.language.zh,
+      station.language.en,
+      categoryWords,
+      tags,
+    ]
+      .join(' ')
+      .toLowerCase();
+    countries.add(station.country.en);
+    languages.add(station.language.en);
+  }
+
+  /**
+   * Ranked local search. Substring matching, all query tokens must hit; name
+   * hits rank above metadata hits. No network, no fuzzy-index dependency.
+   */
+  function search(query, limit = 24) {
+    const text = String(query || '').trim().toLowerCase();
+    if (text.length === 0) return [];
+    const tokens = text.split(/\s+/).filter(Boolean).slice(0, 6);
+    const max = Math.max(1, Math.min(60, limit));
+    const hits = [];
+
+    for (let index = 0; index < stations.length; index += 1) {
+      const haystack = haystacks[index];
+      let matched = true;
+      for (const token of tokens) {
+        if (!haystack.includes(token)) {
+          matched = false;
+          break;
+        }
+      }
+      if (!matched) continue;
+      const station = stations[index];
+      const name = station.name.toLowerCase();
+      let score = 0;
+      if (name.startsWith(text)) score = 3;
+      else if (name.includes(text)) score = 2;
+      if (station.isFeatured) score += 0.25;
+      hits.push({ station, score });
+    }
+
+    hits.sort((a, b) => b.score - a.score || a.station.name.localeCompare(b.station.name));
+    return hits.slice(0, max).map((hit) => hit.station);
+  }
+
+  const base = {
+    seed: extra.seed,
+    list() {
+      return stations;
+    },
+    getById(id) {
+      const key = String(id);
+      const direct = byId.get(key);
+      if (direct) return direct;
+      // Radio Browser ids are UUIDs; a panel that lowercased or uppercased one
+      // must still resolve, so fall back to a case-insensitive lookup.
+      const lowered = key.toLowerCase();
+      for (const station of stations) {
+        if (station.id.toLowerCase() === lowered) return station;
+      }
+      return null;
+    },
+    search,
+    categories() {
+      return catalog.categories;
+    },
+    featured() {
+      return layout.featured;
+    },
+    anchors() {
+      return layout.anchors;
+    },
+    stats() {
+      return {
+        total: stations.length,
+        featured: layout.featured.length,
+        countries: countries.size,
+        languages: languages.size,
+        categories: catalog.categories.length,
+        seed: extra.seed,
+        source: extra.source,
+        demo: extra.source === 'mock',
+      };
+    },
+  };
+
+  if (extra.source === 'mock') {
+    return Object.assign(base, { kind: 'mock' });
+  }
+
+  return Object.assign(base, {
+    kind: 'radio-browser',
+    /** Everything the panel needs to describe where the data came from. */
+    provenance: extra.provenance,
+  });
+}
+
+/** Category counts for a station list, in the taxonomy's order. */
+function countCategories(stations) {
+  const counts = new Map();
+  for (const station of stations) {
+    for (const id of station.categories || []) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return counts;
+}
+
+function catalogFor(stations) {
+  const counts = countCategories(stations);
+  return {
+    categories: CATEGORIES.map((category) => ({
+      ...category,
+      count: counts.get(category.id) || 0,
+    })),
+  };
+}
+
+/**
+ * Deterministic mock repository — unchanged interface.
+ * @param options.count - station count, 200–20,000.
+ * @param options.seed - integer seed.
+ * @param options.featuredCount - how many stations sit on the photon ring.
+ */
+export function createMockRadioRepository(options) {
+  const opts = normalizeCatalogOptions(options);
+  const catalog = generateCatalog(opts);
+  const layout = assignPositions(catalog.stations, opts.seed);
+  return buildRepository({
+    stations: catalog.stations,
+    catalog,
+    layout,
+    extra: { seed: opts.seed, source: 'mock' },
+  });
+}
+
+/**
+ * Build a repository from already-fetched rows (or already-mapped stations).
+ *
+ * Exported because it is the testable half: the network half is
+ * {@link fetchRadioBrowserCatalog}, and the two meet here.
+ *
+ * @param rows - Radio Browser station objects.
+ * @param options - { seed, featuredCount, limit }.
+ */
+export function createRepositoryFromRows(rows, options) {
+  const opts = normalizeRealOptions(options);
+  const mapped = mapStations(Array.isArray(rows) ? rows : []);
+  let stations = mapped.stations.slice(0, opts.limit);
+
+  if (stations.length === 0) return null;
+
+  // `metadata.index` is assigned by the mapping before truncation; re-stamp it
+  // so it is the station's index in the catalogue the layout walks.
+  for (let index = 0; index < stations.length; index += 1) {
+    stations[index].metadata.index = index;
+  }
+
+  const catalog = catalogFor(stations);
+  const layout = assignPositions(stations, opts.seed);
+  const featuredCount = layout.featured.length;
+
+  return buildRepository({
+    stations,
+    catalog: { ...catalog, seed: opts.seed, count: stations.length },
+    layout,
+    extra: {
+      seed: opts.seed,
+      source: 'radio-browser',
+      provenance: {
+        hosts: opts.hosts.slice(0, opts.maxHosts),
+        order: opts.order,
+        received: Array.isArray(rows) ? rows.length : 0,
+        usable: stations.length,
+        dropped: mapped.dropped,
+        duplicateIds: mapped.duplicateIds,
+        featured: featuredCount,
+        requested: opts.limit,
+        short: stations.length < opts.limit,
+        fetchedAt: new Date().toISOString(),
+      },
+    },
+  });
+}
+
+/**
+ * Fetch Radio Browser rows and map them into a repository.
+ *
+ * Resolves, never rejects, with one of:
+ *   { ok: true,  repository, rows, attempts }
+ *   { ok: false, reason, detail, rows: [], attempts }
+ */
+export async function fetchRadioBrowserCatalog(options) {
+  const opts = normalizeRealOptions(options);
+  const signal = opts.signal;
+  const collected = await collectRows(opts, signal);
+
+  if (signal && signal.aborted) {
+    return { ok: false, reason: 'aborted', detail: 'request cancelled', rows: [], attempts: collected.attempts };
+  }
+  if (collected.rows.length === 0) {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      detail: collected.attempts.map(describeAttempt).filter(Boolean).join('; ') || 'no host answered',
+      rows: [],
+      attempts: collected.attempts,
+    };
+  }
+
+  const repository = createRepositoryFromRows(collected.rows, opts);
+  if (!repository) {
+    return {
+      ok: false,
+      reason: 'no-usable-stations',
+      detail: `${collected.rows.length} rows received, none had a stable id, a name and a valid stream URL`,
+      rows: collected.rows,
+      attempts: collected.attempts,
+    };
+  }
+
+  return {
+    ok: true,
+    repository,
+    rows: collected.rows,
+    attempts: collected.attempts,
+    exhaustedBudget: collected.exhaustedBudget,
+  };
+}
+
+function describeAttempt(attempt) {
+  if (!attempt || attempt.ok) return '';
+  const host = attempt.host || 'host';
+  const status = attempt.status ? ` ${attempt.status}` : '';
+  const timeout = attempt.timedOut ? ' (timeout)' : '';
+  return `${host}:${status} ${attempt.error}${timeout}`.trim();
+}
+
+/**
+ * The entry point the panel calls.
+ *
+ * Tries Radio Browser first, falls back to the deterministic mock repository on
+ * any failure, and never throws — a broken network must not blank the scene.
+ * The returned object always carries `fallback: null` (real data) or
+ * `fallback: { reason, detail, attempts }` (mock data standing in).
+ */
+export async function createRadioRepository(options) {
+  const source = options || {};
+  const mockOptions = {
+    count: source.mockCount !== undefined ? source.mockCount : source.count,
+    seed: source.seed,
+    featuredCount: source.featuredCount,
+  };
+  const mode = String(source.mode || 'auto').toLowerCase();
+  const budgetMs = clampNumber(source.budgetMs, RADIO_BROWSER_DEFAULTS.budgetMs, 500, 120000);
+
+  if (mode === 'mock') {
+    const repository = createMockRadioRepository(mockOptions);
+    return { repository, fallback: null, attempts: [], network: false };
+  }
+
+  let result;
+  try {
+    result = await Promise.race([
+      fetchRadioBrowserCatalog({
+        ...source,
+        seed: source.seed,
+        featuredCount: source.featuredCount,
+        budgetMs,
+      }),
+      new Promise((resolve) => {
+        const timer = setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              reason: 'timeout',
+              detail: `no complete answer within ${budgetMs} ms`,
+              attempts: [{ host: null, ok: false, timedOut: true, error: `budget of ${budgetMs} ms exhausted` }],
+            }),
+          budgetMs + 500,
+        );
+        // Do not hold the process open for a race that was already won. The
+        // browser has no `unref` on timer ids, so the call is guarded: there
+        // the page owns the event loop anyway.
+        if (typeof timer?.unref === 'function') timer.unref();
+      }),
+    ]);
+  } catch (error) {
+    result = { ok: false, reason: 'error', detail: error && error.message ? error.message : String(error), attempts: [] };
+  }
+
+  if (result && result.ok && result.repository && result.repository.list().length > 0) {
+    return { repository: result.repository, fallback: null, attempts: result.attempts || [], network: true };
+  }
+
+  const repository = createMockRadioRepository(mockOptions);
+  return {
+    repository,
+    fallback: {
+      reason: (result && result.reason) || 'unknown',
+      detail: (result && result.detail) || '',
+      attempts: (result && result.attempts) || [],
+    },
+    attempts: (result && result.attempts) || [],
+    network: true,
+  };
+}
+
+/** Re-exported so callers can describe a station without importing two modules. */
+export { streamUrlFor, MAPPING as STATION_MAPPING };

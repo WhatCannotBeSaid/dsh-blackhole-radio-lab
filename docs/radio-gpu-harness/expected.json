@@ -1,0 +1,161 @@
+{
+  "generatedAt": "2026-10-23T04:31:49.942Z",
+  "width": 1280,
+  "height": 720,
+  "fovDeg": 42,
+  "fixtureCount": 4,
+  "checks": 69,
+  "failures": 0,
+  "expected": {
+    "radio-near-side": [
+      {
+        "crossingIndex": 1,
+        "screenRegion": "lower-centre",
+        "x": 851.1,
+        "y": 376.84
+      }
+    ],
+    "radio-far-side": [
+      {
+        "crossingIndex": 1,
+        "screenRegion": "upper-left",
+        "x": 384.01,
+        "y": 339.59
+      }
+    ],
+    "radio-near-axis": [
+      {
+        "crossingIndex": 1,
+        "screenRegion": "upper",
+        "x": 640,
+        "y": 210.8
+      },
+      {
+        "crossingIndex": 2,
+        "screenRegion": "lower",
+        "x": 640,
+        "y": 505.4
+      }
+    ],
+    "radio-weak-field": [
+      {
+        "crossingIndex": 1,
+        "screenRegion": "right",
+        "x": 1178,
+        "y": 361.83
+      }
+    ]
+  },
+  "fixtures": [
+    {
+      "businessId": "radio-near-side",
+      "gpuId": 101,
+      "kind": "near",
+      "r": 2.6,
+      "phi": 0.654698,
+      "patchRadius": 0.04,
+      "color": [
+        1,
+        0.62,
+        0.28
+      ],
+      "world": {
+        "x": 1.5831912592077115,
+        "y": 0,
+        "z": 2.062402830867021
+      },
+      "reference": [
+        {
+          "crossingIndex": 1,
+          "screenRegion": "lower-centre",
+          "x": 851.1,
+          "y": 376.84
+        }
+      ]
+    },
+    {
+      "businessId": "radio-far-side",
+      "gpuId": 102,
+      "kind": "far",
+      "r": 3.2,
+      "phi": 3.796291,
+      "patchRadius": 0.04,
+      "color": [
+        0.3,
+        0.8,
+        1
+      ],
+      "world": {
+        "x": -1.9485439675630865,
+        "y": 0,
+        "z": -2.5383412706871207
+      },
+      "reference": [
+        {
+          "crossingIndex": 1,
+          "screenRegion": "upper-left",
+          "x": 384.01,
+          "y": 339.59
+        }
+      ]
+    },
+    {
+      "businessId": "radio-near-axis",
+      "gpuId": 103,
+      "kind": "axis",
+      "r": 1.6,
+      "phi": 3.246291,
+      "patchRadius": 0.04,
+      "color": [
+        1,
+        0.3,
+        0.85
+      ],
+      "world": {
+        "x": -0.16721147490143665,
+        "y": 0,
+        "z": -1.5912386127357792
+      },
+      "reference": [
+        {
+          "crossingIndex": 1,
+          "screenRegion": "upper",
+          "x": 640,
+          "y": 210.8
+        },
+        {
+          "crossingIndex": 2,
+          "screenRegion": "lower",
+          "x": 640,
+          "y": 505.4
+        }
+      ]
+    },
+    {
+      "businessId": "radio-weak-field",
+      "gpuId": 104,
+      "kind": "weak",
+      "r": 4.2,
+      "phi": 1.604698,
+      "patchRadius": 0.04,
+      "color": [
+        0.45,
+        1,
+        0.45
+      ],
+      "world": {
+        "x": 4.19758665191959,
+        "y": 0,
+        "z": -0.14235975423725522
+      },
+      "reference": [
+        {
+          "crossingIndex": 1,
+          "screenRegion": "right",
+          "x": 1178,
+          "y": 361.83
+        }
+      ]
+    }
+  ]
+}

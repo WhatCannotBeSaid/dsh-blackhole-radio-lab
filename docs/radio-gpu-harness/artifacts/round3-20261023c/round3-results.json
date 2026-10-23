@@ -1,0 +1,763 @@
+{
+ "runDir": "C:/Yu/dsh-blackhole-radio-lab/docs/radio-gpu-harness/artifacts/round3-20261023c",
+ "phases": {
+  "round3": {
+   "checks": [
+    {
+     "name": "radio-far-side: emitter adds linear light",
+     "ok": false,
+     "detail": "max|Δlinear|=0.0000"
+    },
+    {
+     "name": "radio-far-side: colour survives tone mapping",
+     "ok": false,
+     "detail": "on=[0.418,0.390,0.381] off=[0.418,0.390,0.381]"
+    },
+    {
+     "name": "radio-near-axis: emitter adds linear light",
+     "ok": true,
+     "detail": "max|Δlinear|=0.0517"
+    },
+    {
+     "name": "radio-near-axis: colour survives tone mapping",
+     "ok": true,
+     "detail": "on=[0.638,0.601,0.627] off=[0.575,0.558,0.569]"
+    },
+    {
+     "name": "radio-near-side: emitter adds linear light",
+     "ok": false,
+     "detail": "max|Δlinear|=0.0000"
+    },
+    {
+     "name": "radio-near-side: colour survives tone mapping",
+     "ok": false,
+     "detail": "on=[0.213,0.166,0.124] off=[0.213,0.166,0.124]"
+    },
+    {
+     "name": "control pixel is unaffected by emitters",
+     "ok": true,
+     "detail": "max|Δ|=0.00e+0"
+    },
+    {
+     "name": "camera move bumps the frame version",
+     "ok": true,
+     "detail": "2 -> 3"
+    },
+    {
+     "name": "pick reports a live frame version",
+     "ok": true,
+     "detail": "frameVersion=3 (live 3)"
+    },
+    {
+     "name": "resize keeps anchors inside the new box",
+     "ok": true,
+     "detail": "7 anchors, 0 outside"
+    },
+    {
+     "name": "hit test follows the resized canvas",
+     "ok": true,
+     "detail": "radio-far-side at 288.5,254.5"
+    }
+   ],
+   "colour": [
+    {
+     "businessId": "radio-far-side",
+     "crossingIndex": 1,
+     "pixels": [
+      384,
+      339.5
+     ],
+     "linearOn": [
+      0.1188,
+      0.10571,
+      0.10182
+     ],
+     "linearOff": [
+      0.1188,
+      0.10571,
+      0.10182
+     ],
+     "displayOn": [
+      0.4181,
+      0.3899,
+      0.3811
+     ],
+     "displayOff": [
+      0.4181,
+      0.3899,
+      0.3811
+     ]
+    },
+    {
+     "businessId": "radio-near-axis",
+     "crossingIndex": 1,
+     "pixels": [
+      570.5,
+      221.5
+     ],
+     "linearOn": [
+      0.25596,
+      0.22146,
+      0.24567
+     ],
+     "linearOff": [
+      0.20427,
+      0.19134,
+      0.19943
+     ],
+     "displayOn": [
+      0.6378,
+      0.6009,
+      0.6271
+     ],
+     "displayOff": [
+      0.5749,
+      0.5579,
+      0.5686
+     ]
+    },
+    {
+     "businessId": "radio-near-side",
+     "crossingIndex": 1,
+     "pixels": [
+      850,
+      376.5
+     ],
+     "linearOn": [
+      0.04994,
+      0.03593,
+      0.02515
+     ],
+     "linearOff": [
+      0.04994,
+      0.03593,
+      0.02515
+     ],
+     "displayOn": [
+      0.2134,
+      0.166,
+      0.1242
+     ],
+     "displayOff": [
+      0.2134,
+      0.166,
+      0.1242
+     ]
+    }
+   ],
+   "notes": [
+    {
+     "pickBeforeReset": {
+      "businessId": "radio-far-side",
+      "frameVersion": 2
+     },
+     "pickAfterReset": {
+      "businessId": "radio-far-side",
+      "frameVersion": 3
+     }
+    }
+   ],
+   "failures": 4,
+   "elapsedMs": 1133,
+   "passed": 7,
+   "total": 11
+  },
+  "on": {
+   "framing": {
+    "x": 0.8560000000000001,
+    "y": 0.40099999999999963,
+    "z": 8.146000000000003
+   },
+   "meta": {
+    "renderer": {
+     "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+     "shadingLanguage": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+     "renderer": "WebKit WebGL",
+     "vendor": "WebKit",
+     "maxTexture": 16384,
+     "drawingBuffer": [
+      1280,
+      720
+     ],
+     "dpr": 1
+    },
+    "tables": {
+     "hardwareFilter": true,
+     "filterMode": "hardware-bilinear",
+     "revision": "e72b3f293409893a6fa25528b29572c96fc57f57"
+    },
+    "timing": null,
+    "elapsedMs": 1436,
+    "checks": 63,
+    "failures": 18,
+    "nodesSeen": 1
+   },
+   "checks": [
+    {
+     "name": "expected.json present",
+     "ok": true,
+     "detail": "69 CPU checks"
+    },
+    {
+     "name": "no GL error after 8 frames",
+     "ok": true,
+     "detail": "getError()=0"
+    },
+    {
+     "name": "anchor scan produced anchors",
+     "ok": true,
+     "detail": "7 anchors"
+    },
+    {
+     "name": "radio-near-side: anchor count",
+     "ok": true,
+     "detail": "got 1, expected 1"
+    },
+    {
+     "name": "radio-near-side: crossing 1 position",
+     "ok": true,
+     "detail": "d=1.15 px (dx=-1.10, dy=-0.34) size=8.0x1.0 px"
+    },
+    {
+     "name": "radio-near-side: crossing 1 is a strip, not a blob",
+     "ok": true,
+     "detail": "w=8.00 h=1.00"
+    },
+    {
+     "name": "radio-near-side: crossing 1 reports a table slot",
+     "ok": true,
+     "detail": "slot=1"
+    },
+    {
+     "name": "radio-far-side: anchor count",
+     "ok": true,
+     "detail": "got 1, expected 1"
+    },
+    {
+     "name": "radio-far-side: crossing 1 position",
+     "ok": true,
+     "detail": "d=0.09 px (dx=-0.01, dy=-0.09) size=4.0x1.0 px"
+    },
+    {
+     "name": "radio-far-side: crossing 1 is a strip, not a blob",
+     "ok": true,
+     "detail": "w=4.00 h=1.00"
+    },
+    {
+     "name": "radio-far-side: crossing 1 reports a table slot",
+     "ok": true,
+     "detail": "slot=2"
+    },
+    {
+     "name": "radio-near-axis: anchor count",
+     "ok": false,
+     "detail": "got 5, expected 2"
+    },
+    {
+     "name": "radio-near-axis: crossing 1 position",
+     "ok": false,
+     "detail": "d=70.32 px (dx=-69.50, dy=10.70) size=1.0x1.0 px"
+    },
+    {
+     "name": "radio-near-axis: crossing 1 is a strip, not a blob",
+     "ok": false,
+     "detail": "w=1.00 h=1.00"
+    },
+    {
+     "name": "radio-near-axis: crossing 1 reports a table slot",
+     "ok": true,
+     "detail": "slot=2"
+    },
+    {
+     "name": "radio-near-axis: crossing 2 position",
+     "ok": false,
+     "detail": "d=68.37 px (dx=-67.50, dy=-10.90) size=1.0x1.0 px"
+    },
+    {
+     "name": "radio-near-axis: crossing 2 is a strip, not a blob",
+     "ok": false,
+     "detail": "w=1.00 h=1.00"
+    },
+    {
+     "name": "radio-near-axis: crossing 2 reports a table slot",
+     "ok": true,
+     "detail": "slot=2"
+    },
+    {
+     "name": "radio-weak-field: anchor count",
+     "ok": false,
+     "detail": "got 0, expected 1"
+    },
+    {
+     "name": "radio-weak-field: crossing 1 present",
+     "ok": false,
+     "detail": null
+    },
+    {
+     "name": "id sweep finds exactly the fixture ids",
+     "ok": false,
+     "detail": "present=[101,103] expected=[101,102,103,104]"
+    },
+    {
+     "name": "near-axis crossings are 1 and 2",
+     "ok": false,
+     "detail": "crossings=[1,1,2,2,2] slots=[2,2,2,2,2]"
+    },
+    {
+     "name": "both near-axis anchors carry one business id",
+     "ok": false,
+     "detail": "radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103 + radio-near-axis/103"
+    },
+    {
+     "name": "source 0 isolates to its own id",
+     "ok": true,
+     "detail": "ids=[101]"
+    },
+    {
+     "name": "source 1 isolates to its own id",
+     "ok": true,
+     "detail": "ids=[102]"
+    },
+    {
+     "name": "source 2 isolates to its own id",
+     "ok": true,
+     "detail": "ids=[103]"
+    },
+    {
+     "name": "source 3 isolates to its own id",
+     "ok": false,
+     "detail": "ids=[]"
+    },
+    {
+     "name": "shadow centre carries no fixture id",
+     "ok": true,
+     "detail": "id=0"
+    },
+    {
+     "name": "shadow centre has no fixture radiance",
+     "ok": true,
+     "detail": "lum=0"
+    },
+    {
+     "name": "radio-far-side: click on branch 1 returns that source",
+     "ok": true,
+     "detail": "radio-far-side/branch 1"
+    },
+    {
+     "name": "radio-near-axis: click on branch 1 returns that source",
+     "ok": true,
+     "detail": "radio-near-axis/branch 1"
+    },
+    {
+     "name": "radio-near-axis: click on branch 1 returns that source",
+     "ok": true,
+     "detail": "radio-near-axis/branch 1"
+    },
+    {
+     "name": "radio-near-axis: click on branch 2 returns that source",
+     "ok": true,
+     "detail": "radio-near-axis/branch 2"
+    },
+    {
+     "name": "radio-near-axis: click on branch 2 returns that source",
+     "ok": true,
+     "detail": "radio-near-axis/branch 2"
+    },
+    {
+     "name": "radio-near-axis: click on branch 2 returns that source",
+     "ok": true,
+     "detail": "radio-near-axis/branch 2"
+    },
+    {
+     "name": "radio-near-side: click on branch 1 returns that source",
+     "ok": true,
+     "detail": "radio-near-side/branch 1"
+    },
+    {
+     "name": "radio-far-side: +1 px along the strip still hits",
+     "ok": true,
+     "detail": "radio-far-side/branch 1"
+    },
+    {
+     "name": "radio-far-side: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: +1 px along the strip still hits",
+     "ok": false,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: +1 px along the strip still hits",
+     "ok": false,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: +1 px along the strip still hits",
+     "ok": false,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: +1 px along the strip still hits",
+     "ok": false,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: +1 px along the strip still hits",
+     "ok": false,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-axis: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "radio-near-side: +1 px along the strip still hits",
+     "ok": true,
+     "detail": "radio-near-side/branch 1"
+    },
+    {
+     "name": "radio-near-side: 9 px off the strip is empty",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "shadow centre click is not a fixture",
+     "ok": true,
+     "detail": "null"
+    },
+    {
+     "name": "select() records the branch",
+     "ok": true,
+     "detail": "{\"businessId\":\"radio-near-axis\",\"branch\":2}"
+    },
+    {
+     "name": "clear() drops the selection",
+     "ok": true,
+     "detail": null
+    },
+    {
+     "name": "reset framing lands on the same anchors",
+     "ok": false,
+     "detail": "7 anchors after reset"
+    },
+    {
+     "name": "anchors survive a 960x540 viewport",
+     "ok": false,
+     "detail": "7 anchors at 960x540"
+    },
+    {
+     "name": "default page has no fixture overlay",
+     "ok": true,
+     "detail": null
+    },
+    {
+     "name": "default page reports radio disabled",
+     "ok": true,
+     "detail": null
+    },
+    {
+     "name": "dispose marks the ray tables disposed",
+     "ok": true,
+     "detail": "disposed=true"
+    },
+    {
+     "name": "second dispose is harmless",
+     "ok": true,
+     "detail": null
+    },
+    {
+     "name": "disposing the plain stage leaves the fixture stage alone",
+     "ok": true,
+     "detail": null
+    },
+    {
+     "name": "both ray tables upload to the GPU",
+     "ok": true,
+     "detail": "new textures=2 alive=[true,true]"
+    },
+    {
+     "name": "table textures released by dispose()",
+     "ok": true,
+     "detail": "alive=[false,false]"
+    },
+    {
+     "name": "dispose() is idempotent",
+     "ok": true,
+     "detail": null
+    }
+   ],
+   "anchors": [
+    {
+     "businessId": "radio-far-side",
+     "gpuId": 102,
+     "kind": "far",
+     "label": "Far side",
+     "branch": 1,
+     "slot": 2,
+     "frameX": 384,
+     "frameY": 380.5,
+     "x": 384,
+     "y": 339.5,
+     "pixels": 4,
+     "widthPx": 4,
+     "heightPx": 1
+    },
+    {
+     "businessId": "radio-near-axis",
+     "gpuId": 103,
+     "kind": "axis",
+     "label": "Near axis",
+     "branch": 1,
+     "slot": 2,
+     "frameX": 570.5,
+     "frameY": 498.5,
+     "x": 570.5,
+     "y": 221.5,
+     "pixels": 1,
+     "widthPx": 1,
+     "heightPx": 1
+    },
+    {
+     "businessId": "radio-near-axis",
+     "gpuId": 103,
+     "kind": "axis",
+     "label": "Near axis",
+     "branch": 1,
+     "slot": 2,
+     "frameX": 709.5,
+     "frameY": 498.5,
+     "x": 709.5,
+     "y": 221.5,
+     "pixels": 1,
+     "widthPx": 1,
+     "heightPx": 1
+    },
+    {
+     "businessId": "radio-near-axis",
+     "gpuId": 103,
+     "kind": "axis",
+     "label": "Near axis",
+     "branch": 2,
+     "slot": 2,
+     "frameX": 572.5,
+     "frameY": 225.5,
+     "x": 572.5,
+     "y": 494.5,
+     "pixels": 1,
+     "widthPx": 1,
+     "heightPx": 1
+    },
+    {
+     "businessId": "radio-near-axis",
+     "gpuId": 103,
+     "kind": "axis",
+     "label": "Near axis",
+     "branch": 2,
+     "slot": 2,
+     "frameX": 707.5,
+     "frameY": 225.5,
+     "x": 707.5,
+     "y": 494.5,
+     "pixels": 1,
+     "widthPx": 1,
+     "heightPx": 1
+    },
+    {
+     "businessId": "radio-near-axis",
+     "gpuId": 103,
+     "kind": "axis",
+     "label": "Near axis",
+     "branch": 2,
+     "slot": 2,
+     "frameX": 638.5,
+     "frameY": 247.5,
+     "x": 638.5,
+     "y": 472.5,
+     "pixels": 1,
+     "widthPx": 1,
+     "heightPx": 1
+    },
+    {
+     "businessId": "radio-near-side",
+     "gpuId": 101,
+     "kind": "near",
+     "label": "Near side",
+     "branch": 1,
+     "slot": 1,
+     "frameX": 850,
+     "frameY": 343.5,
+     "x": 850,
+     "y": 376.5,
+     "pixels": 8,
+     "widthPx": 8,
+     "heightPx": 1
+    }
+   ]
+  },
+  "teardown": {
+   "checks": [
+    {
+     "name": "dispose marks the ray tables disposed",
+     "ok": true,
+     "detail": "disposed=true"
+    },
+    {
+     "name": "second dispose is harmless",
+     "ok": true,
+     "detail": null
+    },
+    {
+     "name": "table textures released by dispose()",
+     "ok": true,
+     "detail": "alive=[false,false]"
+    },
+    {
+     "name": "dispose() is idempotent",
+     "ok": true,
+     "detail": null
+    }
+   ]
+  },
+  "off": {
+   "framing": {
+    "x": 0.8560000000000001,
+    "y": 0.40099999999999963,
+    "z": 8.146000000000003
+   },
+   "overlayNodes": 0
+  },
+  "dpr2": {
+   "pixelRatioCap": 2,
+   "devicePixelRatio": 2,
+   "rendererPixelRatio": 2,
+   "drawingBuffer": [
+    2560,
+    1440
+   ],
+   "expected": [
+    2560,
+    1440
+   ],
+   "checks": [
+    {
+     "name": "drawing buffer follows DPR (cap 2)",
+     "ok": true,
+     "detail": "2560x1440 vs 2560x1440"
+    },
+    {
+     "name": "CSS anchors stay pickable at DPR 2 (cap 2)",
+     "ok": true,
+     "detail": "6/6 anchors picked"
+    }
+   ],
+   "anchors": [
+    {
+     "id": "radio-far-side",
+     "crossing": 1,
+     "x": 384,
+     "y": 340
+    },
+    {
+     "id": "radio-far-side",
+     "crossing": 2,
+     "x": 791,
+     "y": 372
+    },
+    {
+     "id": "radio-near-axis",
+     "crossing": 1,
+     "x": 648,
+     "y": 248
+    },
+    {
+     "id": "radio-near-side",
+     "crossing": 1,
+     "x": 851,
+     "y": 377
+    },
+    {
+     "id": "radio-near-side",
+     "crossing": 2,
+     "x": 753,
+     "y": 369
+    },
+    {
+     "id": "radio-weak-field",
+     "crossing": 1,
+     "x": 1177,
+     "y": 362
+    }
+   ]
+  },
+  "dpr15": {
+   "pixelRatioCap": 2,
+   "devicePixelRatio": 1.5,
+   "rendererPixelRatio": 1.5,
+   "drawingBuffer": [
+    1920,
+    1080
+   ],
+   "expected": [
+    1920,
+    1080
+   ],
+   "checks": [
+    {
+     "name": "drawing buffer follows DPR (cap 2)",
+     "ok": true,
+     "detail": "1920x1080 vs 1920x1080"
+    },
+    {
+     "name": "CSS anchors stay pickable at DPR 1.5 (cap 2)",
+     "ok": true,
+     "detail": "3/3 anchors picked"
+    }
+   ],
+   "anchors": [
+    {
+     "id": "radio-far-side",
+     "crossing": 1,
+     "x": 384,
+     "y": 340
+    },
+    {
+     "id": "radio-near-side",
+     "crossing": 1,
+     "x": 852,
+     "y": 377
+    },
+    {
+     "id": "radio-weak-field",
+     "crossing": 1,
+     "x": 1176,
+     "y": 362
+    }
+   ]
+  }
+ },
+ "startedAt": "2026-10-23T04:42:22.630Z",
+ "finishedAt": "2026-10-23T04:42:30.466Z"
+}

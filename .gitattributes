@@ -1,0 +1,18 @@
+# 统一换行：仓库内以 LF 存储与检出，避免 Windows 上 CRLF 反复改动
+* text=auto eol=lf
+
+# 二进制资源不做换行与合并处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+*.glb binary
+*.zip binary
+
+# 生成产物：合并时按当前分支保留，不参与文本合并
+client.stage.js -diff
+client.radio.js -diff
+src/scene/ray-tables.data.js -diff

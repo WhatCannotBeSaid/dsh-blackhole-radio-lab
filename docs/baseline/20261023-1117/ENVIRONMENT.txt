@@ -1,0 +1,9 @@
+captured_at: 2026-10-23 11:19:24 +0800
+project: C:\Yu\dsh-blackhole-radio-lab
+project_realpath: /c/Yu/dsh-blackhole-radio-lab
+node: v24.19.0
+npm: 11.17.0
+os: MINGW64_NT-10.0-26200 3.6.10-5a1665c8.x86_64 x86_64 Msys
+git: none (not a repository; verified with git rev-parse)
+node_modules: present, excluded from copy and manifest
+excluded_from_copy: ./node_modules, ./docs/baseline

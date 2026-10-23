@@ -1,0 +1,13 @@
+captured_at: 2026-10-23 11:27:26 +0800
+project: /c/Yu/dsh-blackhole-radio-lab
+command: node tools/validate-imaging.mjs
+exit_code: 0
+duration_ms: 718
+node: v24.19.0
+npm: 11.17.0
+os: MINGW64_NT-10.0-26200 3.6.10-5a1665c8.x86_64 x86_64
+log_sha256: de6e4f310ce9c571ac98ca8e31940dc7cf4cf8e7a583c7bf97f1495afbf611fb
+log_lines: 304
+git: none (not a repository)
+gpu_probe: not run (no browser/WebGL probe in this entry)
+source_drift: 0 of 57 files differ from 20261023-1117
