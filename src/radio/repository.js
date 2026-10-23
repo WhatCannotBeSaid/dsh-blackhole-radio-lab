@@ -43,6 +43,7 @@ import { generateCatalog, normalizeCatalogOptions, categoryText } from './statio
 import { assignPositions } from './distribution.js';
 import { CATEGORIES } from './taxonomy.js';
 import { mapStations, streamUrlFor, MAPPING } from './radio-browser.js';
+import { attachGenre, summarizeGenres, displayGenreId, genreLabel, GENRES, GENRE_IDS } from './genres.js';
 
 /**
  * Radio Browser mirrors are round-robin DNS names, not fixed hosts: a mirror
@@ -338,9 +339,11 @@ function buildRepository({ stations, catalog, layout, extra }) {
   for (let index = 0; index < stations.length; index += 1) {
     const station = stations[index];
     byId.set(station.id, station);
+    const genre = attachGenre(station);
     const categoryWords = (station.categories || [])
       .map((id) => `${categoryText(id, 'zh')} ${categoryText(id, 'en')}`)
       .join(' ');
+    const genreWords = `${genreLabel(genre, 'zh')} ${genreLabel(genre, 'en')} ${genre}`;
     const tags = station.metadata && Array.isArray(station.metadata.tags) ? station.metadata.tags.join(' ') : '';
     haystacks[index] = [
       station.name,
@@ -349,6 +352,7 @@ function buildRepository({ stations, catalog, layout, extra }) {
       station.language.zh,
       station.language.en,
       categoryWords,
+      genreWords,
       tags,
     ]
       .join(' ')
@@ -356,6 +360,11 @@ function buildRepository({ stations, catalog, layout, extra }) {
     countries.add(station.country.en);
     languages.add(station.language.en);
   }
+
+  // Genre counts and the display grouping are derived once, from the stations
+  // that actually loaded. Every caller sees the same numbers.
+  const genreSummary = summarizeGenres(stations);
+  const groupOf = (id) => displayGenreId(id, genreSummary.merged);
 
   /**
    * Ranked local search. Substring matching, all query tokens must hit; name
@@ -418,6 +427,42 @@ function buildRepository({ stations, catalog, layout, extra }) {
     anchors() {
       return layout.anchors;
     },
+    /**
+     * The genre layer, as it applies to this sample.
+     *
+     * `definitions` is the fixed thirteen and never changes with the data.
+     * Everything else describes the stations that actually loaded: `raw` counts
+     * per genre, `visible` the display groups that may become nebulae, `merged`
+     * the genres too small to show on their own, `hidden` the empty ones.
+     * It is a statement about this sample, not about the Radio Browser
+     * database, and the panel says so.
+     */
+    genres() {
+      return { definitions: GENRES, ...genreSummary };
+    },
+    /** Genres per display group, ready for a nebula's size. */
+    visibleGenres() {
+      return genreSummary.visible;
+    },
+    /** `{ genreId: count }` for the thirteen raw genres. */
+    genreCounts() {
+      return Object.fromEntries(genreSummary.raw.map((entry) => [entry.id, entry.count]));
+    },
+    /**
+     * Stations of one genre, in catalogue order.
+     *
+     * `display` (default true) resolves the id the way the nebula space shows
+     * it, so a genre folded into Other resolves to Other's group and Other
+     * includes everything merged into it. `display: false` answers for the raw
+     * genre, so a station that was merged stays reachable both ways.
+     */
+    listByGenre(id, options) {
+      const key = String(id);
+      if (!GENRE_IDS.includes(key)) return [];
+      const display = !options || options.display !== false;
+      if (!display) return stations.filter((station) => (station.genre || 'other') === key);
+      return stations.filter((station) => groupOf(station.genre || 'other') === key);
+    },
     stats() {
       return {
         total: stations.length,
@@ -425,6 +470,9 @@ function buildRepository({ stations, catalog, layout, extra }) {
         countries: countries.size,
         languages: languages.size,
         categories: catalog.categories.length,
+        genres: genreSummary.raw.length,
+        genreVisible: genreSummary.visible.length,
+        genreMerged: genreSummary.merged.length,
         seed: extra.seed,
         source: extra.source,
         demo: extra.source === 'mock',

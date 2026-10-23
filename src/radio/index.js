@@ -11,6 +11,8 @@
  *   createMockRadioRepository(options)   → synchronous, offline, deterministic
  *   createRadioRepository(options)       → async; real data, mock on failure
  *   createRepositoryFromRows(rows, opts) → pure mapping, for tests and caches
+ * Phase 6 adds the genre layer beside the taxonomy: the eight buckets stay the
+ * artwork's vocabulary, the thirteen genres are the nebula space's.
  */
 
 export {
@@ -22,4 +24,22 @@ export {
   RADIO_BROWSER_DEFAULTS,
 } from './repository.js';
 export { CATEGORIES, categoryById, categoryCss, categoryLabel } from './taxonomy.js';
+export {
+  GENRES,
+  GENRE_IDS,
+  GENRE_RULES,
+  MIN_GENRE_STATIONS,
+  attachGenre,
+  classifyGenre,
+  displayGenreId,
+  genreById,
+  genreCss,
+  genreFor,
+  genreLabel,
+  genreOf,
+  genreRgb,
+  normalizeTag,
+  summarizeGenres,
+  tagsOf,
+} from './genres.js';
 export { mapStation, mapStations, categoriesFor, isStreamUrl, streamUrlFor, MAPPING } from './radio-browser.js';
