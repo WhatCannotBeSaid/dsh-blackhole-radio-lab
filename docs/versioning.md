@@ -16,9 +16,11 @@
 
 | 项 | 值 |
 | --- | --- |
-| 仓库 | `WhatCannotBeSaid/DSH-BlackHole-Radio`（Private） |
-| remote | `origin` → `https://github.com/WhatCannotBeSaid/DSH-BlackHole-Radio.git` |
+| 仓库 | `WhatCannotBeSaid/dsh-blackhole-radio-lab`（Private） |
+| remote | `origin` → `https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab.git` |
 | 主分支 | `main`（单一长驻分支） |
+
+仓库名曾为 `DSH-BlackHole-Radio`，按「一律小写」规则改为 `dsh-blackhole-radio-lab`。GitHub 会保留旧地址的跳转，但本地 remote 已更新，不要再用旧名。
 
 ## 单阶段流程
 
@@ -45,10 +47,23 @@
    | `refactor:` | 代码重构 |
    | `perf:` | 性能优化 |
    | `chore:` | 工程维护 |
+   | `docs:` | 文档与流程 |
 
 6. **同步** —— 确认提交内容、无敏感文件、仓库仍 Private，然后 `git push origin main`，再核对远程 commit 与本地一致。
 
 高风险实验或需要隔离未完成改动时，才开临时分支；合并后删掉。
+
+## 命名一律小写
+
+新建的文件、目录、分支名、tag、仓库名、`package.json` 的 `name`、提交信息里的路径，全部小写连字符。
+
+查文件先 `ls` 确认实际大小写。Windows 大小写不敏感，`Foo.yml` 会被 `foo.yml` 静默盖掉。
+
+例外：引用他人已有的文件名、标识符、仓库名时保留原样，并说明为什么没改成小写。
+
+## 关联技能
+
+同一套流程已固化为技能 `dsh-dev-git-flow`（`<redacted>\.agents\skills\dsh-dev-git-flow\SKILL.md`），含首次初始化、敏感扫描、`.gitignore` 模板、验证矩阵、推送前三查与红线。做开发任务时先加载它。
 
 ## 提交前自检
 
