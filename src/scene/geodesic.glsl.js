@@ -1309,25 +1309,25 @@ void main() {
   // behind it. The composite is the product: coverage scales both the emitted
   // radiance and the occlusion, and the premultiplied rgb is added as is.
   float cover1 = a1 * disc1.a;
-  color = color * (1.0 - cover1) + disc1.rgb * a1;
   float cover0 = a0 * disc0.a;
-  color = color * (1.0 - cover0) + disc0.rgb * a0;
 
-  // ---- radio fixtures: same order, same cover, no second composite ---------
-  // The near crossing is applied last, exactly like the disc, so a far patch is
-  // attenuated by whatever sits in front of it. Radiance adds, occlusion unions;
-  // that one rule covers "patch behind the disc", "patch in front of it" and two
-  // patches on the same crossing without a screen-space overlay anywhere.
-  if (radioCover1 > 0.0) {
-    float merged1 = 1.0 - (1.0 - cover1) * (1.0 - radioCover1);
-    color = color * (1.0 - merged1) + disc1.rgb * a1 + radioPrem1;
-    cover1 = merged1;
-  }
-  if (radioCover0 > 0.0) {
-    float merged0 = 1.0 - (1.0 - cover0) * (1.0 - radioCover0);
-    color = color * (1.0 - merged0) + disc0.rgb * a0 + radioPrem0;
-    cover0 = merged0;
-  }
+  // ---- one composite: radiance adds, occlusion unions ----------------------
+  // At a single crossing the disc and a radio patch are both emitters that also
+  // occlude, so the fraction of anything behind BOTH of them is
+  // (1 - cover) * (1 - radioCover); call it merged. Emitted radiance is added
+  // scaled by its own coverage and is never scaled by the other emitter.
+  //
+  // The far crossing is composited first and the near crossing attenuates it, so
+  // the near merged applies to everything the far crossing emitted. This used to
+  // be a two-step composite: the disc was drawn into color first and the patch
+  // branch then re-added disc.rgb * a, which counted the far disc emission twice
+  // and multiplied the background by both (1 - cover) and (1 - merged). Doing it
+  // once removes both errors and is bit-identical whenever radioCover is zero.
+  float merged1 = 1.0 - (1.0 - cover1) * (1.0 - radioCover1);
+  float merged0 = 1.0 - (1.0 - cover0) * (1.0 - radioCover0);
+  color = backgroundColor * (1.0 - merged1) * (1.0 - merged0)
+    + (disc1.rgb * a1 + radioPrem1) * (1.0 - merged0)
+    + (disc0.rgb * a0 + radioPrem0);
 
   // Visible id: the far patch only counts for what survives the near crossing.
   // The id carries TWO independent labels: the table slot the trace used, and

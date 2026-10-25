@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>收音机卡片 · 左栏承载预演（原型，非 DSH 宿主）</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --pv-bg: #07100f;
+        --pv-panel: #0d1918;
+        --pv-line: #1d3330;
+        --pv-text: #dfeee9;
+        --pv-dim: #7e9b95;
+        --pv-accent: #4fd1b5;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--pv-bg);
+        color: var(--pv-text);
+        font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+
+      .pv-banner {
+        display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline;
+        padding: 10px 18px;
+        border-bottom: 1px solid var(--pv-line);
+        background: #0a1413;
+      }
+      .pv-banner strong { color: var(--pv-accent); font-weight: 600; }
+      .pv-banner span { color: var(--pv-dim); }
+      .pv-banner code { color: #b9d9d1; }
+
+      .pv-toolbar {
+        display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+        padding: 10px 18px;
+        border-bottom: 1px solid var(--pv-line);
+      }
+      .pv-toolbar label { color: var(--pv-dim); }
+      .pv-group { display: flex; gap: 6px; align-items: center; }
+      .pv-group > span { color: var(--pv-dim); }
+
+      button {
+        font: inherit;
+        color: var(--pv-text);
+        background: #122120;
+        border: 1px solid var(--pv-line);
+        border-radius: 6px;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      button:hover { border-color: #2f5a54; }
+      button[aria-pressed="true"] { border-color: var(--pv-accent); color: var(--pv-accent); }
+      button:focus-visible, input:focus-visible { outline: 2px solid var(--pv-accent); outline-offset: 2px; }
+
+      .pv-main { display: grid; grid-template-columns: auto minmax(0, 1fr) 420px; gap: 18px; padding: 18px; align-items: start; }
+
+      /* ── simulated app frame ───────────────────────────────────────────── */
+      #frame {
+        --rail-w: 280px;
+        --frame-h: 860px;
+        display: grid;
+        grid-template-columns: var(--rail-w) minmax(0, 1fr);
+        height: var(--frame-h);
+        border: 1px solid var(--pv-line);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #0a1413;
+      }
+
+      #rail {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        padding: 6px 12px;
+        overflow: hidden;
+        border-right: 1px solid var(--pv-line);
+        background: #0b1716;
+      }
+
+      #top { flex: none; display: flex; flex-direction: column; gap: 6px; padding-bottom: 2px; }
+      .pv-brand { display: flex; align-items: center; justify-content: space-between; height: 30px; }
+      .pv-brand b { font-size: 13px; letter-spacing: 0.02em; }
+      .pv-nav { display: flex; flex-direction: column; gap: 2px; }
+      .pv-nav > div, .pv-new {
+        display: flex; align-items: center; gap: 8px;
+        height: 28px; padding: 0 8px;
+        border-radius: 6px; color: #c8ded8;
+      }
+      .pv-new { background: #10201e; border: 1px solid var(--pv-line); }
+      .pv-nav > div[aria-current="true"] { background: #142825; }
+
+      #region {
+        flex: 1 1 auto;
+        min-height: 160px; /* reserve R — a policy value, see report */
+        overflow: auto;
+        margin-top: 8px;
+        border-top: 1px solid var(--pv-line);
+        border-bottom: 1px solid var(--pv-line);
+        padding: 6px 0;
+      }
+      .pv-region-label { color: var(--pv-dim); font-size: 11px; padding: 2px 8px 4px; }
+      .pv-convo {
+        display: flex; align-items: center; gap: 8px;
+        padding: 5px 8px; border-radius: 6px; color: #cbd9d5; min-width: 0;
+      }
+      .pv-convo span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      /* Card area: the thing under test. No padding of its own; the two gaps
+         are carried by the surrounding margins and counted in the budget. */
+      #cards {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin: 8px 0 6px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+      }
+
+      .pv-other-card {
+        flex: none;
+        display: flex; flex-direction: column; justify-content: center; gap: 2px;
+        min-height: 88px; padding: 10px 12px;
+        border: 1px dashed #2f5a54; border-radius: 12px;
+        background: rgba(47, 90, 84, 0.12);
+        color: var(--pv-dim);
+      }
+      .pv-other-card__title { color: #a9c8c0; font-size: 12px; }
+
+      #actions {
+        flex: none;
+        display: flex; flex-wrap: wrap; gap: 6px;
+        padding: 4px 0 6px;
+      }
+      .pv-action {
+        display: inline-flex; align-items: center; gap: 5px;
+        height: 26px; padding: 0 8px;
+        border: 1px solid var(--pv-line); border-radius: 6px;
+        color: var(--pv-dim); font-size: 12px; white-space: nowrap;
+      }
+
+      #settings { flex: none; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 2px; color: #c3d6d1; }
+      #settings .pv-glyph { font-size: 14px; color: var(--pv-dim); }
+
+      #warn {
+        margin: 0;
+        padding: 8px 10px;
+        border: 1px solid #7a4a2a;
+        border-radius: 8px;
+        background: #241610;
+        color: #f0b48a;
+        font-size: 12px;
+      }
+      .pv-alert { flex: 1 1 100%; }
+
+      .pv-center {
+        display: flex; flex-direction: column; gap: 10px;
+        min-height: 200px; padding: 14px;
+        color: var(--pv-dim);
+      }
+      .pv-center h2 { margin: 0; font-size: 13px; color: #b7d2cb; font-weight: 600; }
+      .pv-center p { margin: 0; max-width: 46ch; }
+
+      .pv-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+      .pv-panel { border: 1px solid var(--pv-line); border-radius: 8px; background: var(--pv-panel); }
+      .pv-panel > h3 {
+        margin: 0; padding: 7px 10px;
+        border-bottom: 1px solid var(--pv-line);
+        font-size: 12px; font-weight: 600; color: #b7d2cb;
+      }
+      .pv-panel > pre, .pv-panel > div { margin: 0; padding: 8px 10px; }
+      pre {
+        max-height: 300px; overflow: auto;
+        font: 11px/1.45 "Cascadia Mono", Consolas, monospace;
+        color: #a8c3bd; white-space: pre-wrap; word-break: break-word;
+      }
+      #log { font-size: 11px; color: var(--pv-dim); white-space: pre-wrap; max-height: 120px; overflow: auto; }
+
+      @media (max-width: 1180px) {
+        .pv-main { grid-template-columns: auto minmax(0, 1fr); }
+        .pv-side { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; }
+        .pv-side .pv-panel { flex: 1 1 340px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="pv-banner">
+      <strong>收音机卡片 · 左栏承载预演</strong>
+      <span>这是独立预览页，<b>不是</b> DSH 宿主内的渲染，也不代表插件已安装或插槽已存在。</span>
+      <span>演示状态，不播放音频。条目数不代表真实目录能力。</span>
+    </header>
+
+    <div class="pv-toolbar">
+      <div class="pv-group"><span>左栏宽度</span><span id="widths"></span></div>
+      <div class="pv-group"><span>窗口高度</span><span id="heights"></span></div>
+      <div class="pv-group">
+        <button type="button" id="cards-toggle" aria-pressed="false">1 张卡片</button>
+        <button type="button" id="other-toggle" aria-pressed="false">隐藏其他插件</button>
+      </div>
+      <div class="pv-group">
+        <label for="reserve">会话列表保留</label>
+        <input type="range" id="reserve" min="0" max="260" step="10" />
+        <span id="reserve-value">160px</span>
+      </div>
+      <div class="pv-group"><button type="button" id="run-checks">运行几何自检</button></div>
+    </div>
+
+    <main class="pv-main">
+      <div id="frame">
+        <aside id="rail" aria-label="模拟左栏">
+          <div id="top">
+            <div class="pv-brand"><b>DeepSeek</b><span aria-hidden="true">⌄</span></div>
+            <div class="pv-new"><span aria-hidden="true">＋</span><span>新会话</span></div>
+            <div class="pv-nav" aria-label="模拟会话导航">
+              <div aria-current="true"><span aria-hidden="true">☰</span><span>会话</span></div>
+              <div><span aria-hidden="true">◇</span><span>面板</span></div>
+            </div>
+          </div>
+
+          <div id="region" aria-label="模拟会话列表">
+            <div class="pv-region-label">最近会话（占位，非真实数据）</div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>左栏卡片落位讨论</span></div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>阶段 0 空间预算补正</span></div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>阶段 02 成像未通过项</span></div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>插槽契约核查</span></div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>多插件共存验收</span></div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>很长的会话标题用来检查省略而不挤压其他区域</span></div>
+            <div class="pv-convo"><span aria-hidden="true">·</span><span>更早的会话条目</span></div>
+          </div>
+
+          <div id="cards" aria-label="卡片区（待提案插槽）"></div>
+
+          <div id="actions" aria-label="其他插件动作区占位">
+            <span class="pv-action">mneme</span>
+            <span class="pv-action">通知</span>
+            <span class="pv-action">表情</span>
+          </div>
+
+          <div id="settings" aria-label="DSH 原有设置入口占位">
+            <span class="pv-glyph" aria-hidden="true">⚙</span><span>DSH 原有设置入口</span>
+          </div>
+        </aside>
+
+        <section class="pv-center">
+          <h2>主区域占位</h2>
+          <p>左栏的卡片区、动作区、设置入口都来自本预览页的模拟容器，不是宿主 <code>SidebarRoot</code> 的真实结构。</p>
+          <p>卡片的非控件区域会记录一次“打开探索页”的意图；本轮不注册、也不打开任何探索页。</p>
+        </section>
+      </div>
+
+      <div class="pv-side">
+        <p id="warn" class="pv-alert" hidden></p>
+        <section class="pv-panel">
+          <h3>预算与尺寸（预览实测）</h3>
+          <pre id="metrics"></pre>
+        </section>
+        <section class="pv-panel">
+          <h3>打开探索页意图记录</h3>
+          <div id="log"></div>
+        </section>
+        <section class="pv-panel">
+          <h3>几何自检 JSON</h3>
+          <pre id="report">点击「运行几何自检」生成。</pre>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./src/preview.js"></script>
+  </body>
+</html>

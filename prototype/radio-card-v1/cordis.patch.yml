@@ -1,0 +1,11 @@
+# Radio card prototype — bundle patch layer.
+#
+# One plain loader entry. The browser half is discovered from this package's
+# `dsh.client` declaration, exactly like the shipped ui-* packages.
+#
+# The card is NOT expected to appear in the current DSH: it registers against
+# the proposed `sidebar.footer.card` seat, which the installed host (0.2.1-rc.3)
+# does not declare. Registration is skipped silently in that case.
+- insert:
+    - id: radio-card-prototype
+      name: '@local/dsh-radio-card-prototype'

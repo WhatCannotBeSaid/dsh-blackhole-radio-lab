@@ -19,9 +19,21 @@
 import { Vector3 } from 'three';
 import { CAMERA_HOME } from './dimensions.js';
 
-/** Absolute rig floors. The active mode's home may narrow these further. */
+/**
+ * Absolute rig floors. The active mode's home may narrow these further.
+ *
+ * The ceiling is the outermost distance any mode is allowed to author, not the
+ * hole's working limit: the hole fits its own ceiling to the viewport on every
+ * resize (it lands near 13 units in a landscape window), the cluster authors
+ * its own, and the nebula space needs ~120 to take in the whole shell. Keeping
+ * the absolute stop generous is what lets each mode own its framing without a
+ * second camera controller.
+ */
 const MIN_RADIUS = 6.0;
-const MAX_RADIUS = 44;
+// The rig ceiling only exists so a mode cannot dolly into numerical fog; the
+// black hole keeps its own much tighter limit. A portrait nebula box needs
+// more room than a landscape one, hence the generous global bound.
+const MAX_RADIUS = 320;
 /** A station close-up may go nearer than the mode's own orbit floor. */
 const FOCUS_MIN_RADIUS = 2.2;
 const MIN_PHI = 0.24;

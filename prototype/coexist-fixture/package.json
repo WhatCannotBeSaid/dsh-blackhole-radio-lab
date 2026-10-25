@@ -1,0 +1,36 @@
+{
+  "name": "@local/footer-coexist-fixture",
+  "version": "0.0.1-fixture.1",
+  "private": true,
+  "description": "Test-only stand-in for an existing compact footer plugin: registers one small button into sidebar.footer.action, so card coexistence can be measured against a second occupant in the real host. Not a shipped plugin.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./dist/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "dist/client.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.3": "compatible"
+      }
+    }
+  }
+}

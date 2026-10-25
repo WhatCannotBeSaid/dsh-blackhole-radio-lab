@@ -407,6 +407,10 @@ window.__ModuleLoader__.load({
             // a gpu id. Absent means the page renders the phase-1 baseline.
             const radioParam = new URLSearchParams(window.location.search).get('bhrlRadio');
             if (radioParam !== null) body.radio = radioParam;
+            // Phase-3 development preview: `?bhrlNebula=1` mounts the stage
+            // straight into the nebula space. Absent means the normal hole.
+            const nebulaParam = new URLSearchParams(window.location.search).get('bhrlNebula');
+            if (nebulaParam !== null) body.nebulaPreview = nebulaParam !== '0';
             if (alive) setCfg(body);
           } catch {
             if (alive) setCfg({ antialias: true, pixelRatioCap: 2, reducedMotion: false, stationCount: 2000, seed: 20261022, featuredCount: 18 });
@@ -442,10 +446,14 @@ window.__ModuleLoader__.load({
           stations: repository.list(),
           seed: repository.seed,
           categories: anchors,
+          // Already-counted visible genres from the repository. The stage never
+          // classifies anything; it only places what it is handed.
+          genres: typeof repository.visibleGenres === 'function' ? repository.visibleGenres() : [],
           language: langRef.current,
           // Phase-2 fixture switch, carried through from the URL. `null` in the
           // default case, so the stage never even creates the overlay.
           radio: cfg.radio === undefined ? null : cfg.radio,
+          nebulaPreview: cfg.nebulaPreview === true,
           onSelect: stageCallbacks.onSelect,
           onMode: stageCallbacks.onMode,
           onCenterClick: stageCallbacks.onCenterClick,

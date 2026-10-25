@@ -13,7 +13,9 @@
  *   - featured and nearby station names, only when the camera is close enough
  *     for a name to mean something;
  *   - the name of a revealed category cloud while a category filter is active,
- *     placed at the cloud's live centroid.
+ *     placed at the cloud's live centroid;
+ *   - in the nebula space, one name per visible genre, with the station count
+ *     only on the hovered or selected volume.
  *
  * Categories have no place names in the default view on purpose: the default
  * view is one continuous accretion structure, and a category legend pinned on
@@ -27,6 +29,7 @@ import { Vector3 } from 'three';
 
 const MAX_STATION_LABELS = 14;
 const MAX_CLOUD_LABELS = 6;
+const MAX_NEBULA_LABELS = 16;
 
 const COLOR_TEXT = 'rgba(234, 226, 216, 0.88)';
 const COLOR_TEXT_DIM = 'rgba(214, 203, 190, 0.58)';
@@ -35,6 +38,8 @@ const COLOR_SHADOW = 'rgba(2, 3, 8, 0.9)';
 const FONT_STATION = '500 11px ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif';
 const FONT_SELECTED = '600 12px ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif';
 const FONT_CLOUD = '600 10px ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif';
+const FONT_NEBULA = '500 11px ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif';
+const FONT_NEBULA_ACTIVE = '600 12px ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif';
 
 export function createLabelOverlay(container) {
   const canvas = document.createElement('canvas');
@@ -97,6 +102,7 @@ export function createLabelOverlay(container) {
     ctx.font = opts.font || FONT_STATION;
     const w = ctx.measureText(text).width;
     if (opts.align === 'center') x -= w / 2;
+    else if (opts.align === 'right') x -= w;
     if (x + w > width - 8 || x < -w || y < 10 || y > height - 6) return false;
     const padX = opts.padX === undefined ? 4 : opts.padX;
     const boxX = x - padX;
@@ -123,9 +129,103 @@ export function createLabelOverlay(container) {
   }
 
   /**
+   * A volume's outline, drawn only while it is hovered or selected. Two passes:
+   * a dark backing so the ring survives the dust glow, then the genre's own
+   * colour at low alpha. Nothing flashes; the ring is always there for exactly
+   * as long as the state is.
+   */
+  function drawNebulaRing(x, y, radius, color, strength) {
+    if (!ctx || radius < 6) return;
+    const r = Math.min(320, radius);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(3, 5, 10, 0.55)';
+    ctx.lineWidth = 3.4;
+    ctx.globalAlpha = 0.85 * strength;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.3;
+    ctx.globalAlpha = 0.9 * strength;
+    ctx.stroke();
+    // Four ticks, the same reticle language the selected station uses.
+    ctx.beginPath();
+    ctx.moveTo(x - r - 5, y);
+    ctx.lineTo(x - r + 2, y);
+    ctx.moveTo(x + r - 2, y);
+    ctx.lineTo(x + r + 5, y);
+    ctx.moveTo(x, y - r - 5);
+    ctx.lineTo(x, y - r + 2);
+    ctx.moveTo(x, y + r - 2);
+    ctx.lineTo(x, y + r + 5);
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.7 * strength;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Nebula labels: one line per visible genre.
+   *
+   * The name is always there, because in this space the name IS the object. The
+   * count joins it only on the hovered or selected volume, so the default sky
+   * stays quiet. Placement goes below the volume first and above it second;
+   * the normal collision rules then decide whether it fits at all.
+   */
+  function drawNebulae(nebulae, camera) {
+    let drawn = 0;
+    for (const nebula of nebulae) {
+      if (drawn >= MAX_NEBULA_LABELS) break;
+      if (!nebula || !nebula.position) continue;
+      const p = project(nebula.position, camera);
+      if (!p) continue;
+      // Dust is translucent, so a volume behind another one is still visible:
+      // an occluded name is dimmed, never dropped. The box test below is what
+      // actually prevents two names from colliding.
+
+      const active = Boolean(nebula.hovered || nebula.selected);
+      const radius = Math.max(8, Math.min(340, Number(nebula.radiusPx) || 0));
+      if (active) drawNebulaRing(p.x, p.y, radius * 0.92, nebula.color || COLOR_ACCENT, 1);
+
+      const text = active && nebula.count ? `${nebula.label}  ·  ${nebula.count}` : nebula.label;
+      const gap = Math.min(220, radius) * 0.92 + 14;
+      const base = {
+        font: active ? FONT_NEBULA_ACTIVE : FONT_NEBULA,
+        color: active ? nebula.color || COLOR_ACCENT : COLOR_TEXT,
+        alpha: active ? 1 : nebula.occluded ? 0.46 : 0.74,
+        padX: 4,
+        force: Boolean(nebula.selected),
+      };
+      // Four placements, in reading order: below, above, right, left. One fixed
+      // offset made the middle volumes lose their names whenever two of them
+      // happened to line up.
+      const spots = [
+        { x: p.x, y: p.y + gap, align: 'center' },
+        { x: p.x, y: p.y - gap + 4, align: 'center' },
+        { x: p.x + radius * 0.92 + 10, y: p.y + 4, align: 'left' },
+        { x: p.x - radius * 0.92 - 10, y: p.y + 4, align: 'right' },
+        { x: p.x + radius * 0.66, y: p.y + gap * 0.82, align: 'left' },
+        { x: p.x - radius * 0.66, y: p.y + gap * 0.82, align: 'right' },
+        { x: p.x + radius * 0.66, y: p.y - gap * 0.72, align: 'left' },
+        { x: p.x - radius * 0.66, y: p.y - gap * 0.72, align: 'right' },
+      ];
+      let placed = false;
+      for (const spot of spots) {
+        if (drawLabel(text, spot.x, spot.y, { ...base, align: spot.align })) {
+          placed = true;
+          break;
+        }
+      }
+      if (placed) drawn += 1;
+    }
+  }
+
+  /**
    * Redraw the overlay for the current camera.
    * @param frame - { camera, lod, stations, selectedIndex, hole,
-   *   visibilityAt(index), positionAt(index), clouds, cloudStrength }
+   *   visibilityAt(index), positionAt(index), clouds, cloudStrength, nebulae }
    */
   function draw(frame) {
     if (!ctx || disposed) return;
@@ -137,6 +237,7 @@ export function createLabelOverlay(container) {
 
     const camera = frame.camera;
     hole = frame.hole || null;
+    const nebulae = Array.isArray(frame.nebulae) ? frame.nebulae : [];
     const lod = Math.min(1, Math.max(0, frame.lod || 0));
     const stations = frame.stations || [];
     const selectedIndex = typeof frame.selectedIndex === 'number' ? frame.selectedIndex : -1;
@@ -265,6 +366,11 @@ export function createLabelOverlay(container) {
         }
       }
     }
+    // 4. the nebula space: every visible genre names itself. This runs last so
+    // a genre name is never displaced by a station label, but the collision
+    // boxes it registers still protect it from the next frame's stations.
+    if (nebulae.length) drawNebulae(nebulae, camera);
+
     ctx.shadowBlur = 0;
   }
 

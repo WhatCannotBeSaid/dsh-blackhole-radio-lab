@@ -1,0 +1,4 @@
+# Coexistence fixture — bundle patch layer (test only).
+- insert:
+    - id: footer-coexist-fixture
+      name: '@local/footer-coexist-fixture'

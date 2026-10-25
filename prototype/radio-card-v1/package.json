@@ -1,0 +1,55 @@
+{
+  "name": "@local/dsh-radio-card-prototype",
+  "version": "0.0.1-prototype.1",
+  "private": true,
+  "description": "Radio card prototype: a single left-rail card with demo-only interactions, plus an isolated preview. No audio, no exploration page, no host changes.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./dist/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "dist/client.js",
+    "cordis.patch.yml",
+    "src",
+    "build.mjs",
+    "preview.html",
+    "serve.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "preview": "node serve.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "radio",
+    "prototype"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.3": "compatible"
+      }
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
