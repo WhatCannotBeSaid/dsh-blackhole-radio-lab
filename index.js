@@ -15,13 +15,15 @@
  *      cannot: the stream is cross-origin, sends no CORS headers and never
  *      ends. `src/host/now-playing.js` owns that read; this file only routes it.
  *
- * Nothing here renders, streams audio, or proxies Radio Browser — the
- * now-playing route opens a stream just long enough to take one metadata block
- * and hangs up.
+ * Nothing here renders or streams audio: the now-playing route opens a stream
+ * just long enough to take one metadata block and hangs up. The catalogue route
+ * serves a local file, and the weekly refresh rebuilds that file from Radio
+ * Browser in the background — it never proxies the API for a page request.
  */
 
 import { createNowPlayingResolver, parseStreamUrl } from './src/host/now-playing.js';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { CACHE_GZ, scheduleCatalogRefresh } from './src/host/catalog-refresh.js';
+import { readFileSync, statSync } from 'node:fs';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
@@ -35,57 +37,114 @@ export const inject = ['webServer'];
 const PREFIX = '/blackhole-radio-lab';
 
 /**
- * Build-time station snapshot (`npm run build:catalog`).
+ * Station snapshots.
  *
- * The browser half asks for this first and only falls back to the live API when
- * the file is missing — the snapshot is already health-checked, so a fresh
- * install starts with a large working catalogue instead of a few hundred
- * streams that may be dead.
+ * The Host rebuilds the catalogue once a week into `~/.dsh/cache` so users do
+ * not have to wait for a release; the packaged file is the fallback that makes
+ * a fresh install work offline. Only the cache's gzip twin is written, which
+ * keeps the swap to one atomic rename.
  */
 const CATALOG_PATH = fileURLToPath(new URL('./data/catalog.v1.json', import.meta.url));
 /** The gzip twin written by the same build, so the route never recompresses. */
 const CATALOG_GZ_PATH = fileURLToPath(new URL('./data/catalog.v1.json.gz', import.meta.url));
 
-/** Parsed snapshot cache, keyed by the mtime + size of both twins. */
-let catalogCache = { key: '', json: '', gz: null, builtAt: '' };
+/** Snapshots older than this are ignored in favour of the other source. */
+const SNAPSHOT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Parsed snapshot cache, keyed by source paths and both files' mtime + size. */
+const snapshotCache = new Map();
 
 /**
- * Read the snapshot, re-gzipping only when the file changed.
+ * Read one snapshot pair, re-gzipping only when a file changed.
  *
- * Both twins take part in the cache key: a build that wrote the JSON but was
+ * Both files take part in the cache key: a build that wrote the JSON but was
  * interrupted before the gzip twin (or a hand-edited JSON) must not keep
- * serving the previous gzip under a fresh etag. When only the gzip ships, the
+ * serving the previous gzip under a fresh etag. When only the gzip exists, the
  * JSON is inflated once and cached alongside it.
  *
+ * @param jsonPath - plain JSON path, or '' when the source only has the gzip
+ * @param gzPath - gzip path, or '' when the source only has the JSON
  * @returns {{json: string, gz: Buffer, builtAt: string}|null}
  */
-function readCatalog() {
+function readSnapshotPair(jsonPath, gzPath) {
   let jsonStat = null;
   let gzStat = null;
   try {
-    jsonStat = statSync(CATALOG_PATH);
+    if (jsonPath) jsonStat = statSync(jsonPath);
   } catch {
     jsonStat = null;
   }
   try {
-    gzStat = statSync(CATALOG_GZ_PATH);
+    if (gzPath) gzStat = statSync(gzPath);
   } catch {
     gzStat = null;
   }
   if (!jsonStat && !gzStat) return null;
-  const key = `${jsonStat ? `${jsonStat.mtimeMs}:${jsonStat.size}` : '-'}|${gzStat ? `${gzStat.mtimeMs}:${gzStat.size}` : '-'}`;
-  if (catalogCache.key === key) return catalogCache;
+  const key =
+    `${jsonPath}|${gzPath}|` +
+    `${jsonStat ? `${jsonStat.mtimeMs}:${jsonStat.size}` : '-'}|` +
+    `${gzStat ? `${gzStat.mtimeMs}:${gzStat.size}` : '-'}`;
+  const cached = snapshotCache.get(key);
+  if (cached) return cached;
   try {
-    let json = jsonStat ? readFileSync(CATALOG_PATH, 'utf8') : '';
-    let gz = gzStat ? readFileSync(CATALOG_GZ_PATH) : null;
+    let json = jsonStat ? readFileSync(jsonPath, 'utf8') : '';
+    let gz = gzStat ? readFileSync(gzPath) : null;
     if (!json && gz) json = gunzipSync(gz).toString('utf8');
     if (!gz) gz = gzipSync(Buffer.from(json, 'utf8'), { level: 9 });
     const parsed = JSON.parse(json);
-    catalogCache = { key, json, gz, builtAt: String((parsed && parsed.builtAt) || '') };
-    return catalogCache;
+    const entry = {
+      json,
+      gz,
+      builtAt: String((parsed && parsed.builtAt) || ''),
+      stationCount: Array.isArray(parsed && parsed.stations) ? parsed.stations.length : 0,
+    };
+    // A rebuild changes the key, so the previous entry is dead weight. Keep a
+    // few entries anyway: one request reads both sources (packaged + cache), and
+    // a single-slot cache would evict one on every request and re-inflate two
+    // multi-megabyte snapshots each time.
+    snapshotCache.set(key, entry);
+    while (snapshotCache.size > 8) {
+      const oldest = snapshotCache.keys().next();
+      if (oldest.done) break;
+      snapshotCache.delete(oldest.value);
+    }
+    return entry;
   } catch {
     return null;
   }
+}
+
+/**
+ * Pick the freshest usable snapshot.
+ *
+ * The user cache wins when it exists and its `builtAt` is under 30 days old; an
+ * ancient cache (a machine that has not run for months) is skipped rather than
+ * served as if it were current, and the packaged snapshot answers instead. If
+ * every source is stale, the newest one still answers — an old catalogue beats
+ * an empty page.
+ *
+ * @returns {{json: string, gz: Buffer, builtAt: string}|null}
+ */
+function readCatalog() {
+  const bundled = readSnapshotPair(CATALOG_PATH, CATALOG_GZ_PATH);
+  const cached = readSnapshotPair('', CACHE_GZ);
+  const fresh = (snapshot) => {
+    if (!snapshot) return false;
+    const builtAt = Date.parse(snapshot.builtAt);
+    return Number.isFinite(builtAt) && Date.now() - builtAt <= SNAPSHOT_MAX_AGE_MS;
+  };
+
+  if (cached && fresh(cached)) {
+    // A refresh on a bad network can produce far fewer healthy stations than
+    // the packaged snapshot. A thin cache must not replace a fuller bundled
+    // catalogue: the next weekly run gets another chance, and in the meantime
+    // the page keeps the larger list.
+    if (bundled && cached.stationCount < bundled.stationCount * 0.5) return bundled;
+    return cached;
+  }
+  if (bundled && fresh(bundled)) return bundled;
+  // Every source is stale: an old catalogue still beats an empty page.
+  return cached || bundled;
 }
 
 /**
@@ -100,6 +159,15 @@ const DEFAULTS = Object.freeze({
   stationCount: 2400,
   seed: 20261022,
   featuredCount: 18,
+  // Weekly self-refresh of the station catalogue into ~/.dsh/cache. The target
+  // matches the packaged snapshot: a refresh must not hand the user a smaller
+  // catalogue than the one they already have.
+  catalogAutoRefresh: true,
+  catalogRefreshDays: 7,
+  catalogTarget: 30000,
+  catalogFetch: 50000,
+  catalogConcurrency: 48,
+  catalogTimeoutMs: 2800,
 });
 
 /**
@@ -133,6 +201,7 @@ export const Config = {
       boolean('antialias');
       boolean('reducedMotion');
       boolean('showHints');
+      boolean('catalogAutoRefresh');
 
       if (input.pixelRatioCap !== undefined) {
         const cap = input.pixelRatioCap;
@@ -155,6 +224,20 @@ export const Config = {
       integer('stationCount', 200, 20000);
       integer('seed', 0, 4294967295);
       integer('featuredCount', 4, 40);
+      integer('catalogRefreshDays', 1, 90);
+      integer('catalogTarget', 1000, 60000);
+      integer('catalogFetch', 1000, 60000);
+      integer('catalogConcurrency', 1, 64);
+      integer('catalogTimeoutMs', 500, 15000);
+
+      // The builder silently raises `fetch` to `target`; rejecting the pair here
+      // keeps the configured value equal to the work actually done.
+      if (out.catalogFetch < out.catalogTarget) {
+        issues.push({
+          message: 'catalogFetch must be at least catalogTarget',
+          path: ['catalogFetch'],
+        });
+      }
 
       return issues.length > 0 ? { issues } : { value: out };
     },
@@ -308,7 +391,14 @@ export function apply(ctx, config) {
         res.end();
         return;
       }
-      const gzip = String(req.headers['accept-encoding'] || '').includes('gzip');
+      const accept = String(req.headers['accept-encoding'] || '');
+      const gzip = accept.split(',').some((part) => {
+        const [name, ...params] = part.trim().split(';');
+        if (name.trim().toLowerCase() !== 'gzip') return false;
+        const q = params.find((param) => /^\s*q\s*=/i.test(param));
+        if (!q) return true;
+        return Number(q.split('=')[1]) > 0;
+      });
       const body = gzip ? catalog.gz : Buffer.from(catalog.json, 'utf8');
       try {
         res.writeHead(200, {
@@ -326,6 +416,26 @@ export function apply(ctx, config) {
     },
   });
   if (typeof releaseCatalog === 'function') disposers.push(releaseCatalog);
+
+  // Weekly self-refresh: the packaged snapshot goes stale as stations come and
+  // go, and users should not have to wait for a release. The first check runs
+  // two minutes after start so the page and playback get the machine first; the
+  // schedule then re-checks every six hours and only builds when the cache is
+  // older than `catalogRefreshDays`.
+  if (stage.catalogAutoRefresh) {
+    const refresher = scheduleCatalogRefresh({
+      intervalDays: stage.catalogRefreshDays,
+      target: stage.catalogTarget,
+      fetch: stage.catalogFetch,
+      concurrency: stage.catalogConcurrency,
+      timeoutMs: stage.catalogTimeoutMs,
+      logger: (level, message) => {
+        if (level === 'warn') console.warn(`[blackhole-radio-lab] ${message}`);
+        else console.info(`[blackhole-radio-lab] ${message}`);
+      },
+    });
+    ctx.effect(() => () => refresher.stop(), 'blackhole-radio-lab: catalog refresh');
+  }
 
   // Everything this half acquired is released with the plugin fiber, so
   // disabling or uninstalling the bundle leaves no route and no handler behind.

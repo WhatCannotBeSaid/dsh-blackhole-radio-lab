@@ -90,7 +90,7 @@ window.__ModuleLoader__.load({
      */
     async function fetchCatalogSnapshot(conf) {
       const configured = Number(conf.sourceTimeoutMs);
-      const timeout = Number.isFinite(configured) && configured > 0 ? Math.min(configured, 8000) : 8000;
+      const timeout = Number.isFinite(configured) && configured > 0 ? Math.min(configured, 15000) : 15000;
       try {
         const res = await fetch('/blackhole-radio-lab/catalog', {
           headers: { accept: 'application/json' },

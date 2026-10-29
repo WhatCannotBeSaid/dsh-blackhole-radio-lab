@@ -112,7 +112,7 @@ function normalizeRealOptions(options) {
     Array.isArray(source.hosts) && source.hosts.length > 0
       ? source.hosts.map((host) => String(host).replace(/^https?:\/\//, '').replace(/\/+$/, '')).filter(Boolean)
       : RADIO_BROWSER_HOSTS.slice();
-  const limit = Math.round(clampNumber(source.limit, RADIO_BROWSER_DEFAULTS.limit, 50, 20000));
+  const limit = Math.round(clampNumber(source.limit, RADIO_BROWSER_DEFAULTS.limit, 50, 60000));
   const pageSize = Math.round(clampNumber(source.pageSize, RADIO_BROWSER_DEFAULTS.pageSize, 20, 2000));
   return {
     hosts,

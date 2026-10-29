@@ -78,6 +78,10 @@ window.__ModuleLoader__.load({
 
 参数全部走环境变量：`CATALOG_TARGET`、`CATALOG_FETCH`、`CATALOG_CHECK`、`CATALOG_CHECK_CONCURRENCY`、`CATALOG_CHECK_TIMEOUT`、`CATALOG_COUNTRY_FLOOR`、`CATALOG_GENRE_FLOOR`。探测第三方流需要数分钟到数十分钟，所以不放进 `npm run build`。
 
+**用户侧每周自动刷新。** 发布包里的快照只代表作者构建那一刻，用户不该等新版本才能拿到新电台。Host 半在启动两分钟后检查 `~/.dsh/cache/blackhole-radio-lab/catalog.v1.json.gz`，文件超过 `catalogRefreshDays` 天就在后台跑一次同样的构建（`src/host/catalog-builder.js`，CLI 与 Host 共用），写完用一次 rename 原子替换。`/catalog` 优先返回这份缓存；缓存缺失、超过 30 天，或台数不到包内快照的一半（用户网络差导致健康率低）时，回落到包内快照。刷新失败只记日志，六小时后再试。
+
+默认目标与包内快照一致（30000 台上限、候选 50000），刷新不会把目录变小；探测并发 48、单条超时 2800 ms、单次构建最长 120 分钟，超时或失败只记日志，六小时后再试。后台构建只在 DSH 运行时进行，DSH 没开就不跑。
+
 ## 配置
 
 `cordis.patch.yml` 的条目上可挂 `config`：
@@ -94,6 +98,12 @@ window.__ModuleLoader__.load({
         stationCount: 2400     # 模拟电台数量，200–20000
         seed: 20261022         # 数据与空间分布随机种子
         featuredCount: 18      # 精选电台数量，4–40
+        catalogAutoRefresh: true   # 是否每周在后台刷新目录快照
+        catalogRefreshDays: 7      # 缓存超过多少天算过期，1–90
+        catalogTarget: 30000       # 用户侧快照保留台数，1000–60000
+        catalogFetch: 50000        # 探测前抓取的候选数，1000–60000，须 ≥ catalogTarget
+        catalogConcurrency: 48     # 探测并发，1–64
+        catalogTimeoutMs: 2800     # 单条探测超时，500–15000
 ```
 
 未提供的键回落到 `index.js` 里的 `DEFAULTS`。调试时也可以给面板 URL 加 `?bhrlStations=5000` 临时覆盖数量。
