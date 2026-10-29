@@ -215,6 +215,15 @@ window.__ModuleLoader__.load({
         fcardEmptyName: '未选择电台',
         fcardEmptyHint: '点播放，随机听一台',
         openHoleHint: '点黑洞图标进入黑洞',
+        songOpenAction: '在音乐平台搜索这首歌',
+        platformPickerTitle: '音乐平台',
+        platformPickerHint: '点歌名即在此搜索；右键可改',
+        platformCurrent: '默认',
+        platform_spotify: 'Spotify',
+        platform_netease: '网易云音乐',
+        platform_qq: 'QQ 音乐',
+        platform_apple: 'Apple Music',
+        platform_youtube: 'YouTube',
         genre_jazz: '爵士',
         genre_rock: '摇滚',
         genre_pop: '流行',
@@ -314,6 +323,15 @@ window.__ModuleLoader__.load({
         fcardEmptyName: 'No station selected',
         fcardEmptyHint: 'Press play for a random one',
         openHoleHint: 'Open the hole from the logo',
+        songOpenAction: 'Search this song on a music platform',
+        platformPickerTitle: 'Music platform',
+        platformPickerHint: 'A press searches here; a right-click changes where',
+        platformCurrent: 'Default',
+        platform_spotify: 'Spotify',
+        platform_netease: 'NetEase Cloud Music',
+        platform_qq: 'QQ Music',
+        platform_apple: 'Apple Music',
+        platform_youtube: 'YouTube',
         genre_jazz: 'Jazz',
         genre_rock: 'Rock',
         genre_pop: 'Pop',
@@ -1016,6 +1034,48 @@ window.__ModuleLoader__.load({
      */
     const EMPTY_NOW_PLAYING = { stationId: '', title: '' };
 
+    /**
+     * Where a song name goes when it is pressed.
+     *
+     * A radio title is text and nothing else — no album, no ISRC, no platform
+     * id (`src/host/now-playing.js` reads one ICY block) — so a click cannot
+     * address a track. The most it can honestly do is put the same question to
+     * a platform in that platform's own words, which is why every entry below
+     * is a *search* route and never a track route.
+     */
+    const SONG_PLATFORMS = Object.freeze([
+      { id: 'spotify', href: (q) => `https://open.spotify.com/search/${encodeURIComponent(q)}` },
+      { id: 'netease', href: (q) => `https://music.163.com/#/search/m/?type=1&s=${encodeURIComponent(q)}` },
+      { id: 'qq', href: (q) => `https://y.qq.com/n/ryqq/search?w=${encodeURIComponent(q)}` },
+      { id: 'apple', href: (q) => `https://music.apple.com/search?term=${encodeURIComponent(q)}` },
+      { id: 'youtube', href: (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}` },
+    ]);
+    const DEFAULT_SONG_PLATFORM = 'spotify';
+    const SONG_PLATFORM_KEY = 'bhrl.song-platform';
+
+    const songPlatformOf = (id) =>
+      SONG_PLATFORMS.find((entry) => entry.id === id) ||
+      SONG_PLATFORMS.find((entry) => entry.id === DEFAULT_SONG_PLATFORM);
+
+    /** The chosen platform, or the default when the store has nothing usable. */
+    function readSongPlatform() {
+      try {
+        const stored = String(window.localStorage.getItem(SONG_PLATFORM_KEY) || '');
+        return SONG_PLATFORMS.some((entry) => entry.id === stored) ? stored : DEFAULT_SONG_PLATFORM;
+      } catch {
+        return DEFAULT_SONG_PLATFORM;
+      }
+    }
+
+    function writeSongPlatform(id) {
+      try {
+        window.localStorage.setItem(SONG_PLATFORM_KEY, id);
+      } catch {
+        /* A browser that refuses storage still gets the click; the choice just
+         * does not survive the reload. */
+      }
+    }
+
 
     /* ------------------------------------------------------------------ *
      *  Nothing but the glass itself.
@@ -1426,7 +1486,8 @@ window.__ModuleLoader__.load({
      * station itself, the heart marks the song the stream is publishing — and
      * is dead when there is no song — the middle button plays or pauses the
      * station being shown, and the button to its right plays a random station
-     * from the whole catalogue. Hovering either mark unfolds the list it owns.
+     * from the whole catalogue. A right-click on a mark unfolds the list it
+     * owns, and a right-click on the song line picks the platform it opens in.
      */
     function StationFootCard(props) {
       const { station, shared, t, onOpen, lang } = props;
@@ -1459,21 +1520,26 @@ window.__ModuleLoader__.load({
       // panel is an overlay positioned from the mark's own rectangle, because
       // the sidebar would clip anything drawn inside the card's box.
       const [reveal, setReveal] = useState(null);
+      // Which platform a pressed song name asks. The stored word is only
+      // trusted while it still names a platform this build knows about.
+      const [platformId, setPlatformId] = useState(readSongPlatform);
       // The corner drawing ships in two inks; this is which one to draw.
       const scheme = useColorScheme(shared);
-      const closeTimer = useRef(0);
-      useEffect(
-        () => () => {
-          if (closeTimer.current) clearTimeout(closeTimer.current);
-        },
-        [],
-      );
+      // The line that owns the gesture and the panel it unfolds: a picker
+      // opened by a right-click has to take the focus itself and give it back.
+      const linkRef = useRef(null);
+      const popupRef = useRef(null);
       // An unfolded list is a popup, so it closes the ways a popup does: Escape,
       // or a press anywhere that is not the panel and not one of the two marks.
       useEffect(() => {
         if (!reveal) return undefined;
         const onKey = (event) => {
-          if (event.key === 'Escape') setReveal(null);
+          if (event.key !== 'Escape') return;
+          const wasPicker = reveal.kind === 'platform';
+          setReveal(null);
+          // Escape must not drop the keyboard on the body: the picker was
+          // opened from the song line, so that is where it goes back to.
+          if (wasPicker && linkRef.current) linkRef.current.focus();
         };
         const onPress = (event) => {
           const node = event.target;
@@ -1487,6 +1553,17 @@ window.__ModuleLoader__.load({
           window.removeEventListener('keydown', onKey);
           window.removeEventListener('pointerdown', onPress, true);
         };
+      }, [reveal]);
+
+      // A picker opened by a press has to place the focus itself: the keyboard
+      // lands on the current platform instead of starting again from the top of
+      // the card.
+      useEffect(() => {
+        if (!reveal || reveal.kind !== 'platform') return;
+        const panel = popupRef.current;
+        if (!panel) return;
+        const option = panel.querySelector('.bhrl-favpop__opt.is-on') || panel.querySelector('.bhrl-favpop__opt');
+        if (option) option.focus();
       }, [reveal]);
 
       // Keep a short log of what the audio element has actually played, so
@@ -1713,27 +1790,18 @@ window.__ModuleLoader__.load({
           glyph,
         );
 
-      // The two marks own one list each and sit next to the line they belong
-      // to: the star is the station, the heart is the song. A hover (or a
-      // keyboard focus) unfolds that list above the card; the click is still
-      // just the toggle, so the marks keep doing exactly one thing each.
-      const cancelClose = () => {
-        if (closeTimer.current) {
-          clearTimeout(closeTimer.current);
-          closeTimer.current = 0;
-        }
-      };
-      const scheduleClose = () => {
-        cancelClose();
-        closeTimer.current = setTimeout(() => setReveal(null), 200);
-      };
+      // Each mark owns one list and sits next to the line it belongs to: the
+      // star is the station, the heart is the song. A press on a mark is still
+      // just its toggle, so the list hangs on the other button instead — the
+      // same right-click the song line uses for its platform picker. One
+      // gesture opens every panel on the card, and no panel can open by the
+      // pointer merely travelling across the card.
+
       // Where the panel hangs. It is aligned to the side of the mark that has
       // room: the sidebar sits on the left, so a mark there grows rightward,
       // and the clamp keeps the whole box inside the viewport.
       const FAVPOP_WIDTH = 208;
-      const unfoldList = (kind, event) => {
-        cancelClose();
-        const node = event && event.currentTarget;
+      const unfoldList = (kind, node) => {
         if (!node || typeof node.getBoundingClientRect !== 'function') return;
         const rect = node.getBoundingClientRect();
         const bottom = Math.max(8, Math.round(window.innerHeight - rect.top + 8));
@@ -1744,17 +1812,56 @@ window.__ModuleLoader__.load({
             : { right: Math.min(Math.max(8, Math.round(window.innerWidth - rect.right)), room) };
         setReveal(Object.assign({ kind, bottom }, place));
       };
+      // The two marks open their list the way the song line opens the platform
+      // picker: the right button with a mouse, the context-menu key or
+      // Shift+Enter with a keyboard. Nothing opens on hover, so a pointer
+      // crossing the card cannot pop a panel over it.
       const listHandlers = (kind) => ({
-        onPointerEnter: (event) => unfoldList(kind, event),
-        onPointerLeave: scheduleClose,
-        onFocus: (event) => unfoldList(kind, event),
-        onBlur: scheduleClose,
+        onContextMenu: (event) => {
+          event.preventDefault();
+          unfoldList(kind, event.currentTarget);
+        },
+        onKeyDown: (event) => {
+          if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'Enter')) {
+            event.preventDefault();
+            unfoldList(kind, event.currentTarget);
+          }
+        },
       });
+
+      // The song line is the one part of the card that leaves it: a press asks
+      // the chosen platform the same question, and a right-click asks *which*
+      // platform that is. Left and right are separate buttons, so neither one
+      // can be mistaken for the other and there is nothing to cancel.
+      //
+      // The line only becomes a link while it really is the song. An error or
+      // an unplayable stream puts its own words on that line, and those words
+      // must not dress up as a search for a title that is not playing.
+      const songLink = !!song && status !== 'error' && !!stream;
+      const songHref = songLink ? songPlatformOf(platformId).href(song.title) : '';
+      const songHandlers = songLink
+        ? {
+            // The platform menu is ours, not the browser's: the link's own menu
+            // has nothing to offer here, and the panel replaces it.
+            onContextMenu: (event) => {
+              event.preventDefault();
+              unfoldList('platform', event.currentTarget);
+            },
+            // The same menu without a second mouse button, for the keyboard:
+            // the context-menu key and Shift+Enter both mean "ask, do not go".
+            onKeyDown: (event) => {
+              if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'Enter')) {
+                event.preventDefault();
+                unfoldList('platform', event.currentTarget);
+              }
+            },
+          }
+        : {};
 
       // A mark is never really `disabled`: a disabled button stops firing
       // pointer events, and that would take the list away exactly when it is
       // the only way to reach it. The click guards itself, and the dimming is
-      // driven by `aria-disabled` so hovering still unfolds the panel.
+      // driven by `aria-disabled` so a right-click still unfolds the panel.
       const favouriteButton = actButton(
         `bhrl-act-fav${favourite ? ' is-on' : ''}`,
         () => store && hasStation && store.toggleFavorite(station),
@@ -1764,6 +1871,8 @@ window.__ModuleLoader__.load({
           {
             'aria-pressed': favourite ? 'true' : 'false',
             'aria-disabled': !hasStation || !store ? 'true' : 'false',
+            'aria-haspopup': 'dialog',
+            'aria-expanded': reveal && reveal.kind === 'stations' ? 'true' : 'false',
           },
           listHandlers('stations'),
         ),
@@ -1777,6 +1886,8 @@ window.__ModuleLoader__.load({
           {
             'aria-pressed': liked ? 'true' : 'false',
             'aria-disabled': !song || !store ? 'true' : 'false',
+            'aria-haspopup': 'dialog',
+            'aria-expanded': reveal && reveal.kind === 'songs' ? 'true' : 'false',
           },
           listHandlers('songs'),
         ),
@@ -1784,62 +1895,102 @@ window.__ModuleLoader__.load({
 
       // The unfolded list. It is an overlay pinned to the mark's corner, so it
       // is never clipped by the foot and never moves the card's 236x93 box.
-      const listEntries = reveal ? (reveal.kind === 'stations' ? favouriteStations : likedSongs) : [];
+      const pickingPlatform = !!reveal && reveal.kind === 'platform';
+      const listEntries =
+        reveal && !pickingPlatform ? (reveal.kind === 'stations' ? favouriteStations : likedSongs) : [];
+      const popoverTitle = pickingPlatform
+        ? t('platformPickerTitle')
+        : reveal && reveal.kind === 'stations'
+          ? t('favouriteListTitle')
+          : t('likeListTitle');
+      // One row per platform. The current one is marked, and choosing another
+      // both answers this press and becomes what the next press uses.
+      const platformRow = (entry) => {
+        const current = entry.id === platformId;
+        return h(
+          'li',
+          { key: entry.id },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: `bhrl-favpop__opt${current ? ' is-on' : ''}`,
+              'aria-pressed': current ? 'true' : 'false',
+              onClick: () => {
+                setPlatformId(entry.id);
+                writeSongPlatform(entry.id);
+                setReveal(null);
+                // The row goes away with the panel; the focus goes back to the
+                // line the picker was unfolded from.
+                if (linkRef.current) linkRef.current.focus();
+              },
+            },
+            h('span', { className: 'bhrl-favpop__name' }, t(`platform_${entry.id}`)),
+            current ? h('span', { className: 'bhrl-favpop__meta' }, t('platformCurrent')) : null,
+          ),
+        );
+      };
       const popover = reveal
         ? h(
             'div',
-            Object.assign(
-              {
-                className: 'bhrl-favpop',
-                style: {
-                  bottom: `${reveal.bottom}px`,
-                  right: reveal.right === undefined ? 'auto' : `${reveal.right}px`,
-                  left: reveal.left === undefined ? 'auto' : `${reveal.left}px`,
-                },
-                role: 'dialog',
-                'aria-label': reveal.kind === 'stations' ? t('favouriteListTitle') : t('likeListTitle'),
+            {
+              ref: popupRef,
+              className: 'bhrl-favpop',
+              style: {
+                bottom: `${reveal.bottom}px`,
+                right: reveal.right === undefined ? 'auto' : `${reveal.right}px`,
+                left: reveal.left === undefined ? 'auto' : `${reveal.left}px`,
               },
-              { onPointerEnter: cancelClose, onPointerLeave: scheduleClose },
-            ),
+              role: 'dialog',
+              'aria-label': popoverTitle,
+            },
             h(
               'p',
               { className: 'bhrl-favpop__title' },
-              `${reveal.kind === 'stations' ? t('favouriteListTitle') : t('likeListTitle')} · ${listEntries.length}`,
+              pickingPlatform ? popoverTitle : `${popoverTitle} · ${listEntries.length}`,
             ),
-            listEntries.length === 0
+            pickingPlatform
               ? h(
-                  'p',
-                  { className: 'bhrl-favpop__empty' },
-                  reveal.kind === 'stations' ? t('favouriteListEmpty') : t('likeListEmpty'),
+                  'div',
+                  { className: 'bhrl-favpop__body' },
+                  h('p', { className: 'bhrl-favpop__empty' }, t('platformPickerHint')),
+                  h('ul', { className: 'bhrl-favpop__list' }, SONG_PLATFORMS.map(platformRow)),
                 )
-              : h(
-                  'ul',
-                  { className: 'bhrl-favpop__list' },
-                  listEntries.slice(0, 40).map((entry, index) => {
-                    const isStation = reveal.kind === 'stations';
-                    const name = isStation ? entry.name : entry.title;
-                    const meta = isStation
-                      ? [
-                          t(`genre_${String(entry.genre || 'other').replace(/[^a-z0-9]/gi, '')}`),
-                          knownLabel(entry.language),
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')
-                      : entry.stationName || '';
-                    return h(
-                      'li',
-                      { className: 'bhrl-favpop__item', key: `${index}-${isStation ? entry.id : entry.key}` },
-                      h('span', { className: 'bhrl-favpop__name' }, name),
-                      meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
-                    );
-                  }),
-                ),
+              : listEntries.length === 0
+                ? h(
+                    'p',
+                    { className: 'bhrl-favpop__empty' },
+                    reveal.kind === 'stations' ? t('favouriteListEmpty') : t('likeListEmpty'),
+                  )
+                : h(
+                    'ul',
+                    { className: 'bhrl-favpop__list' },
+                    listEntries.slice(0, 40).map((entry, index) => {
+                      const isStation = reveal.kind === 'stations';
+                      const name = isStation ? entry.name : entry.title;
+                      const meta = isStation
+                        ? [
+                            t(`genre_${String(entry.genre || 'other').replace(/[^a-z0-9]/gi, '')}`),
+                            knownLabel(entry.language),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : entry.stationName || '';
+                      return h(
+                        'li',
+                        { className: 'bhrl-favpop__item', key: `${index}-${isStation ? entry.id : entry.key}` },
+                        h('span', { className: 'bhrl-favpop__name' }, name),
+                        meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
+                      );
+                    }),
+                  ),
           )
         : null;
 
-      // The hole has one door: the black-hole mark in the corner. Every other
-      // pixel of the card belongs to the station — a stray click on a name
-      // must not navigate away from what is being listened to.
+      // The card has exactly two ways out: the black-hole mark in the corner,
+      // and a song name that asks a platform to search itself. Every other
+      // pixel belongs to the station — a stray click on the station name must
+      // not navigate away from what is being listened to.
       const openHole = () => {
         if (typeof onOpen === 'function') onOpen();
       };
@@ -1863,7 +2014,32 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'bhrl-fcard__row bhrl-fcard__row--sub' },
-            h(OverflowText, { tag: 'p', className: 'bhrl-fcard__track', text: displayTrack }),
+            // A song name is the one exit the card offers besides the hole: it
+            // asks a platform to search the title. Everything else on the line
+            // — a programme name, an empty card, an error — is not a song and
+            // stays plain text, so a stray press still cannot navigate away.
+            songLink
+              ? h(
+                  'a',
+                  Object.assign(
+                    {
+                      ref: linkRef,
+                      className: 'bhrl-fcard__songlink',
+                      href: songHref,
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      // The visible title leads, because a name that starts
+                      // with something other than what is on screen cannot be
+                      // matched by voice or by a person reading it back.
+                      'aria-label': `${displayTrack} · ${t('songOpenAction')} · ${t(`platform_${platformId}`)}`,
+                      'aria-haspopup': 'dialog',
+                      'aria-expanded': reveal && reveal.kind === 'platform' ? 'true' : 'false',
+                    },
+                    songHandlers,
+                  ),
+                  h(OverflowText, { tag: 'span', className: 'bhrl-fcard__track', text: displayTrack }),
+                )
+              : h(OverflowText, { tag: 'p', className: 'bhrl-fcard__track', text: displayTrack }),
             likeButton,
           ),
         ),
@@ -3198,9 +3374,18 @@ window.__ModuleLoader__.load({
   -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
   backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
 }
-.bhrl-fcard__text { grid-area: text; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
+/* The two lines are one block, and the only space between them is this gap:
+ * 8px. Two pixels read as one smudged line; this is what makes the station
+ * name and the song name two lines instead of one.
+ *
+ * The gap is the whole story on purpose. Neither line carries a margin, so both
+ * rows stay exactly as tall as their own content and align-items: center puts
+ * the star on the name's centre line and the heart on the track's. The block
+ * then measures 16.25 + 8 + 14 = 38.25px inside a 49px area, which centres on a
+ * whole pixel — at 6px it centred on a half one and the star sat half a pixel
+ * above the name. */
+.bhrl-fcard__text { grid-area: text; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
 .bhrl-fcard__row { display: flex; align-items: center; gap: 5px; min-width: 0; }
-.bhrl-fcard__row--sub { margin-top: 1px; }
 
 /* The corner: the only door to the hole, and now the mark is the button.
  * No ring and no fill of our own: the drawing brings nothing but its strokes,
@@ -3248,6 +3433,30 @@ window.__ModuleLoader__.load({
 }
 .bhrl-fcard__track {
   margin: 0; font-size: 10px; line-height: 1.3; color: var(--bhrl-ink-dim);
+}
+/* The song line is the only part of the card that leads out of it, so it takes
+ * the ink up one step and underlines itself on hover; a right-click changes
+ * where it goes. The slot stays 166px wide, so the heart next to it never
+ * moves. */
+.bhrl-fcard__songlink {
+  display: block; flex: 0 1 auto; min-width: 0; max-width: 166px;
+  color: inherit; text-decoration: none; cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+  touch-action: manipulation;
+}
+/* The ticker is measured against clientWidth, which an inline box reports as
+ * zero — inside the link the line has to be a block. */
+.bhrl-fcard__songlink .bhrl-fcard__track { display: block; }
+.bhrl-fcard__songlink:hover .bhrl-fcard__track,
+.bhrl-fcard__songlink:focus-visible .bhrl-fcard__track {
+  color: var(--bhrl-ink);
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.bhrl-fcard__songlink:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--bhrl-ink) 42%, transparent);
+  outline-offset: 1px; border-radius: 3px;
 }
 .bhrl-fcard__scroll { display: inline-block; white-space: nowrap; will-change: transform; }
 /* One-way ticker: the line travels left, the tail comes in from the right, and
@@ -3346,6 +3555,22 @@ window.__ModuleLoader__.load({
   font-size: 10px; line-height: 1.25; color: var(--bhrl-ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The platform picker: one row per platform, the current one marked on the
+ * right rather than by a tick, so the row never changes height. */
+.bhrl-favpop__body { display: flex; flex-direction: column; gap: 6px; }
+.bhrl-favpop__opt {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  width: 100%; margin: 0; padding: 3px 4px; border: 0; border-radius: 6px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.bhrl-favpop__opt:hover,
+.bhrl-favpop__opt:focus-visible { background: color-mix(in oklab, var(--bhrl-ink) 8%, transparent); }
+.bhrl-favpop__opt:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--bhrl-ink) 40%, transparent);
+  outline-offset: 1px;
+}
+.bhrl-favpop__opt:not(.is-on) .bhrl-favpop__name { color: var(--bhrl-ink-dim); }
+.bhrl-favpop__opt.is-on .bhrl-favpop__meta { color: var(--bhrl-ink-dim); }
 @keyframes bhrl-favpop-in {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
