@@ -174,7 +174,11 @@ export function createLabelOverlay(container) {
    * stays quiet. Placement goes below the volume first and above it second;
    * the normal collision rules then decide whether it fits at all.
    */
-  function drawNebulae(nebulae, camera) {
+  function drawNebulae(nebulae, camera, fade) {
+    // `fade` is the space's own opacity. A wormhole reveal hands it in so the
+    // names arrive with the dust instead of standing on a black frame.
+    const strength = fade === undefined ? 1 : Math.max(0, Math.min(1, Number(fade) || 0));
+    if (strength <= 0.01) return;
     let drawn = 0;
     for (const nebula of nebulae) {
       if (drawn >= MAX_NEBULA_LABELS) break;
@@ -194,7 +198,7 @@ export function createLabelOverlay(container) {
       const base = {
         font: active ? FONT_NEBULA_ACTIVE : FONT_NEBULA,
         color: active ? nebula.color || COLOR_ACCENT : COLOR_TEXT,
-        alpha: active ? 1 : nebula.occluded ? 0.46 : 0.74,
+        alpha: (active ? 1 : nebula.occluded ? 0.46 : 0.74) * strength,
         padX: 4,
         force: Boolean(nebula.selected),
       };
@@ -369,7 +373,7 @@ export function createLabelOverlay(container) {
     // 4. the nebula space: every visible genre names itself. This runs last so
     // a genre name is never displaced by a station label, but the collision
     // boxes it registers still protect it from the next frame's stations.
-    if (nebulae.length) drawNebulae(nebulae, camera);
+    if (nebulae.length) drawNebulae(nebulae, camera, frame.nebulaFade);
 
     ctx.shadowBlur = 0;
   }

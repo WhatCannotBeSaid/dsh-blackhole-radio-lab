@@ -439,5 +439,18 @@ async function dispose() {
   stageNode.innerHTML = '';
 }
 
-window.NEBULA = { run, mount, shot, dispose, state, labels, settings: { WIDTH, HEIGHT, SEED } };
+// `mountStage` and `settingsFor` are exported so a probe can build a second
+// stage with different settings (reduced motion, the wormhole off) without
+// editing this file each time.
+window.NEBULA = {
+  run,
+  mount,
+  shot,
+  dispose,
+  state,
+  labels,
+  mountStage,
+  settingsFor,
+  settings: { WIDTH, HEIGHT, SEED },
+};
 note('nebula harness ready');

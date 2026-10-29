@@ -156,6 +156,9 @@ const DEFAULTS = Object.freeze({
   antialias: true,
   pixelRatioCap: 2,
   reducedMotion: false,
+  // The hold-to-fly wormhole between the hole and the nebula. On by default;
+  // `false` restores the instant handover that predates it.
+  wormhole: true,
   showHints: true,
   stationCount: 2400,
   seed: 20261022,
@@ -201,6 +204,7 @@ export const Config = {
       };
       boolean('antialias');
       boolean('reducedMotion');
+      boolean('wormhole');
       boolean('showHints');
       boolean('catalogAutoRefresh');
 

@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
       antialias: true,
       pixelRatioCap: 2,
       reducedMotion: false,
+      wormhole: true,
       stationCount: 2000,
       seed: 20261022,
       featuredCount: 18,
@@ -2467,6 +2468,10 @@ window.__ModuleLoader__.load({
             // straight into the nebula space. Absent means the normal hole.
             const nebulaParam = new URLSearchParams(window.location.search).get('bhrlNebula');
             if (nebulaParam !== null) body.nebulaPreview = nebulaParam !== '0';
+            // `?bhrlWormhole=0` turns the transition off for an A/B against the
+            // old instant handover. Absent means the shipped behaviour.
+            const wormParam = new URLSearchParams(window.location.search).get('bhrlWormhole');
+            if (wormParam !== null) body.wormhole = wormParam !== '0';
             if (alive) setCfg(body);
           } catch {
             // Unreachable config: fall back to the documented defaults so the
@@ -2544,6 +2549,9 @@ window.__ModuleLoader__.load({
           antialias: cfg.antialias !== false,
           pixelRatioCap: typeof cfg.pixelRatioCap === 'number' ? cfg.pixelRatioCap : 2,
           reducedMotion: Boolean(cfg.reducedMotion),
+          // The wormhole between the two spaces. Off restores the old instant
+          // handover, which is what a user who dislikes the transition wants.
+          wormhole: cfg.wormhole !== false,
           stations: repository.list(),
           seed: repository.seed,
           categories: anchors,

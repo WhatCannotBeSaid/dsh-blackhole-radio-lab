@@ -52,6 +52,7 @@ import {
 import { createAccretionDisk } from './scene/accretion-disk.js';
 import { createCameraRig } from './scene/camera-rig.js';
 import { createStarfield } from './scene/starfield.js';
+import { createWormhole } from './scene/wormhole.js';
 import {
   HORIZON_RADIUS,
   CRITICAL_IMPACT_PARAMETER,
@@ -61,6 +62,7 @@ import {
 import { categoryLabel } from './radio/taxonomy.js';
 import { createStationsLayer } from './nodes/stations-layer.js';
 import { createLabelOverlay } from './nodes/label-overlay.js';
+import { createHoldRing } from './nodes/hold-ring.js';
 import { createRadioOverlay } from './nodes/radio-overlay.js';
 import {
   fixtureByGpuId,
@@ -86,6 +88,33 @@ const LONG_PRESS_MS = 560;
 const PRESS_CLICK_MS = 800;
 /** Progress units per second; the full transition takes ~1.05 s. */
 const TRANSITION_RATE = 0.95;
+
+/**
+ * The wormhole transition, in seconds from the press.
+ *
+ * One timeline, not two: the ring fills during the same window the geometry
+ * starts to give way, so the horizon is already moving when the ring locks and
+ * the distance left after the commit is short. Every segment below is a wall
+ * clock reading, so a dropped frame shortens the wait instead of stretching it.
+ */
+/** Left hold: the ring is full, the transition can no longer be cancelled. */
+const WORM_RING_S = 1.2;
+/** The shadow has swallowed the whole frame. */
+const WORM_COVER_S = 1.4;
+/** The nebula has finished arriving. */
+const WORM_END_S = 1.7;
+/** Right hold: the ring is full. */
+const WORM_OUT_RING_S = 0.7;
+/** The frame is black again, the hole is about to be uncovered. */
+const WORM_OUT_VEIL_S = 1.0;
+/** The hole is back. */
+const WORM_OUT_END_S = 1.6;
+/** Movement beyond this many CSS px turns a hold into a camera drag. */
+const WORM_DEADZONE_PX = 8;
+/** Nebula fade speed while the wormhole drives the reveal (0.3 s). */
+const WORM_REVEAL_RATE = 1 / (WORM_END_S - WORM_COVER_S);
+/** Reduced motion: no wormhole, one 200 ms cross-fade. */
+const WORM_CALM_RATE = 1 / 0.2;
 /** Catalogue brightness while the hole is the subject. */
 const HOLE_STATION_DIM = 0.55;
 
@@ -126,6 +155,10 @@ export function mountStage(container, options) {
   const antialias = settings.antialias !== false;
   const pixelRatioCap = clampRatio(settings.pixelRatioCap);
   const reducedMotion = settings.reducedMotion === true;
+  // The wormhole is the transition. The switch restores the old behaviour —
+  // a 560 ms hold that cuts straight to the nebula fade — for A/B comparison
+  // and for a rollback that needs no code change.
+  const wormholeEnabled = settings.wormhole !== false;
   const language = settings.language === 'en' ? 'en' : 'zh';
 
   const catalog = resolveCatalog(settings);
@@ -228,6 +261,14 @@ export function mountStage(container, options) {
     const labels = createLabelOverlay(container);
     disposers.push(() => labels.dispose());
 
+    // The wormhole pass and the ring that feeds it. Both are created even when
+    // the switch is off only if the feature is on: with `wormhole: false` the
+    // mount is byte-for-byte the old stage, with no extra draw call and no
+    // extra DOM.
+    const wormholeFx = wormholeEnabled ? add(createWormhole()) : null;
+    const holdRing = wormholeEnabled ? createHoldRing(container) : null;
+    if (holdRing) disposers.push(() => holdRing.dispose());
+
     // Phase-2 fixture suite. The switch is explicit (`?bhrlRadio=`), so a page
     // without it behaves exactly as the phase-1 baseline did: no overlay, no
     // probes, no upload.
@@ -296,11 +337,24 @@ export function mountStage(container, options) {
       nebula: 0,
       nebulaTarget: 0,
       nebulaSavedCamera: null,
+      /**
+       * The hole is gone from the frame even though the nebula is still faint.
+       * The wormhole needs those two states to be separate for its last 300 ms:
+       * the black has already swallowed the image while the dust is still
+       * arriving, so the disk must not reappear under the fading mask.
+       */
+      wormCover: 0,
     };
     const layoutCache = new Map();
     let lastModeKey = '';
     let transitioning = false;
     let nebulaMoving = false;
+    /**
+     * How fast the nebula scalar climbs. Its own number because the wormhole
+     * reveals the nebula in 300 ms while the old cross-fade took 1.28 s, and the
+     * integrator should not have to know which gesture started it.
+     */
+    let nebulaSpeed = TRANSITION_RATE * 0.82;
     // Last fit distance authored for the nebula shell, so a resize can preserve
     // the user's zoom level instead of snapping back to the default framing.
     let nebulaFit = 0;
@@ -516,6 +570,7 @@ export function mountStage(container, options) {
       }
       labels.resize(w, h, renderer.getPixelRatio());
       if (radio) radio.resize(w, h, renderer.getPixelRatio());
+      if (wormholeFx) wormholeFx.setViewport(w, h);
       if (nebula) {
         nebula.setPixelRatio(renderer.getPixelRatio());
         nebula.setViewport(w, h, camera.fov);
@@ -616,7 +671,10 @@ export function mountStage(container, options) {
       // Whichever space is taking over drives the hole out. The hole leaves a
       // little after the content starts moving, and returns a little before it
       // arrives: the matter should look reorganised, not cross-faded.
-      const leaving = Math.max(rise, nebulaRise);
+      // `wormCover` is the third source: the wormhole has already swallowed the
+      // frame, so the hole is gone even while the nebula is still at zero.
+      const cover = clamp01(machine.wormCover);
+      const leaving = Math.max(rise, nebulaRise, cover);
       const holeFade = smoothstep01(clamp01((leaving - 0.05) / 0.72));
       disk.setOpacity(1 - holeFade);
       // Kept so this call site need not know that the analytic ring is gone:
@@ -625,16 +683,18 @@ export function mountStage(container, options) {
       // The starfield stays as the deep background in the nebula space: the
       // camera sits inside its outer shells there, and empty black around the
       // volumes reads as a missing backdrop, not as space.
-      starfield.setDim(Math.max(rise, nebulaRise * 0.55));
+      starfield.setDim(Math.max(rise, nebulaRise * 0.55, cover * 0.55));
       if (layer) {
         layer.setClusterAmount(rise);
-        layer.setHoleOnly(nebulaRise > 0.35 ? 1 : 1 - machine.progress);
+        // Per frame this is overwritten in the loop with the live progress; the
+        // value here only has to be right for the call itself.
+        layer.setHoleOnly(1 - machine.progress);
       }
       if (nebula) {
         nebula.object.visible = nebulaRise > 0.001;
         nebula.setAmount(nebulaRise);
       }
-      if (rise > 0.001 || nebulaRise > 0.001) dirty = true;
+      if (rise > 0.001 || nebulaRise > 0.001 || cover > 0.001) dirty = true;
     };
 
     /**
@@ -643,6 +703,8 @@ export function mountStage(container, options) {
      */
     const finishNebulaTransition = () => {
       nebulaMoving = false;
+      // Back to the house rate: only a wormhole-reveal is fast.
+      nebulaSpeed = TRANSITION_RATE * 0.82;
       if (machine.nebulaTarget > 0.5) {
         machine.mode = 'nebula';
       } else {
@@ -709,7 +771,11 @@ export function mountStage(container, options) {
       frameTimes.push(performance.now() - started);
       if (frameTimes.length > 120) frameTimes.shift();
       const labelReveal = machine.progress;
-      const nebulaReveal = smoothstep01(machine.nebula);
+      // The labels are their own 2D canvas stacked above the WebGL one, so the
+      // mask can never cover them. They have to fade with it instead, or the
+      // names hang in front of a black frame as if they were a mistake.
+      const maskAlpha = clamp01(worm.alpha);
+      const nebulaReveal = smoothstep01(machine.nebula) * (1 - maskAlpha);
       if (nebulaReveal > 0.02) {
         // The nebula space names its volumes and nothing else: no station names,
         // no category legend, and no hole keep-out (the hole is not drawn).
@@ -726,6 +792,7 @@ export function mountStage(container, options) {
           cloudStrength: 0,
           cluster: 0,
           nebulae: nebulaLabels(),
+          nebulaFade: nebulaReveal,
         });
       } else if (layer) {
         const info = layer.filterInfo();
@@ -799,9 +866,11 @@ export function mountStage(container, options) {
       // The nebula fade. Deliberately its own value: entering the nebula never
       // touches the cluster's progress, so an interrupted cluster transition
       // cannot be mistaken for part of this one.
-      if (machine.nebula !== machine.nebulaTarget) {
+      // A running wormhole owns the nebula value (see driveNebula): integrating
+      // a rate here as well would put the dust on a second, slower clock.
+      if (!worm.kind && machine.nebula !== machine.nebulaTarget) {
         const delta = machine.nebulaTarget - machine.nebula;
-        const step = TRANSITION_RATE * 0.82 * dt;
+        const step = nebulaSpeed * dt;
         machine.nebula += Math.sign(delta) * Math.min(Math.abs(delta), step);
         if (Math.abs(machine.nebulaTarget - machine.nebula) < 1e-4) {
           machine.nebula = machine.nebulaTarget;
@@ -838,11 +907,26 @@ export function mountStage(container, options) {
         if (!reducedMotion) dirty = true;
       }
 
+      // The hold goes last: it reads the hole and the camera as they are this
+      // frame, and on its way to the end it may hand the transition to the
+      // nebula, which then integrates from the following frame on.
+      advanceWormhole(now);
+
       if (dirty) draw();
       const morphing = layer ? layer.isAnimating : false;
       const nebulaDrift = nebula ? nebula.amount > 0.001 && !reducedMotion : false;
-      if (!reducedMotion || moved || morphing || transitioning || nebulaMoving || nebulaDrift) {
-        frame = requestAnimationFrame(tick);
+      if (
+        !reducedMotion ||
+        moved ||
+        morphing ||
+        transitioning ||
+        nebulaMoving ||
+        nebulaDrift ||
+        worm.kind
+      ) {
+        // Scheduling goes through the same guard requestFrame uses: the hold can
+        // have asked for the next frame from inside this one already.
+        if (!frame) frame = requestAnimationFrame(tick);
       }
       else last = 0;
       return undefined;
@@ -1601,9 +1685,353 @@ export function mountStage(container, options) {
       return select(index, { focus: true, notify: true });
     };
 
+    // ---- the wormhole hold ------------------------------------------------
+    //
+    // One hold machine for both directions. `kind` says which way the frame is
+    // being pushed ('enter' from the hole, 'exit' from the nebula), `startedAt`
+    // is a wall clock reading so a slow frame shortens the wait instead of
+    // stretching it, and `locked` is the point of no return: before it a release
+    // cancels with nothing to rewind, after it the timeline runs to the end.
+    //
+    // Nothing visual happens before the lock except light on the shadow's edge.
+    // That is deliberate: a cancelled hold must leave the frame exactly as it
+    // was, and a mask that had already grown would have to be pulled back —
+    // which is a rewind, and rewinds produce dirty frames.
+
+    const worm = {
+      kind: null,
+      locked: false,
+      startedAt: 0,
+      downX: 0,
+      downY: 0,
+      cursorX: 0,
+      cursorY: 0,
+      /** The pointer that owns the hold: only that one may cancel it. */
+      pointerId: -1,
+      /**
+       * The button it was opened with. Both buttons share a pointerId, so this
+       * is what keeps a stray opposite click from cancelling somebody else's
+       * hold. Touch reports 0 and is matched against 0.
+       */
+      button: 0,
+      /** How opaque the mask is right now, for the layers drawn above it. */
+      alpha: 0,
+      /** When the page lost focus mid-hold, so the clock can be given back. */
+      hiddenAt: 0,
+      /** One-off guards, so a threshold can fire only once per hold. */
+      covered: false,
+      veiled: false,
+    };
+
+    /** The hold ring and the wormhole pass are both optional by switch. */
+    const vfx = reducedMotion ? null : wormholeFx;
+
+    /** Where the shadow is, in the coordinates the overlay wants. */
+    const wormFrame = () => {
+      const hole = silhouette();
+      const w = Math.max(1, viewport.w);
+      const h = Math.max(1, viewport.h);
+      const aspect = w / h;
+      return {
+        center: { x: hole.x / w, y: 1 - hole.y / h },
+        shadow: hole.r / h,
+        // The radius that covers the farthest corner, plus a margin so the
+        // frame is black before anything behind the mask is allowed to change.
+        cover: Math.sqrt(aspect * aspect + 1) * 0.5 + 0.12,
+      };
+    };
+
+    const ringPoint = (event) => {
+      const rect = container.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+
+    const startHold = (kind, event) => {
+      // One hold at a time, ever. A second press mid-transition would overwrite
+      // the timeline of the first and leave the mask half drawn.
+      if (worm.kind) return;
+      // No nebula layer means nowhere to fly to: stay on the hole and leave the
+      // old long press to do whatever it did.
+      if (kind === 'enter' && !nebula) return;
+      const p = ringPoint(event);
+      worm.kind = kind;
+      worm.locked = false;
+      worm.covered = false;
+      worm.veiled = false;
+      worm.alpha = 0;
+      worm.hiddenAt = 0;
+      worm.pointerId = event.pointerId;
+      worm.button = event.button === 2 ? 2 : 0;
+      worm.startedAt = performance.now();
+      worm.downX = event.clientX;
+      worm.downY = event.clientY;
+      worm.cursorX = p.x;
+      worm.cursorY = p.y;
+      if (holdRing) {
+        holdRing.show(p.x, p.y);
+        holdRing.setProgress(0, p.x, p.y);
+      }
+      dirty = true;
+      requestFrame();
+    };
+
+    /**
+     * Throw the hold away. Everything it started before the lock is light on
+     * the edge, so there is nothing to undo and nothing to animate.
+     */
+    const cancelHold = () => {
+      if (!worm.kind) return;
+      worm.kind = null;
+      worm.locked = false;
+      worm.covered = false;
+      worm.veiled = false;
+      worm.alpha = 0;
+      worm.hiddenAt = 0;
+      worm.pointerId = -1;
+      worm.button = 0;
+      if (holdRing) holdRing.hide();
+      if (vfx) vfx.reset();
+      dirty = true;
+      requestFrame();
+    };
+
+    /** The hold committed: from here the timeline cannot be stopped. */
+    const lockHold = () => {
+      if (worm.locked) return;
+      worm.locked = true;
+      if (holdRing) holdRing.complete();
+      if (worm.kind === 'enter') {
+        if (reducedMotion) {
+          // No wormhole: the ring is the whole feedback, then one short fade.
+          nebulaSpeed = WORM_CALM_RATE;
+          enterNebula();
+          cancelHold();
+        }
+        return;
+      }
+      // Leaving the nebula. Cover the frame before the nebula is allowed to
+      // sink, so the hole cannot flash through the fade on its way back.
+      if (reducedMotion) {
+        nebulaSpeed = WORM_CALM_RATE;
+        exitNebula({});
+        cancelHold();
+        return;
+      }
+      machine.wormCover = 1;
+      nebulaSpeed = WORM_REVEAL_RATE;
+      exitNebula({});
+    };
+
+    /**
+     * The frame is black. Hand the transition to the nebula: the dust arrives
+     * underneath the still-opaque mask, so the reveal is the mask fading and not
+     * a cross-fade between two pictures.
+     */
+    const beginCover = () => {
+      machine.wormCover = 1;
+      nebulaSpeed = WORM_REVEAL_RATE;
+      // The host is told at the moment the space actually changes, exactly as
+      // the old centre hold told it. Its handler calls enterNebula(); if the
+      // host has no handler the transition starts here instead.
+      if (typeof settings.onCenterClick === 'function') {
+        try {
+          settings.onCenterClick();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (machine.nebulaTarget < 0.5) enterNebula();
+    };
+
+    const finishWormhole = () => {
+      if (worm.kind === 'enter') {
+        // Land exactly on the end state rather than a frame short of it.
+        if (machine.nebulaTarget < 0.5) enterNebula();
+        machine.nebula = 1;
+      } else {
+        machine.nebula = 0;
+      }
+      machine.wormCover = 0;
+      nebulaSpeed = TRANSITION_RATE * 0.82;
+      applyTransition();
+      finishNebulaTransition();
+      if (vfx) vfx.reset();
+      if (holdRing) holdRing.hide();
+      worm.kind = null;
+      worm.locked = false;
+      worm.covered = false;
+      worm.veiled = false;
+      worm.alpha = 0;
+      worm.hiddenAt = 0;
+      worm.pointerId = -1;
+      worm.button = 0;
+      dirty = true;
+      requestFrame();
+    };
+
+    /** A second right press mid-exit: land now instead of waiting. */
+    const skipWormhole = () => {
+      // Only a running exit can be landed early. Skipping an entry would drop
+      // its commit, and skipping before the lock would jump the ring itself.
+      if (!worm.kind || worm.kind !== 'exit' || !worm.locked) return false;
+      worm.startedAt -= 10 * 1000;
+      requestFrame();
+      return true;
+    };
+
+    /**
+     * Write the nebula value straight from the hold's timeline.
+     *
+     * The nebula used to integrate a rate against the frame delta, which is fine
+     * for a fade the user cannot see through but wrong here: the mask and the
+     * dust have to arrive at the same instant, at any frame rate. Driven from
+     * the wall clock, a dropped frame shortens the animation instead of making
+     * the two halves drift apart.
+     */
+    const driveNebula = (value) => {
+      const next = clamp01(value);
+      if (Math.abs(next - machine.nebula) < 1e-4) return;
+      machine.nebula = next;
+      applyTransition();
+      dirty = true;
+    };
+
+    /**
+     * Advance the one hold. Called from the frame loop; returns whether a frame
+     * is still owed. Every branch reads the wall clock, so the timeline is the
+     * same length whatever the frame rate was.
+     */
+    const advanceWormhole = (now) => {
+      if (!worm.kind) return false;
+      // A hidden page keeps no time. Freezing the timeline here is what makes the
+      // give-back in onFocus honest: without it the compensation would rewind the
+      // transition by the time the frames kept running.
+      if (worm.hiddenAt) return true;
+      const t = (now - worm.startedAt) / 1000;
+
+      if (worm.kind === 'enter') {
+        // The ring, up to the commit.
+        if (t < WORM_RING_S) {
+          if (holdRing) holdRing.setProgress(clamp01(t / WORM_RING_S), worm.cursorX, worm.cursorY);
+        } else if (!worm.locked) {
+          lockHold();
+          if (!worm.kind) return false; // reduced motion has already finished
+        }
+        if (t >= WORM_COVER_S && !worm.covered) {
+          worm.covered = true;
+          beginCover();
+        }
+        if (t >= WORM_COVER_S) {
+          // The dust rises underneath the mask, on this same clock.
+          driveNebula(smoothstep01(clamp01((t - WORM_COVER_S) / (WORM_END_S - WORM_COVER_S))));
+        }
+        if (t >= WORM_END_S) {
+          finishWormhole();
+          return false;
+        }
+        if (vfx) {
+          const frame = wormFrame();
+          let radius = frame.shadow;
+          let alpha = 0;
+          let streak = 0;
+          let rim = 0;
+          if (t < WORM_RING_S) {
+            // Before the commit: light on the edge only. If the user lets go
+            // here, killing the glow is the whole cancel.
+            const e = smoothstep01(clamp01(t / WORM_RING_S));
+            streak = 0.16 * e;
+            rim = 0.22 * e;
+          } else {
+            const u = clamp01((t - WORM_RING_S) / (WORM_COVER_S - WORM_RING_S));
+            const e = smoothstep01(u);
+            radius = frame.shadow + (frame.cover - frame.shadow) * e;
+            streak = 0.16 + 0.84 * e;
+            rim = 0.22 + 0.78 * e;
+            alpha = 1;
+            if (t > WORM_COVER_S) {
+              const v = clamp01((t - WORM_COVER_S) / (WORM_END_S - WORM_COVER_S));
+              alpha = 1 - smoothstep01(clamp01(v / 0.62));
+              // The light goes first: by half way through the reveal the frame is
+              // the nebula and nothing else, so no ray is left crossing it.
+              const gone = 1 - smoothstep01(clamp01(v / 0.4));
+              streak *= gone;
+              rim *= gone;
+            }
+          }
+          vfx.setPhase({
+            center: frame.center,
+            radius,
+            alpha,
+            streak,
+            rim,
+          });
+          worm.alpha = alpha;
+        }
+        if (vfx) vfx.update(0.016);
+        dirty = true;
+        return true;
+      }
+
+      // Leaving the nebula.
+      if (t < WORM_OUT_RING_S) {
+        if (holdRing) holdRing.setProgress(clamp01(t / WORM_OUT_RING_S), worm.cursorX, worm.cursorY);
+      } else if (!worm.locked) {
+        lockHold();
+        if (!worm.kind) return false;
+      }
+      // The mask is opaque at the end of the veil: drop the cover behind it.
+      if (t >= WORM_OUT_VEIL_S - 0.02 && !worm.veiled) {
+        worm.veiled = true;
+        machine.wormCover = 0;
+        applyTransition();
+      }
+      if (t >= WORM_OUT_RING_S) {
+        // The dust sinks on the same clock as the veil coming down.
+        driveNebula(1 - smoothstep01(clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S))));
+      }
+      if (t >= WORM_OUT_END_S) {
+        finishWormhole();
+        return false;
+      }
+      if (vfx) {
+        const frame = wormFrame();
+        let radius = frame.cover;
+        let alpha = 0;
+        let streak = 0;
+        let rim = 0;
+        if (t >= WORM_OUT_RING_S) {
+          if (t < WORM_OUT_VEIL_S) {
+            const e = smoothstep01(
+              clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S)),
+            );
+            radius = frame.cover;
+            alpha = e;
+            streak = 0.35 * e;
+            rim = 0.25 * e;
+          } else {
+            const u = clamp01((t - WORM_OUT_VEIL_S) / (WORM_OUT_END_S - WORM_OUT_VEIL_S));
+            const e = smoothstep01(u);
+            // The edge sweeps inward until it lands on the shadow: the hole is
+            // uncovered from the outside in, and the last frame is the real one.
+            radius = frame.cover + (frame.shadow - frame.cover) * e;
+            alpha = 1 - smoothstep01(clamp01((u - 0.86) / 0.14));
+            streak = 0.25 + 0.9 * (1 - e);
+            rim = 0.2 + 0.8 * Math.sin(Math.PI * u);
+          }
+        }
+        vfx.setPhase({ center: frame.center, radius, alpha, streak, rim });
+        worm.alpha = alpha;
+        vfx.update(0.016);
+      }
+      dirty = true;
+      return true;
+    };
+
     // ---- pointer / long-press ---------------------------------------------
 
     const press = { active: false, id: -1, x: 0, y: 0, downX: 0, downY: 0, at: 0, consumed: false, moved: false };
+    /** What kind of pointer was used last, so the menu can tell touch from mouse. */
+    let lastPointerType = 'mouse';
     let lastHover = 0;
     let longTimer = 0;
 
@@ -1646,17 +2074,47 @@ export function mountStage(container, options) {
     const onContextMenu = (event) => {
       event.preventDefault();
       if (document.body && document.body.getAttribute('data-bhrl-no-context') === 'true') return;
+      // A cluster is not part of the wormhole: the right click still walks back
+      // one level in a single step, exactly as it did before the transition.
       if (machine.mode === 'cluster' || machine.progress > 0.05) {
         if (machine.target > 0.5) exitCluster({});
         return;
       }
+      // With the wormhole on, the right button is a hold and not a click, so the
+      // menu is only suppressed here; the pointer handlers do the work. Touch has
+      // no second button, so the browser's long press stays its way out.
+      if (wormholeEnabled && lastPointerType !== 'touch') return;
       if (machine.nebula > 0.05 || machine.nebulaTarget > 0.5) {
         exitNebula({});
       }
     };
 
     const onPointerDown = (event) => {
+      lastPointerType = event.pointerType || 'mouse';
+      if (event.button === 2) {
+        // Right is the way back out, and only by holding it. A short right click
+        // does nothing at all: the exit used to be instant, and an instant exit
+        // would be a shortcut around the wormhole.
+        if (!wormholeEnabled) return;
+        // While a hold owns the gesture, nothing else may start one. The only
+        // thing a second right press does is land a running exit.
+        if (worm.kind) {
+          if (skipWormhole()) event.preventDefault();
+          return;
+        }
+        if (machine.mode === 'nebula' || machine.nebula > 0.05 || machine.nebulaTarget > 0.5) {
+          event.preventDefault();
+          startHold('exit', event);
+        }
+        return;
+      }
       if (event.button !== 0) return;
+      // A hold owns the gesture: a left press during one is not a selection, and
+      // it must not be able to cancel the hold that is already running.
+      if (worm.kind) return;
+      // One press slot. A second finger does not take it over, or the first
+      // finger's release would no longer cancel the hold it started.
+      if (press.active && press.id !== event.pointerId) return;
       press.active = true;
       press.id = event.pointerId;
       press.x = event.clientX;
@@ -1668,7 +2126,14 @@ export function mountStage(container, options) {
       press.moved = false;
       // The centre is entered by holding it. A press and release there is a
       // press on the hole itself, which is not a button and does nothing.
-      if (canOpenCenter() && centerAt(event.clientX, event.clientY).inside) {
+      if (canOpenCenter() && !worm.kind && centerAt(event.clientX, event.clientY).inside) {
+        if (wormholeEnabled) {
+          // The hold draws its own ring, so the press is consumed now: the
+          // release must not also select something.
+          press.consumed = true;
+          startHold('enter', event);
+          return;
+        }
         longTimer = setTimeout(() => {
           longTimer = 0;
           if (!press.active) return;
@@ -1679,6 +2144,15 @@ export function mountStage(container, options) {
     };
 
     const onPointerMove = (event) => {
+      // A hold is a hold only while the pointer stays put. Eight pixels of slop
+      // covers the hand shaking on a trackpad; past that it is a drag and the
+      // camera is what the gesture belongs to.
+      if (worm.kind && event.pointerId === worm.pointerId) {
+        if (!worm.locked && Math.hypot(event.clientX - worm.downX, event.clientY - worm.downY) > WORM_DEADZONE_PX) {
+          cancelHold();
+        }
+        return;
+      }
       if (press.active && press.id === event.pointerId) {
         if (Math.hypot(event.clientX - press.downX, event.clientY - press.downY) > CLICK_SLOP) {
           press.moved = true;
@@ -1715,11 +2189,26 @@ export function mountStage(container, options) {
     };
 
     const onPointerUp = (event) => {
+      if (event.button === 2) {
+        // Letting go of the right button before the ring fills is a cancel:
+        // nothing has moved yet, so there is nothing to take back. Only the very
+        // button that opened the hold may end it.
+        if (worm.kind && !worm.locked && event.pointerId === worm.pointerId && event.button === worm.button) {
+          cancelHold();
+        }
+        return;
+      }
       if (!press.active || press.id !== event.pointerId) return;
       press.active = false;
       if (longTimer) {
         clearTimeout(longTimer);
         longTimer = 0;
+      }
+      // Releasing before the ring fills is the cancel. This must come before the
+      // consumed check: the press was consumed at pointer down precisely so the
+      // release would not select anything, and the hold still has to end.
+      if (worm.kind && !worm.locked && event.pointerId === worm.pointerId && event.button === worm.button) {
+        cancelHold();
       }
       if (press.consumed) {
         press.consumed = false;
@@ -1758,17 +2247,19 @@ export function mountStage(container, options) {
       }
     };
 
-    const onPointerCancel = () => {
+    const onPointerCancel = (event) => {
       press.active = false;
       press.consumed = false;
       if (longTimer) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
+      if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
     };
 
-    const onPointerLeave = () => {
+    const onPointerLeave = (event) => {
       canvas.style.cursor = 'grab';
+      if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
       if (machine.mode === 'nebula' && hoverNebulaIndex >= 0) setNebulaHover(-1);
     };
 
@@ -1779,6 +2270,34 @@ export function mountStage(container, options) {
         centerClick();
       }
     };
+
+    /**
+     * Focus loss is the one cancel that never arrives as a pointer event: an
+     * alt-tab leaves the button logically down. Drop an uncommitted hold, and
+     * for a committed one remember the moment so the timeline resumes from
+     * there instead of jumping to the end on the way back.
+     */
+    const onBlur = () => {
+      if (!worm.kind) return;
+      if (!worm.locked) {
+        cancelHold();
+        return;
+      }
+      worm.hiddenAt = performance.now();
+    };
+    const onFocus = () => {
+      if (!worm.hiddenAt) return;
+      worm.startedAt += performance.now() - worm.hiddenAt;
+      worm.hiddenAt = 0;
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('blur', onBlur);
+      window.addEventListener('focus', onFocus);
+      disposers.push(() => {
+        window.removeEventListener('blur', onBlur);
+        window.removeEventListener('focus', onFocus);
+      });
+    }
 
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
@@ -1838,7 +2357,14 @@ export function mountStage(container, options) {
         frame = 0;
         last = 0;
         clearTimers();
+        // A hold cannot stay held while the tab is gone.
+        if (worm.kind && !worm.locked) cancelHold();
+        else if (worm.kind) worm.hiddenAt = performance.now();
       } else {
+        if (worm.hiddenAt) {
+          worm.startedAt += performance.now() - worm.hiddenAt;
+          worm.hiddenAt = 0;
+        }
         last = 0;
         requestFrame();
       }
@@ -2064,6 +2590,11 @@ export function mountStage(container, options) {
         if (frame) cancelAnimationFrame(frame);
         frame = 0;
         clearTimers();
+        // A hold is a promise about a transition; teardown must not leave one
+        // half-promised with a ring still drawn on the page.
+        worm.kind = null;
+        worm.locked = false;
+        if (holdRing) holdRing.hide();
         // Queries created but never collected would otherwise outlive the context
         // they belong to; delete them while the context is still usable.
         try {
@@ -2146,6 +2677,39 @@ export function mountStage(container, options) {
       },
       get animating() {
         return (layer ? layer.isAnimating : false) || transitioning;
+      },
+      /** The hold as the frame loop sees it, for verification only. */
+      wormhole() {
+        return {
+          enabled: wormholeEnabled,
+          kind: worm.kind,
+          locked: worm.locked,
+          elapsed: worm.kind ? (performance.now() - worm.startedAt) / 1000 : 0,
+          cover: machine.wormCover,
+          nebulaSpeed,
+        };
+      },
+      /** Begin a hold without a pointer, at the hole's centre. */
+      beginHold(kind) {
+        if (!wormholeEnabled || worm.kind) return false;
+        if (kind === 'enter' && !canOpenCenter()) return false;
+        if (kind === 'exit' && !(machine.mode === 'nebula' || machine.nebula > 0.05)) return false;
+        const rect = container.getBoundingClientRect();
+        const hole = silhouette();
+        startHold(kind, { clientX: rect.left + hole.x, clientY: rect.top + hole.y });
+        return true;
+      },
+      endHold() {
+        if (worm.kind && !worm.locked) cancelHold();
+        return true;
+      },
+      /** Move the hold's clock, so a single frame can be inspected without
+       *  waiting for the whole timeline in real time. */
+      seekHold(seconds) {
+        if (!worm.kind) return 0;
+        worm.startedAt = performance.now() - seconds * 1000;
+        requestFrame();
+        return seconds;
       },
       state() {
         return stateSnapshot();
