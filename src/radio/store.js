@@ -151,7 +151,10 @@ function songRecord(song, clock) {
     artist: normalizeSongTitle(input.artist),
     stationKey: input.stationKey ? String(input.stationKey) : null,
     stationName: input.stationName ? String(input.stationName) : '',
-    at: typeof clock === 'function' ? clock() : 0,
+    // A record that arrives from the library brings the moment it was liked;
+    // restoring must keep it, or every reload would restamp the whole list as
+    // liked-just-now and the order would mean nothing.
+    at: Number.isFinite(input.at) ? Math.max(0, Math.round(input.at)) : typeof clock === 'function' ? clock() : 0,
   };
 }
 
@@ -395,10 +398,9 @@ export function createRadioStore(options) {
     },
 
     /**
-     * Persistence seam. Phase 1 keeps state in memory for the life of the
-     * plugin; `save()` returns what a later milestone would write, and `load()`
-     * accepts such a record back. The shapes are fixed here so the call sites
-     * never change when a backend is chosen.
+     * Persistence seam: `save()` returns the record the Host writes to the
+     * library file, and `load()` accepts one back. The shapes are fixed here so
+     * that neither side has to know the other's storage.
      */
     save() {
       return {
@@ -410,28 +412,40 @@ export function createRadioStore(options) {
       };
     },
 
+    /**
+     * Restore a record written earlier.
+     *
+     * It merges instead of replacing, because the record comes back from disk a
+     * moment after the panel is already usable: a mark made while that read is
+     * in flight must not be erased by the answer to it. A store that is still
+     * empty merges into nothing, which is the same thing as a replace.
+     *
+     * Keys are kept even when this session's catalogue does not hold them. The
+     * catalogue is fetched, cached and refreshed, so a station can be missing
+     * for a while without being gone; filtering against today's list would drop
+     * the mark on the next write, and the station would never come back.
+     */
     load(record) {
       if (!record || typeof record !== 'object') return store;
-      const restore = (values) =>
-        new Set(
-          (Array.isArray(values) ? values : [])
-            .map((value) => String(value))
-            .filter((value) => byKey.has(value)),
-        );
-      favorite = restore(record.favorite);
+      const keys = (values) =>
+        (Array.isArray(values) ? values : []).map((value) => String(value)).filter(Boolean);
+      for (const key of keys(record.favorite)) favorite.add(key);
       // A version-1 record marked stations with the heart. The heart now marks
       // songs, so those keys are kept as station marks — the entity they were
       // always about — instead of disappearing with the old meaning.
       if (!Array.isArray(record.songs) && Array.isArray(record.liked)) {
-        for (const key of restore(record.liked)) favorite.add(key);
+        for (const key of keys(record.liked)) favorite.add(key);
       }
-      const restoredSongs = new Map();
       for (const entry of Array.isArray(record.songs) ? record.songs : []) {
         const restored = songRecord(entry, now);
-        if (restored) restoredSongs.set(restored.key, restored);
+        if (restored && !songs.has(restored.key)) songs.set(restored.key, restored);
       }
-      songs = restoredSongs;
-      selectedKey = typeof record.selectedKey === 'string' && byKey.has(record.selectedKey) ? record.selectedKey : null;
+      // A selection already made in this session wins over the one on disk. The
+      // stored key is kept even when this catalogue cannot resolve it, for the
+      // same reason a favourite is: the station may come back with the next one.
+      if (!selectedKey && typeof record.selectedKey === 'string' && record.selectedKey) {
+        selectedKey = record.selectedKey;
+      }
       emit();
       return store;
     },

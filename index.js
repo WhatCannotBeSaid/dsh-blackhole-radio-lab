@@ -23,6 +23,7 @@
 
 import { createNowPlayingResolver, parseStreamUrl } from './src/host/now-playing.js';
 import { CACHE_GZ, scheduleCatalogRefresh } from './src/host/catalog-refresh.js';
+import { LIBRARY_MAX_BYTES, libraryFilePath, readLibrary, writeLibrary } from './src/host/library.js';
 import { readFileSync, statSync } from 'node:fs';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -416,6 +417,79 @@ export function apply(ctx, config) {
     },
   });
   if (typeof releaseCatalog === 'function') disposers.push(releaseCatalog);
+
+  // The library: favourite stations and liked songs, one small file on this
+  // machine. GET hands the record back so a fresh page can restore it; POST
+  // replaces it after the user marks or unmarks something. Both directions are
+  // bounded — the route is reachable from anything on the local origin, so the
+  // body is capped before it is parsed and reshaped before it is written.
+  const libraryFile = libraryFilePath();
+  const releaseLibrary = webServer.register({
+    kind: 'exact',
+    path: `${PREFIX}/library`,
+    handler: (req, res) => {
+      const method = String(req.method ?? 'GET').toUpperCase();
+      if (method === 'GET' || method === 'HEAD') {
+        sendJson(res, 200, readLibrary(libraryFile) || { version: 2 }, method === 'HEAD');
+        return;
+      }
+      if (method !== 'POST') {
+        try {
+          res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, HEAD, POST' });
+          res.end(JSON.stringify({ error: 'method not allowed' }));
+        } catch {
+          /* the client hung up; there is nobody left to answer */
+        }
+        return;
+      }
+      // A write has to be a deliberate JSON request. A cross-site form can only
+      // send text/plain, urlencoded or multipart without a preflight, so asking
+      // for the JSON type is what keeps a random page from replacing the
+      // library. `sec-fetch-site` is the same check from the other side.
+      const contentType = String((req.headers && req.headers['content-type']) || '').toLowerCase();
+      if (!contentType.includes('application/json')) {
+        sendJson(res, 415, { error: 'unsupported-media-type' });
+        return;
+      }
+      const fetchSite = String((req.headers && req.headers['sec-fetch-site']) || '').toLowerCase();
+      if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+        sendJson(res, 403, { error: 'cross-site' });
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      let overflow = false;
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        // Over the cap the body is dropped, not buffered: an oversized writer
+        // must not be able to make the process hold it in memory.
+        if (size > LIBRARY_MAX_BYTES) {
+          overflow = true;
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('error', () => sendJson(res, 400, { error: 'read-failed' }));
+      req.on('end', () => {
+        if (overflow) {
+          sendJson(res, 413, { error: 'too-large' });
+          return;
+        }
+        let record = null;
+        try {
+          record = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          /* a body that is not JSON is refused below, like any other bad record */
+        }
+        if (!writeLibrary(libraryFile, record)) {
+          sendJson(res, 400, { error: 'bad-library' });
+          return;
+        }
+        sendJson(res, 200, { ok: true });
+      });
+    },
+  });
+  if (typeof releaseLibrary === 'function') disposers.push(releaseLibrary);
 
   // Weekly self-refresh: the packaged snapshot goes stale as stations come and
   // go, and users should not have to wait for a release. The first check runs

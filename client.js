@@ -48,6 +48,30 @@ window.__ModuleLoader__.load({
     const RADIO_CHUNK = './client.radio.js';
     /** Host route that reads one stream's ICY metadata block. */
     const NOW_PLAYING_URL = '/blackhole-radio-lab/now-playing';
+    /**
+     * Host route that owns the library — favourite stations and liked songs.
+     * It is a file on the machine, not `localStorage`: the page's port is not
+     * stable, and a library must outlive one origin.
+     */
+    const LIBRARY_URL = '/blackhole-radio-lab/library';
+    /** How long after the last mark the library is written, in milliseconds. */
+    const LIBRARY_WRITE_MS = 400;
+    /** How long a restore may wait for the file before it gives up, in ms. */
+    const LIBRARY_READ_MS = 8000;
+    /**
+     * Largest body that may be sent with `keepalive`. Browsers cap such requests
+     * at 64 KiB and reject anything above it outright, so a bigger body must go
+     * out without the flag rather than fail every write once the library grows.
+     */
+    const KEEPALIVE_MAX_CHARS = 48 * 1024;
+    /**
+     * The write that is still on the wire.
+     *
+     * `dispose` sends the last marks without waiting, because it cannot wait. A
+     * restore that started straight afterwards would then read the file as it
+     * was before those marks, so it waits for this first.
+     */
+    let libraryWriteInFlight = null;
     /** How often a playing station is asked what it is playing. */
     const NOW_PLAYING_POLL_MS = 15000;
 
@@ -622,6 +646,11 @@ window.__ModuleLoader__.load({
               }
 
               if (store && repository) store.index(repository.list());
+              // After the index, never before: the store restores only the marks
+              // whose station it can already resolve, so the catalogue has to be
+              // in the store first — otherwise every favourite would be dropped
+              // for having no record to point at.
+              if (store) await shared.hydrateLibrary(store);
               if (!shared.env) shared.bindEnv(radio);
               if (fallback) {
                 // Say it out loud: the rail must not present mock stations as live.
@@ -639,6 +668,104 @@ window.__ModuleLoader__.load({
               };
             });
           return shared.data;
+        },
+        /**
+         * Restore what the user marked last time, then keep writing it back.
+         *
+         * The store's `load()` only accepts keys it has already indexed, so this
+         * has to run after the catalogue is in the store — which is why it is
+         * awaited at the end of the data load rather than called when the store
+         * is created. A Host that does not answer the route leaves the library
+         * in memory, exactly as it behaved before the route existed.
+         */
+        libraryLoaded: false,
+        libraryTimer: 0,
+        async hydrateLibrary(store) {
+          if (!store || shared.libraryLoaded || typeof store.load !== 'function') return;
+          shared.libraryLoaded = true;
+          // Read what the previous store wrote, not what was there before it: the
+          // write `dispose` started is not awaited there, so it is awaited here.
+          if (libraryWriteInFlight) {
+            try {
+              await libraryWriteInFlight;
+            } catch {
+              /* a write that failed left the file as it was; the read still runs */
+            }
+          }
+          try {
+            const signal =
+              typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+                ? AbortSignal.timeout(LIBRARY_READ_MS)
+                : undefined;
+            const res = await fetch(LIBRARY_URL, { cache: 'no-store', signal });
+            if (res.ok) {
+              const record = await res.json();
+              // Merge, not replace: a mark made while this read was in flight is
+              // newer than the file and must survive it.
+              if (record && typeof record === 'object') store.load(record);
+            }
+          } catch {
+            /* no route, no server, or a network hiccup: memory-only is correct */
+          }
+          // Subscribed once, after the restore: a listener attached earlier would
+          // answer the restore itself with a write of the record just read.
+          if (typeof store.subscribe === 'function') store.subscribe(() => shared.queueLibraryWrite(store));
+        },
+        /**
+         * Write the library back, once the marks settle.
+         *
+         * Every toggle would otherwise be its own request; the delay collapses a
+         * burst (a list being cleared, a station liked twice) into one write.
+         */
+        queueLibraryWrite(store) {
+          if (!store || typeof store.save !== 'function') return;
+          if (shared.libraryTimer) clearTimeout(shared.libraryTimer);
+          shared.libraryTimer = setTimeout(() => {
+            shared.libraryTimer = 0;
+            shared.flushLibrary(store);
+          }, LIBRARY_WRITE_MS);
+        },
+        /**
+         * Send the library now, without waiting out the delay.
+         *
+         * Used by the dispose path, where the marks are already made and the
+         * timer is about to be thrown away with the store that scheduled it.
+         */
+        flushLibrary(store) {
+          if (!store || typeof store.save !== 'function') return;
+          let body = '';
+          try {
+            body = JSON.stringify(store.save());
+          } catch {
+            return;
+          }
+          try {
+            // `keepalive` so a write started as the window closes still lands —
+            // but only while the body fits the cap browsers put on such a
+            // request. Above it the fetch throws, and a write that always throws
+            // is a library that silently stops saving.
+            const request = fetch(LIBRARY_URL, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body,
+              ...(body.length <= KEEPALIVE_MAX_CHARS ? { keepalive: true } : {}),
+            })
+              .then((res) => {
+                // A refusal is not silent: the storage caps would otherwise make
+                // the library stop growing with nothing said about it.
+                if (!res.ok) console.warn(`[blackhole-radio-lab] library write refused: HTTP ${res.status}`);
+                return res;
+              })
+              .catch((error) => {
+                console.warn('[blackhole-radio-lab] library write failed', error);
+              })
+              .finally(() => {
+                if (libraryWriteInFlight === request) libraryWriteInFlight = null;
+              });
+            libraryWriteInFlight = request;
+          } catch {
+            /* a fetch that cannot even start leaves the memory copy intact */
+          }
         },
         /**
          * The data chunk is only loadable from a panel, so the store is built
@@ -699,6 +826,18 @@ window.__ModuleLoader__.load({
             }
           }
           shared.playback = null;
+          // A write still waiting belongs to the store that is going away: send it
+          // now, because the timer would die with this call and take the last
+          // marks with it. Whatever has not been written yet is then only the
+          // marks made after this point, and there are none.
+          if (shared.libraryTimer) {
+            clearTimeout(shared.libraryTimer);
+            shared.libraryTimer = 0;
+            shared.flushLibrary(shared.radio);
+          }
+          // The restored flag belongs to the store as well; a new store reads the
+          // library again instead of inheriting "already restored".
+          shared.libraryLoaded = false;
           shared.radio = null;
           shared.data = null;
           shared.env = null;
@@ -727,13 +866,25 @@ window.__ModuleLoader__.load({
         [subject],
       );
       // Memoised per version so the identity is stable between renders.
-      const memo = useRef({ version: -1, value: undefined, source: null });
+      const memo = useRef({ version: -1, value: undefined, source: null, deps: null });
       const getSnapshot = useCallback(() => {
         if (!subject) return undefined;
         const source = typeof subject.getSnapshot === 'function' ? subject.getSnapshot() : subject.getState();
         const version = source && typeof source.version === 'number' ? source.version : null;
-        if (memo.current.source !== subject || (version !== null && memo.current.version !== version)) {
-          memo.current = { version: version === null ? memo.current.version : version, value: selector(source), source: subject };
+        // A selector can depend on something the version alone does not track:
+        // the card asks "is *this* station a favourite", and the station arrives
+        // in a later render than the store does. Cache on the version only and
+        // the answer to the earlier question is returned forever, because the
+        // version it was computed at has not changed since. The dependencies are
+        // part of the cache key for that reason, not for tidiness.
+        const changedDeps = deps ? !memo.current.deps || memo.current.deps.some((value, index) => value !== deps[index]) : false;
+        if (memo.current.source !== subject || (version !== null && memo.current.version !== version) || changedDeps) {
+          memo.current = {
+            version: version === null ? memo.current.version : version,
+            value: selector(source),
+            source: subject,
+            deps: deps ? deps.slice() : null,
+          };
         } else if (memo.current.value === undefined) {
           memo.current.value = selector(source);
         }
@@ -1529,17 +1680,23 @@ window.__ModuleLoader__.load({
       // opened by a right-click has to take the focus itself and give it back.
       const linkRef = useRef(null);
       const popupRef = useRef(null);
+      // The marks themselves: an unfolded list is closed with Escape, and the
+      // keyboard has to land back on the mark that opened it rather than on the
+      // body of the page.
+      const favRef = useRef(null);
+      const likeRef = useRef(null);
       // An unfolded list is a popup, so it closes the ways a popup does: Escape,
       // or a press anywhere that is not the panel and not one of the two marks.
       useEffect(() => {
         if (!reveal) return undefined;
         const onKey = (event) => {
           if (event.key !== 'Escape') return;
-          const wasPicker = reveal.kind === 'platform';
+          const kind = reveal.kind;
           setReveal(null);
-          // Escape must not drop the keyboard on the body: the picker was
-          // opened from the song line, so that is where it goes back to.
-          if (wasPicker && linkRef.current) linkRef.current.focus();
+          // Escape must not drop the keyboard on the body: it goes back to what
+          // opened the panel — the song line, or the mark whose list it is.
+          const back = kind === 'platform' ? linkRef.current : kind === 'stations' ? favRef.current : likeRef.current;
+          if (back) back.focus();
         };
         const onPress = (event) => {
           const node = event.target;
@@ -1715,6 +1872,9 @@ window.__ModuleLoader__.load({
        * Shuffle: the button to the right of play, and what play does when the
        * card has no station to resume yet. It never returns the station the
        * card is already showing, so "next" always means a different one.
+       *
+       * The button is only live once a station is on the card, so the no-station
+       * call always comes from play: that is the single way to start listening.
        */
       const playRandom = () => {
         const pool = playablePool(store);
@@ -1869,6 +2029,7 @@ window.__ModuleLoader__.load({
         h(StarGlyph, { size: 12, filled: favourite }),
         Object.assign(
           {
+            ref: favRef,
             'aria-pressed': favourite ? 'true' : 'false',
             'aria-disabled': !hasStation || !store ? 'true' : 'false',
             'aria-haspopup': 'dialog',
@@ -1884,6 +2045,7 @@ window.__ModuleLoader__.load({
         h(HeartGlyph, { size: 11, filled: liked }),
         Object.assign(
           {
+            ref: likeRef,
             'aria-pressed': liked ? 'true' : 'false',
             'aria-disabled': !song || !store ? 'true' : 'false',
             'aria-haspopup': 'dialog',
@@ -1976,11 +2138,51 @@ window.__ModuleLoader__.load({
                             .filter(Boolean)
                             .join(' · ')
                         : entry.stationName || '';
+                      // A row is a way back into what the list already holds: a
+                      // station starts playing, a song asks the platform that is
+                      // current right now. Marking stays on the two marks, so a
+                      // row never changes the library by being pressed.
+                      const rowBody = [
+                        h('span', { key: 'name', className: 'bhrl-favpop__name' }, name),
+                        meta ? h('span', { key: 'meta', className: 'bhrl-favpop__meta' }, meta) : null,
+                      ];
+                      if (isStation) {
+                        return h(
+                          'li',
+                          { className: 'bhrl-favpop__row', key: `${index}-${entry.id}` },
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'bhrl-favpop__item',
+                              onClick: () => {
+                                startStation(entry);
+                                setReveal(null);
+                                if (favRef.current) favRef.current.focus();
+                              },
+                            },
+                            rowBody,
+                          ),
+                        );
+                      }
+                      // The artist is separate from the title here, unlike the
+                      // stream's own "Artist - Title", so both go into the query:
+                      // a title alone finds covers and remixes first.
+                      const query = [entry.title, entry.artist].filter(Boolean).join(' ');
                       return h(
                         'li',
-                        { className: 'bhrl-favpop__item', key: `${index}-${isStation ? entry.id : entry.key}` },
-                        h('span', { className: 'bhrl-favpop__name' }, name),
-                        meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
+                        { className: 'bhrl-favpop__row', key: `${index}-${entry.key}` },
+                        h(
+                          'a',
+                          {
+                            className: 'bhrl-favpop__item',
+                            href: songPlatformOf(platformId).href(query),
+                            target: '_blank',
+                            rel: 'noopener noreferrer',
+                            onClick: () => setReveal(null),
+                          },
+                          rowBody,
+                        ),
                       );
                     }),
                   ),
@@ -2071,7 +2273,10 @@ window.__ModuleLoader__.load({
             { 'aria-pressed': playing ? 'true' : 'false', disabled: !playback || !(hasStation ? !!stream : canPick) },
           ),
           actButton('bhrl-act-next', playRandom, t('fcardNext'), h(NextGlyph, { size: 13 }), {
-            disabled: !playback || !canPick,
+            // Without a station the next button has nothing to skip from, and
+            // pressing play is the one way to start listening. So shuffle is
+            // not offered until something is playing; play owns the first move.
+            disabled: !hasStation || !playback || !canPick,
           }),
           h(
             'span',
@@ -3336,14 +3541,13 @@ window.__ModuleLoader__.load({
  * it is airing) and the transport. Anything more pushes the session list up,
  * so the card is exactly as tall as its own controls.
  *
- * The surface is glass, not a painted panel: the app's own menu tint plus a
- * backdrop blur, with an SVG displacement pass that bends the sidebar behind
- * the rim. The tint is drawn by ::before so the box itself never becomes the
- * containing block for a filtered descendant.
+ * The card draws no surface of its own. It used to be a sheet of frosted glass
+ * over the sidebar; the sidebar is already the material, and a second tinted
+ * sheet inside it only made the two lines look boxed in. So there is no fill,
+ * no blur, no ring and no radius left to draw: the text and the four marks sit
+ * directly on whatever the sidebar is showing.
  */
 .bhrl-fcard {
-  position: relative;
-  isolation: isolate;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
@@ -3357,22 +3561,6 @@ window.__ModuleLoader__.load({
   column-gap: 6px;
   row-gap: 6px;
   padding: 7px 8px;
-  border-radius: 12px;
-  background: transparent;
-}
-.bhrl-fcard::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  pointer-events: none;
-  /* Glass, and only glass: the same fill and the same backdrop blur every DSH
-   * menu uses. No border, no shadow, no highlight, no refraction — the surface
-   * is a sheet of frosted material and nothing is drawn on top of it. */
-  background-color: var(--dsw-specific-menu, color-mix(in srgb, currentColor 58%, transparent));
-  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
-  backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
 }
 /* The two lines are one block, and the only space between them is this gap:
  * 8px. Two pixels read as one smudged line; this is what makes the station
@@ -3542,11 +3730,22 @@ window.__ModuleLoader__.load({
   margin: 0; padding: 0; list-style: none;
   max-height: 196px; overflow-y: auto;
 }
+/* One row of a list is a control, not a label: a station starts playing and a
+ * song opens its search, so the row itself carries the button and link shape.
+ * The list item is only the slot it sits in. */
+.bhrl-favpop__row { margin: 0; }
 .bhrl-favpop__item {
   display: flex; flex-direction: column; gap: 1px;
-  padding: 3px 4px; border-radius: 6px;
+  width: 100%; margin: 0; padding: 3px 4px; border: 0; border-radius: 6px;
+  background: none; color: inherit; font: inherit; text-align: left;
+  text-decoration: none; cursor: pointer;
 }
-.bhrl-favpop__item:hover { background: color-mix(in oklab, var(--bhrl-ink) 8%, transparent); }
+.bhrl-favpop__item:hover,
+.bhrl-favpop__item:focus-visible { background: color-mix(in oklab, var(--bhrl-ink) 8%, transparent); }
+.bhrl-favpop__item:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--bhrl-ink) 40%, transparent);
+  outline-offset: 1px;
+}
 .bhrl-favpop__name {
   font-size: 11px; line-height: 1.3;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -3592,14 +3791,27 @@ window.__ModuleLoader__.load({
 .bhrl-foot .bhrl-act[aria-disabled="true"]:hover { color: var(--bhrl-ink-dim); border-color: var(--bhrl-line-soft); background: color-mix(in srgb, currentColor 5%, transparent); }
 .bhrl-foot .bhrl-act.is-on { color: color-mix(in srgb, #ffab52 58%, currentColor); border-color: color-mix(in srgb, #ffab52 34%, transparent); }
 .bhrl-foot .bhrl-act-like.is-on { color: color-mix(in srgb, #ff6b8e 58%, currentColor); border-color: color-mix(in srgb, #ff6b8e 34%, transparent); }
+/* The hover rule above counts one more class than the "on" rules, so under the
+   pointer an on mark would drop back to plain ink exactly while it is being
+   read. Repeat the tint at the hover weight instead: the mark stays warm, and
+   the pointer answers through a slightly stronger mix rather than a colour
+   change. */
+.bhrl-foot .bhrl-act.is-on:hover:not(:disabled) { color: color-mix(in srgb, #ffab52 72%, currentColor); }
+.bhrl-foot .bhrl-act-like.is-on:hover:not(:disabled) { color: color-mix(in srgb, #ff6b8e 72%, currentColor); }
 
 /* The two marks that belong to a line, not to the transport: they sit inline
- * with the name and the track, quiet until they are on. */
+ * with the name and the track, quiet until they are on. No ring in any state —
+ * not at rest, not under the pointer, not once they are on and tinted: the
+ * glyph's colour is the whole answer, and a ring here would have made the mark
+ * look like a third control boxed into the line. The border stays declared as
+ * transparent, so turning it off costs no layout: the 16px and 14px boxes keep
+ * the sizes below. */
 .bhrl-fcard__row .bhrl-act,
-.bhrl-fcard__row .bhrl-act:hover:not(:disabled) {
+.bhrl-fcard__row .bhrl-act:hover:not(:disabled),
+.bhrl-fcard__row .bhrl-act.is-on,
+.bhrl-fcard__row .bhrl-act.is-on:hover:not(:disabled) {
   width: 16px; height: 16px; border-color: transparent; background: transparent;
 }
-.bhrl-fcard__row .bhrl-act:hover:not(:disabled) { border-color: var(--bhrl-line-soft); }
 /* The sub row's mark is a size smaller than the name row's, and it keeps that
  * size under the pointer: the pair below has to repeat the hover clause the
  * row rule above carries, or the resting 14px would lose to it on hover and
