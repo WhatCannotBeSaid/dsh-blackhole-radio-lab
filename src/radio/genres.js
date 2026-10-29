@@ -83,6 +83,20 @@ export function genreLabel(id, lang) {
   return lang === 'en' ? genre.en : genre.zh;
 }
 
+const MUSIC_IDS = Object.freeze(GENRES.filter((genre) => genre.group === 'music').map((genre) => genre.id));
+
+/**
+ * Whether a station of this genre is expected to play songs.
+ *
+ * This is the line between "a title on this stream is a track" and "a title on
+ * this stream is the programme". News, talk, sports and the unclassified bucket
+ * answer false: their streams do publish `StreamTitle`, but what they publish is
+ * the name of the show, and the card must show the station there, not a song.
+ */
+export function isMusicGenre(id) {
+  return MUSIC_IDS.includes(String(id));
+}
+
 /** Colour as a 0–1 RGB triple, for buffer attributes. */
 export function genreRgb(id) {
   const genre = BY_ID.get(String(id)) || BY_ID.get('other');

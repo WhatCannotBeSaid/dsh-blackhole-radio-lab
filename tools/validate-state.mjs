@@ -213,20 +213,21 @@ function createInstrumentedPlayback(clock) {
 {
   const check = section('merge');
 
-  check('reindexing with a different count keeps favourites, likes and selection', () => {
+  check('reindexing with a different count keeps favourites, song likes and selection', () => {
     const store = createRadioStore();
     const small = createMockRadioRepository({ count: 400, seed: 20261022 }).list();
     store.index(small);
     const picked = small[3];
     store.select(picked);
     store.toggleFavorite(picked);
-    store.toggleLike(picked);
-    ok(store.isFavorite(picked) && store.isLiked(picked), 'state is set');
+    const song = { title: 'Marion Meadows - My Cherie Amour', stationKey: stationKey(picked), stationName: picked.name };
+    store.toggleSongLike(song);
+    ok(store.isFavorite(picked) && store.isSongLiked(song.title), 'state is set');
 
     const large = createMockRadioRepository({ count: 1500, seed: 20261022 }).list();
     store.index(large);
     eq(store.isFavorite(picked), true, 'favourite survives a reindex');
-    eq(store.isLiked(picked), true, 'like survives a reindex');
+    eq(store.isSongLiked(song.title), true, 'song like survives a reindex');
     eq(store.keyOf(store.getSelected()), store.keyOf(picked), 'selection survives a reindex');
     eq(store.getStation(picked).name, picked.name, 'the record is still resolvable');
   });
@@ -265,16 +266,37 @@ function createInstrumentedPlayback(clock) {
     eq(store.isFavorite(mock[0]), true, 'and does not disturb the mock side');
   });
 
-  check('favourites and likes are independent of each other', () => {
+  check('a station favourite and a song like are independent entities', () => {
     const store = createRadioStore();
     const list = createMockRadioRepository({ count: 200, seed: 20261022 }).list();
     store.index(list);
+    const song = { title: 'Marion Meadows - My Cherie Amour', stationKey: stationKey(list[0]), stationName: list[0].name };
     store.toggleFavorite(list[0]);
-    eq(store.isLiked(list[0]), false, 'favouriting does not like');
-    store.toggleLike(list[0]);
-    eq(store.isFavorite(list[0]), true, 'liking does not unfavourite');
+    eq(store.isSongLiked(song.title), false, 'favouriting a station does not like a song');
+    store.toggleSongLike(song);
+    eq(store.isFavorite(list[0]), true, 'liking a song does not unfavourite the station');
+    eq(store.favoriteStations().length, 1, 'the station list is untouched by a song like');
+    eq(store.likedSongs().length, 1, 'the song list holds the song');
     store.toggleFavorite(list[0]);
-    eq(store.isLiked(list[0]), true, 'unfavouriting does not unlike');
+    eq(store.isSongLiked(song.title), true, 'unfavouriting the station does not unlike the song');
+    store.toggleSongLike(song);
+    eq(store.isSongLiked(song.title), false, 'the same song toggles off');
+    eq(store.likedSongs().length, 0, 'and leaves no entry behind');
+  });
+
+  check('one song is one song across stations and spellings', () => {
+    const store = createRadioStore();
+    const list = createMockRadioRepository({ count: 200, seed: 20261022 }).list();
+    store.index(list);
+    store.toggleSongLike({ title: 'My Cherie Amour', stationName: list[0].name });
+    eq(store.isSongLiked('my   cherie amour'), true, 'case and spacing are the same song');
+    eq(store.isSongLiked('MY CHERIE AMOUR'), true, 'so is a shouted version');
+    eq(store.likedSongs().length, 1, 'one entry, not three');
+    // A second station publishing the same title Toggles the one entry, it does
+    // not add a per-station copy: the song, not the station, is the entity.
+    store.toggleSongLike({ title: 'My Cherie Amour', stationName: list[1].name });
+    eq(store.likedSongs().length, 0, 'the same title toggles the one entry off');
+    eq(store.isSongLiked(''), false, 'an empty title is never a song');
   });
 
   check('toggle is idempotent per call and notifies once per real change', () => {
@@ -479,25 +501,33 @@ function createInstrumentedPlayback(clock) {
     store.index(list);
     store.select(list[4]);
     store.toggleFavorite(list[4]);
-    store.toggleLike(list[5]);
+    store.toggleSongLike({ title: 'Track One', stationKey: stationKey(list[5]), stationName: list[5].name });
     const saved = store.save();
-    eq(saved.version, 1, 'versioned record');
+    eq(saved.version, 2, 'versioned record');
     eq(saved.favorite.length, 1, 'one favourite');
-    eq(saved.liked.length, 1, 'one like');
+    eq(saved.songs.length, 1, 'one song');
 
     const fresh = createRadioStore();
     fresh.index(list);
     fresh.load(saved);
     eq(fresh.isFavorite(list[4]), true, 'favourite restored');
-    eq(fresh.isLiked(list[5]), true, 'like restored');
+    eq(fresh.isSongLiked('Track One'), true, 'song restored');
     eq(fresh.keyOf(fresh.getSelected()), store.keyOf(list[4]), 'selection restored');
 
     // A record naming stations this build has never seen is ignored, not trusted.
     const stranger = createRadioStore();
     stranger.index(list);
-    stranger.load({ version: 1, favorite: ['rb:does-not-exist'], liked: [], selectedKey: 'rb:nope' });
+    stranger.load({ version: 2, favorite: ['rb:does-not-exist'], songs: [], selectedKey: 'rb:nope' });
     eq(stranger.favoriteKeys().length, 0, 'unknown favourites are dropped');
     eq(stranger.getSelected(), null, 'an unknown selection is dropped');
+
+    // A version-1 record used the heart for stations; those marks are kept as
+    // station marks rather than dropped when the heart moved to songs.
+    const legacy = createRadioStore();
+    legacy.index(list);
+    legacy.load({ version: 1, favorite: [stationKey(list[6])], liked: [stationKey(list[7])] });
+    eq(legacy.isFavorite(list[7]), true, 'a version-1 station like survives as a station mark');
+    eq(legacy.isFavorite(list[6]), true, 'alongside the version-1 favourite');
   });
 }
 
@@ -587,13 +617,13 @@ function createInstrumentedPlayback(clock) {
     const first = repository.listByGenre(visible[0].id);
     store.select(first[0]);
     store.toggleFavorite(first[0]);
-    store.toggleLike(first[1]);
+    store.toggleSongLike({ title: 'Volume Track', stationKey: stationKey(first[1]), stationName: first[1].name });
 
     // Opening another genre is view state only; nothing above it changes.
     const before = store.getSnapshot();
     const other = repository.listByGenre(visible[1].id);
     eq(store.isFavorite(first[0]), true, 'the favourite survives the volume switch');
-    eq(store.isLiked(first[1]), true, 'the like survives the volume switch');
+    eq(store.isSongLiked('Volume Track'), true, 'the song like survives the volume switch');
     eq(store.keyOf(store.getSelected()), stationKey(first[0]), 'the selection survives the volume switch');
     eq(store.getSnapshot().version, before.version, 'reading another volume mutated nothing');
     ok(other.length > 0, 'the other volume has rows of its own');

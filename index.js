@@ -11,10 +11,16 @@
  *   2. It owns the authoritative configuration. The client half cannot read the
  *      loader entry's `config`, so the stage knobs are read here (validated by
  *      `Config` below) and published on one small route the page fetches once.
+ *   3. It reads now-playing metadata out of a live stream, because a browser
+ *      cannot: the stream is cross-origin, sends no CORS headers and never
+ *      ends. `src/host/now-playing.js` owns that read; this file only routes it.
  *
- * Nothing here renders, streams audio, or proxies Radio Browser — those belong
- * to phase 2 and would put an unverified network surface in the boot path.
+ * Nothing here renders, streams audio, or proxies Radio Browser — the
+ * now-playing route opens a stream just long enough to take one metadata block
+ * and hangs up.
  */
+
+import { createNowPlayingResolver, parseStreamUrl } from './src/host/now-playing.js';
 
 /** Plugin identity for cordis.yml rows and diagnostics. */
 export const name = 'blackhole-radio-lab';
@@ -99,6 +105,79 @@ export const Config = {
 };
 
 /**
+ * Write one JSON answer, tolerating a client that hung up first.
+ * @param res - the server response
+ * @param status - HTTP status
+ * @param payload - JSON-serialisable body
+ * @param head - true when the body must not be written (HEAD)
+ */
+function sendJson(res, status, payload, head) {
+  const body = JSON.stringify(payload);
+  try {
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store',
+    });
+    res.end(head ? undefined : body);
+  } catch {
+    /* the browser cancelled the poll while the read was still running */
+  }
+}
+
+/**
+ * Answer one now-playing poll.
+ *
+ * The route is a read of somebody else's stream, so every way it can fail is a
+ * normal answer: a station without metadata, an unreachable host and a timeout
+ * all come back as an empty title, which the card renders as station info. The
+ * only 4xx is a URL this host refuses to fetch at all.
+ *
+ * @param resolver - the cached reader from {@link createNowPlayingResolver}
+ * @param req - inbound request
+ * @param res - outbound response
+ */
+async function answerNowPlaying(resolver, req, res) {
+  const method = String(req.method ?? 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    try {
+      res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, HEAD' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+    } catch {
+      /* client already gone */
+    }
+    return;
+  }
+
+  let requestUrl;
+  try {
+    requestUrl = new URL(String(req.url ?? ''), 'http://127.0.0.1');
+  } catch {
+    sendJson(res, 400, { error: 'bad request', title: '' }, method === 'HEAD');
+    return;
+  }
+
+  const parsed = parseStreamUrl(requestUrl.searchParams.get('url'));
+  if (parsed.error) {
+    sendJson(res, 400, { error: parsed.error, title: '' }, method === 'HEAD');
+    return;
+  }
+
+  const result = await resolver.resolve(parsed.url);
+  sendJson(
+    res,
+    200,
+    {
+      title: result.title || '',
+      metaint: result.metaint || 0,
+      reason: result.reason || '',
+      cached: Boolean(result.cached),
+    },
+    method === 'HEAD',
+  );
+}
+
+/**
  * Mount the Host half.
  * @param ctx - Host cordis context.
  * @param config - Already validated against {@link Config}.
@@ -131,6 +210,22 @@ export function apply(ctx, config) {
     },
   });
   if (typeof dispose === 'function') disposers.push(dispose);
+
+  // Now playing: one exact route, one cached reader. The card polls this while
+  // a music station plays; every other surface keeps showing station info.
+  const nowPlaying = createNowPlayingResolver();
+  const releaseNowPlaying = webServer.register({
+    kind: 'exact',
+    path: `${PREFIX}/now-playing`,
+    handler: (req, res) => {
+      // The handler itself never throws at the server: a failure inside the read
+      // is already part of the JSON answer.
+      answerNowPlaying(nowPlaying, req, res).catch(() => {
+        sendJson(res, 502, { title: '', error: 'unavailable' }, false);
+      });
+    },
+  });
+  if (typeof releaseNowPlaying === 'function') disposers.push(releaseNowPlaying);
 
   // Everything this half acquired is released with the plugin fiber, so
   // disabling or uninstalling the bundle leaves no route and no handler behind.

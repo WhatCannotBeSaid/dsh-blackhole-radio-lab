@@ -8,7 +8,15 @@
  *   - which stations exist (`byKey`, keyed by a stable station key)
  *   - which station is selected
  *   - which stations are favourited
- *   - which stations are liked
+ *   - which songs are liked
+ *
+ * ## Two entities, not two buttons
+ *
+ * A station and a song are different things, so they are kept apart. The star
+ * favourites a station by its stable station key; the heart likes a *song* by
+ * its normalised title, which outlives the station it was heard on — the same
+ * track on another station is already liked. Nothing is liked "per station":
+ * that is exactly the confusion the two marks must not inherit.
  *
  * Playing is deliberately NOT here. "Selected" and "playing" are two different
  * questions, and the audio element that answers the second one is owned by
@@ -100,6 +108,54 @@ export function stationKey(station) {
 }
 
 /**
+ * The one spelling of a song title, so "My Cherie Amour" heard on two stations
+ * is one song and not two.
+ *
+ * Case and whitespace are noise in a title — streams vary them between metadata
+ * blocks of the same track — so they are collapsed here rather than at each
+ * comparison. The text itself is never rewritten: what the stream published is
+ * what the list shows.
+ */
+export function normalizeSongTitle(value) {
+  if (typeof value !== 'string') return '';
+  const text = (typeof value.normalize === 'function' ? value.normalize('NFC') : value).replace(/\s+/g, ' ').trim();
+  return text.slice(0, 160);
+}
+
+/**
+ * The stable key for one song title, or `null` when there is no title.
+ *
+ * A hash rather than the title itself: keys are persisted, and a title may hold
+ * any character a stream felt like sending.
+ */
+export function songKeyOf(value) {
+  const title = normalizeSongTitle(value);
+  if (!title) return null;
+  return `song:${hash32('bhrl-song', title.toLowerCase()).toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Normalise whatever a caller hands over into the record the store keeps.
+ * @param song a title string or `{ title, artist, stationKey, stationName }`
+ * @param clock the store's injected clock
+ */
+function songRecord(song, clock) {
+  const input = typeof song === 'string' ? { title: song } : song;
+  if (!input || typeof input !== 'object') return null;
+  const title = normalizeSongTitle(input.title);
+  const key = songKeyOf(title);
+  if (!key) return null;
+  return {
+    key,
+    title,
+    artist: normalizeSongTitle(input.artist),
+    stationKey: input.stationKey ? String(input.stationKey) : null,
+    stationName: input.stationName ? String(input.stationName) : '',
+    at: typeof clock === 'function' ? clock() : 0,
+  };
+}
+
+/**
  * Create the store.
  *
  * @param options.now - clock, injected so tests are not time-dependent.
@@ -114,7 +170,8 @@ export function createRadioStore(options) {
   let keyById = new Map();
   let selectedKey = null;
   let favorite = new Set();
-  let liked = new Set();
+  /** song key → song record, insertion-ordered so "newest last" is cheap */
+  let songs = new Map();
   /** Bumped on every mutation; a cheap version for memo dependencies. */
   let version = 0;
   const listeners = new Set();
@@ -138,6 +195,15 @@ export function createRadioStore(options) {
     if (keyById.has(text)) return text;
     if (byKey.has(text)) return text;
     return null;
+  }
+
+  /** Resolve a song key, title, or song record to a song key. */
+  function resolveSong(target) {
+    if (target === null || target === undefined) return null;
+    if (typeof target === 'object') return songKeyOf(target.title);
+    const text = String(target);
+    if (songs.has(text)) return text;
+    return songKeyOf(text);
   }
 
   const store = {
@@ -174,7 +240,7 @@ export function createRadioStore(options) {
       keyById = new Map();
       selectedKey = null;
       favorite = new Set();
-      liked = new Set();
+      songs = new Map();
       emit();
       return store;
     },
@@ -224,16 +290,22 @@ export function createRadioStore(options) {
       return selectedKey ? byKey.get(selectedKey) || null : null;
     },
 
-    /** --- favourites and likes ----------------------------------------- */
+    /** --- favourites and song likes ------------------------------------- */
 
     isFavorite(target) {
       const key = resolve(target);
       return key ? favorite.has(key) : false;
     },
 
-    isLiked(target) {
-      const key = resolve(target);
-      return key ? liked.has(key) : false;
+    /**
+     * Is this song already liked?
+     *
+     * Accepts a title, a stored song key, or a song record — the card holds a
+     * title, a restored list holds keys, and neither should have to convert.
+     */
+    isSongLiked(target) {
+      const key = resolveSong(target);
+      return key ? songs.has(key) : false;
     },
 
     setFavorite(target, value) {
@@ -253,30 +325,47 @@ export function createRadioStore(options) {
       return store.setFavorite(target, !store.isFavorite(target));
     },
 
-    setLiked(target, value) {
-      const key = resolve(target);
-      if (!key) return store;
+    /**
+     * Like or unlike one song.
+     *
+     * @param song a title, or `{ title, artist, stationKey, stationName }`
+     * @param value true to like, false to unlike
+     */
+    setSongLiked(song, value) {
+      const record = songRecord(song, now);
+      if (!record) return store;
       const want = Boolean(value);
-      if (liked.has(key) === want) return store;
-      const next = new Set(liked);
-      if (want) next.add(key);
-      else next.delete(key);
-      liked = next;
+      if (songs.has(record.key) === want) return store;
+      const next = new Map(songs);
+      if (want) next.set(record.key, record);
+      else next.delete(record.key);
+      songs = next;
       emit();
       return store;
     },
 
-    toggleLike(target) {
-      return store.setLiked(target, !store.isLiked(target));
+    toggleSongLike(song) {
+      return store.setSongLiked(song, !store.isSongLiked(song));
     },
 
-    /** Keys of every favourite / liked station, in insertion order. */
+    /** Keys of every favourite station, in insertion order. */
     favoriteKeys() {
       return Array.from(favorite);
     },
 
-    likedKeys() {
-      return Array.from(liked);
+    /** The favourited station records themselves, in insertion order. */
+    favoriteStations() {
+      const list = [];
+      for (const key of favorite) {
+        const station = byKey.get(key);
+        if (station) list.push(station);
+      }
+      return list;
+    },
+
+    /** Liked songs, newest first — what the heart's list shows. */
+    likedSongs() {
+      return Array.from(songs.values()).reverse();
     },
 
     /** --- snapshots ---------------------------------------------------- */
@@ -292,7 +381,7 @@ export function createRadioStore(options) {
         version,
         selectedKey,
         favorite,
-        liked,
+        songs: Array.from(songs.values()),
         count: byKey.size,
       };
     },
@@ -307,17 +396,17 @@ export function createRadioStore(options) {
 
     /**
      * Persistence seam. Phase 1 keeps state in memory for the life of the
-     * plugin; `save()` returns what a later milestone would write, and
-     * `load()` is a no-op today. The shapes are fixed here so the call sites
+     * plugin; `save()` returns what a later milestone would write, and `load()`
+     * accepts such a record back. The shapes are fixed here so the call sites
      * never change when a backend is chosen.
      */
     save() {
       return {
-        version: 1,
+        version: 2,
         savedAt: now(),
         selectedKey,
         favorite: Array.from(favorite),
-        liked: Array.from(liked),
+        songs: Array.from(songs.values()),
       };
     },
 
@@ -330,7 +419,18 @@ export function createRadioStore(options) {
             .filter((value) => byKey.has(value)),
         );
       favorite = restore(record.favorite);
-      liked = restore(record.liked);
+      // A version-1 record marked stations with the heart. The heart now marks
+      // songs, so those keys are kept as station marks — the entity they were
+      // always about — instead of disappearing with the old meaning.
+      if (!Array.isArray(record.songs) && Array.isArray(record.liked)) {
+        for (const key of restore(record.liked)) favorite.add(key);
+      }
+      const restoredSongs = new Map();
+      for (const entry of Array.isArray(record.songs) ? record.songs : []) {
+        const restored = songRecord(entry, now);
+        if (restored) restoredSongs.set(restored.key, restored);
+      }
+      songs = restoredSongs;
       selectedKey = typeof record.selectedKey === 'string' && byKey.has(record.selectedKey) ? record.selectedKey : null;
       emit();
       return store;

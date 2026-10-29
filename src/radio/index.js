@@ -43,10 +43,11 @@ export {
   genreLabel,
   genreOf,
   genreRgb,
+  isMusicGenre,
   normalizeTag,
   summarizeGenres,
   tagsOf,
 } from './genres.js';
 export { mapStation, mapStations, categoriesFor, isStreamUrl, streamUrlFor, MAPPING } from './radio-browser.js';
-export { createRadioStore, stationKey, mockSignature, RECENT_LIMIT } from './store.js';
+export { createRadioStore, stationKey, songKeyOf, normalizeSongTitle, mockSignature, RECENT_LIMIT } from './store.js';
 export { createPlaybackCore, SLOW_LOAD_MS } from './playback.js';

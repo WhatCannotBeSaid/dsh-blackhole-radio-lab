@@ -46,6 +46,10 @@ window.__ModuleLoader__.load({
     const CONFIG_URL = '/blackhole-radio-lab/config';
     const STAGE_CHUNK = './client.stage.js';
     const RADIO_CHUNK = './client.radio.js';
+    /** Host route that reads one stream's ICY metadata block. */
+    const NOW_PLAYING_URL = '/blackhole-radio-lab/now-playing';
+    /** How often a playing station is asked what it is playing. */
+    const NOW_PLAYING_POLL_MS = 15000;
 
     /**
      * What the panel runs on when `/blackhole-radio-lab/config` is unreachable.
@@ -121,6 +125,13 @@ window.__ModuleLoader__.load({
         unfavouriteAction: '取消收藏',
         likeAction: '喜欢',
         unlikeAction: '取消喜欢',
+        favouriteListTitle: '收藏的电台',
+        favouriteListEmpty: '还没有收藏电台',
+        likeListTitle: '喜爱的歌曲',
+        likeListEmpty: '还没有喜爱歌曲',
+        likeSongAction: '喜爱这首歌',
+        unlikeSongAction: '取消喜爱这首歌',
+        likeUnavailable: '这首歌还没有歌名',
         unavailable: '无法播放',
         playbackLoading: '正在缓冲…',
         playbackSlow: '连接较慢，仍在尝试…',
@@ -213,6 +224,13 @@ window.__ModuleLoader__.load({
         unfavouriteAction: 'Remove from favourites',
         likeAction: 'Like',
         unlikeAction: 'Unlike',
+        favouriteListTitle: 'Favourite stations',
+        favouriteListEmpty: 'No favourite stations yet',
+        likeListTitle: 'Liked songs',
+        likeListEmpty: 'No liked songs yet',
+        likeSongAction: 'Like this song',
+        unlikeSongAction: 'Unlike this song',
+        likeUnavailable: 'No song title yet',
         unavailable: 'No stream',
         playbackLoading: 'Buffering…',
         playbackSlow: 'Slow connection, still trying…',
@@ -472,6 +490,7 @@ window.__ModuleLoader__.load({
             genreLabel: typeof chunk.genreLabel === 'function' ? chunk.genreLabel : (id) => String(id),
             genreCss: typeof chunk.genreCss === 'function' ? chunk.genreCss : () => '#9a9a9a',
             stationKey: typeof chunk.stationKey === 'function' ? chunk.stationKey : null,
+            isMusicGenre: typeof chunk.isMusicGenre === 'function' ? chunk.isMusicGenre : () => false,
           };
           return shared.env;
         },
@@ -744,6 +763,14 @@ window.__ModuleLoader__.load({
      */
     const EMPTY_STATION_INFO = { tags: [], codec: '', bitrate: 0, hls: false, playable: false };
 
+    /**
+     * The song a stream last reported, and the station it belongs to.
+     *
+     * A title only counts while it belongs to the station currently on the card:
+     * switching stations must never leave the previous station's song behind.
+     */
+    const EMPTY_NOW_PLAYING = { stationId: '', title: '' };
+
 
     /* ------------------------------------------------------------------ *
      *  Nothing but the glass itself.
@@ -765,7 +792,7 @@ window.__ModuleLoader__.load({
      * whole name stays readable without a tooltip and without changing height.
      */
     function OverflowText(props) {
-      const { tag, className, text, title } = props;
+      const { tag, className, text } = props;
       const boxRef = useRef(null);
       const innerRef = useRef(null);
       const [shift, setShift] = useState(0);
@@ -791,7 +818,6 @@ window.__ModuleLoader__.load({
         {
           ref: boxRef,
           className,
-          title: title || text,
           'data-overflow': shift > 0 ? 'true' : 'false',
           style: shift > 0 ? { '--bhrl-shift': `${shift}px` } : undefined,
         },
@@ -845,7 +871,6 @@ window.__ModuleLoader__.load({
       const playback = shared ? shared.playback : null;
 
       const favourite = useShared(shared, 'radio', (snapshot) => (store ? store.isFavorite(station) : false), [store, station]);
-      const liked = useShared(shared, 'radio', (snapshot) => (store ? store.isLiked(station) : false), [store, station]);
       const player = useShared(
         shared,
         'playback',
@@ -875,10 +900,6 @@ window.__ModuleLoader__.load({
         if (event) event.stopPropagation();
         if (store) store.toggleFavorite(station);
       };
-      const toggleLike = (event) => {
-        if (event) event.stopPropagation();
-        if (store) store.toggleLike(station);
-      };
       const focus = (event) => {
         if (event) event.stopPropagation();
         if (onFocus) onFocus(station);
@@ -892,7 +913,6 @@ window.__ModuleLoader__.load({
           className: `bhrl-act bhrl-act-play${isMine ? ' is-mine' : ''}`,
           onClick: togglePlay,
           disabled: !stream || !playback,
-          title: isPlaying ? t('pauseAction') : t('playAction'),
           'aria-label': isPlaying ? t('pauseAction') : t('playAction'),
           'aria-pressed': isPlaying ? 'true' : 'false',
         },
@@ -905,24 +925,10 @@ window.__ModuleLoader__.load({
           type: 'button',
           className: `bhrl-act${favourite ? ' is-on' : ''}`,
           onClick: toggleFavourite,
-          title: favourite ? t('unfavouriteAction') : t('favouriteAction'),
           'aria-label': favourite ? t('unfavouriteAction') : t('favouriteAction'),
           'aria-pressed': favourite ? 'true' : 'false',
         },
         h(StarGlyph, { filled: favourite }),
-      );
-
-      const likeButton = h(
-        'button',
-        {
-          type: 'button',
-          className: `bhrl-act bhrl-act-like${liked ? ' is-on' : ''}`,
-          onClick: toggleLike,
-          title: liked ? t('unlikeAction') : t('likeAction'),
-          'aria-label': liked ? t('unlikeAction') : t('likeAction'),
-          'aria-pressed': liked ? 'true' : 'false',
-        },
-        h(HeartGlyph, { filled: liked }),
       );
 
       // Everything below is read from the record itself, or from nothing at
@@ -946,18 +952,17 @@ window.__ModuleLoader__.load({
           { className: `bhrl-chip${active ? ' is-active' : ''}${isMine ? ' is-mine' : ''}` },
           h(
             'button',
-            { type: 'button', className: 'bhrl-chip-name', onClick: focus, title: station.name },
+            { type: 'button', className: 'bhrl-chip-name', onClick: focus },
             isMine && isPlaying ? h('i', { className: 'bhrl-eq', 'aria-hidden': 'true' }) : null,
             h('span', null, station.name),
           ),
           transport,
           favButton,
-          likeButton,
         );
       }
 
       if (variant === 'row') {
-        // The compact form of the same card: the same record, the same three
+        // The compact form of the same card: the same record, the same two
         // operations, the same state read from the same two owners. It is
         // compact in layout only — nothing it can do is missing here.
         return h(
@@ -969,7 +974,7 @@ window.__ModuleLoader__.load({
           },
           h(
             'button',
-            { type: 'button', className: 'bhrl-row-main', onClick: focus, title: station.name },
+            { type: 'button', className: 'bhrl-row-main', onClick: focus },
             h('span', { className: 'bhrl-row-name' }, station.name),
             h(
               'span',
@@ -992,7 +997,7 @@ window.__ModuleLoader__.load({
               : null,
           ),
           stateBadge,
-          h('span', { className: 'bhrl-row-acts' }, transport, favButton, likeButton),
+          h('span', { className: 'bhrl-row-acts' }, transport, favButton),
         );
       }
 
@@ -1172,10 +1177,11 @@ window.__ModuleLoader__.load({
      * this card reads that plus the playback snapshot, and every button it
      * draws calls the shared owners rather than keeping a local copy.
      *
-     * Semantics, fixed here so no view invents its own: the heart is "like",
-     * the star is "favourite the station", the middle button plays or pauses
-     * the station being shown, and the button to its right plays a random
-     * station from the whole catalogue.
+     * Semantics, fixed here so no view invents its own: the star marks the
+     * station itself, the heart marks the song the stream is publishing — and
+     * is dead when there is no song — the middle button plays or pauses the
+     * station being shown, and the button to its right plays a random station
+     * from the whole catalogue. Hovering either mark unfolds the list it owns.
      */
     function StationFootCard(props) {
       const { station, shared, t, onOpen, lang } = props;
@@ -1183,7 +1189,6 @@ window.__ModuleLoader__.load({
       const playback = shared ? shared.playback : null;
 
       const favourite = useShared(shared, 'radio', () => (store && station ? store.isFavorite(station) : false), [store, station]);
-      const liked = useShared(shared, 'radio', () => (store && station ? store.isLiked(station) : false), [store, station]);
       const playState = useShared(shared, 'playback', (snapshot) => snapshot || IDLE_PLAYBACK, [shared, shared && shared.playback]);
       // The catalog lands after this card has already mounted, and the booleans
       // above never change on that event, so React would keep a placeholder
@@ -1200,6 +1205,42 @@ window.__ModuleLoader__.load({
         [store],
       );
       const lastPlayedRef = useRef(null);
+
+      // What the station last said it was playing. Kept beside the station it
+      // came from: a title only counts while its station is the one on the
+      // card, so switching stations can never leave the last song behind.
+      const [nowPlaying, setNowPlaying] = useState(EMPTY_NOW_PLAYING);
+      // The mark whose list is unfolded, and where its panel is pinned. The
+      // panel is an overlay positioned from the mark's own rectangle, because
+      // the sidebar would clip anything drawn inside the card's box.
+      const [reveal, setReveal] = useState(null);
+      const closeTimer = useRef(0);
+      useEffect(
+        () => () => {
+          if (closeTimer.current) clearTimeout(closeTimer.current);
+        },
+        [],
+      );
+      // An unfolded list is a popup, so it closes the ways a popup does: Escape,
+      // or a press anywhere that is not the panel and not one of the two marks.
+      useEffect(() => {
+        if (!reveal) return undefined;
+        const onKey = (event) => {
+          if (event.key === 'Escape') setReveal(null);
+        };
+        const onPress = (event) => {
+          const node = event.target;
+          if (!node || typeof node.closest !== 'function') return;
+          if (node.closest('.bhrl-favpop') || node.closest('.bhrl-act')) return;
+          setReveal(null);
+        };
+        window.addEventListener('keydown', onKey);
+        window.addEventListener('pointerdown', onPress, true);
+        return () => {
+          window.removeEventListener('keydown', onKey);
+          window.removeEventListener('pointerdown', onPress, true);
+        };
+      }, [reveal]);
 
       // Keep a short log of what the audio element has actually played, so
       // "previous" means the station heard before this one.
@@ -1226,11 +1267,82 @@ window.__ModuleLoader__.load({
       const info = hasStation ? stationInfoOf(station) : EMPTY_STATION_INFO;
       const genreId = (hasStation && station.genre) || '';
       const genreLabel = hasStation
-        ? t(`genre_${String(genreId).replace(/[^a-z0-9]/gi, '')}`)
+        ? t(`genre_${String(genreId || 'other').replace(/[^a-z0-9]/gi, '')}`)
         : t('cardStationLabel');
+      // Not every stream publishes a song. A news or talk station puts its
+      // programme name in the very same field, so the genre decides whether a
+      // title counts as a song at all.
+      const isMusic = hasStation && !!(shared && shared.env && shared.env.isMusicGenre(genreId));
       // Whether a shuffle has anything to draw from — from the subscription
       // above, so it cannot be frozen at the empty-catalog value.
       const canPick = playableCount > 0;
+
+      /**
+       * Ask the Host what this station is playing.
+       *
+       * The browser cannot read ICY metadata from another origin, and a stream
+       * never ends, so the Host reads exactly one metadata block and caches it;
+       * this only has to ask. The question is asked while the card's own
+       * station is playing music — a pause keeps the last answer, because
+       * pausing does not change what the stream is playing.
+       */
+      useEffect(() => {
+        if (!hasStation || !stream || !isMine || status !== 'playing' || !isMusic) return undefined;
+        const id = String(station.id);
+        let alive = true;
+        let timer = 0;
+        const ask = () => {
+          let pending;
+          try {
+            pending = fetch(`${NOW_PLAYING_URL}?url=${encodeURIComponent(stream)}`, { cache: 'no-store' });
+          } catch {
+            return;
+          }
+          Promise.resolve(pending)
+            .then((response) => (response && response.ok ? response.json() : null))
+            .then((body) => {
+              if (!alive) return;
+              const title = body && typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
+              setNowPlaying((previous) =>
+                previous.stationId === id && previous.title === title ? previous : { stationId: id, title },
+              );
+            })
+            .catch(() => {
+              if (!alive) return;
+              setNowPlaying((previous) => (previous.stationId === id ? previous : { stationId: id, title: '' }));
+            })
+            .then(() => {
+              if (alive) timer = setTimeout(ask, NOW_PLAYING_POLL_MS);
+            });
+        };
+        ask();
+        return () => {
+          alive = false;
+          if (timer) clearTimeout(timer);
+        };
+      }, [hasStation, stream, isMine, status, isMusic, station && station.id]);
+
+      // The song on the card: the station's own title, and only while that
+      // station is the one showing it.
+      const songTitle = hasStation && isMusic && nowPlaying.stationId === String(station.id) ? nowPlaying.title : '';
+      const song = songTitle
+        ? {
+            title: songTitle,
+            artist: songTitle.includes(' - ') ? songTitle.slice(0, songTitle.indexOf(' - ')).trim() : '',
+            stationKey: shared && shared.env && shared.env.stationKey ? shared.env.stationKey(station) : '',
+            stationName: station.name,
+          }
+        : null;
+      // `liked` depends on which song is on the card, not only on the store, and
+      // `useShared` memoises a selector per store version — so it is subscribed
+      // here as a bare version and the answer is derived from it instead.
+      const radioVersion = useShared(shared, 'radio', () => (store ? store.getSnapshot().version : 0), [store]);
+      const liked = useMemo(
+        () => (store && song ? store.isSongLiked(song.title) : false),
+        [store, song && song.title, radioVersion],
+      );
+      const favouriteStations = useShared(shared, 'radio', () => (store ? store.favoriteStations() : []), [store]);
+      const likedSongs = useShared(shared, 'radio', () => (store ? store.likedSongs() : []), [store]);
 
       /**
        * Start a station: the transport and the selection move together.
@@ -1295,9 +1407,9 @@ window.__ModuleLoader__.load({
         playback.setVolume(value / 100);
       };
 
-      // Second line: the song when the stream publishes one, otherwise the
-      // station's own labels — language, country, genre. A bitrate is a
-      // property of the pipe, not of the station, so it never takes this slot.
+      // Second line: the song while the stream publishes one; otherwise the
+      // station itself, in the one shape the card promises —
+      // `genre · tags · language · bitrate kbps`.
       const localized = (value) => {
         if (!value) return '';
         if (typeof value === 'string') return value;
@@ -1314,15 +1426,17 @@ window.__ModuleLoader__.load({
       const format = [info.codec ? String(info.codec).toUpperCase() : '', info.bitrate ? `${Math.round(info.bitrate)}kbps` : '']
         .filter(Boolean)
         .join(' ');
-      const track = info.track ? String(info.track) : '';
-      const stationMeta = [
-        hasStation ? knownLabel(station.language) : '',
-        hasStation ? knownLabel(station.country) : '',
-        hasStation ? genreLabel : '',
-      ]
-        .filter(Boolean)
-        .join(' · ');
-      const trackLine = track || stationMeta || (format ? `${t('liveStream')} · ${format}` : t('liveStream'));
+      const stationMeta = hasStation
+        ? [
+            genreLabel,
+            info.tags.join(','),
+            knownLabel(station.language),
+            info.bitrate ? `${Math.round(info.bitrate)} kbps` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : '';
+      const trackLine = songTitle || stationMeta || (format ? `${t('liveStream')} · ${format}` : t('liveStream'));
       const displayName = hasStation ? station.name : t('fcardEmptyName');
       // Every state of the card is expressed on this one line, never as an
       // extra row: the box is 236x93 for the placeholder, for a playing
@@ -1335,6 +1449,8 @@ window.__ModuleLoader__.load({
             ? t('unavailable')
             : trackLine;
 
+      // The card carries no hover tooltips: `aria-label` names each control for
+      // assistive tech, and nothing pops a text bubble over the artwork.
       const actButton = (className, onClick, label, glyph, extra) =>
         h(
           'button',
@@ -1343,7 +1459,6 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: `bhrl-act ${className}`,
               onClick,
-              title: label,
               'aria-label': label,
             },
             extra || {},
@@ -1351,23 +1466,129 @@ window.__ModuleLoader__.load({
           glyph,
         );
 
-      // Favourite marks the station, like marks the song: they sit next to the
-      // two lines they belong to instead of in the transport row, which now
-      // only carries playback.
+      // The two marks own one list each and sit next to the line they belong
+      // to: the star is the station, the heart is the song. A hover (or a
+      // keyboard focus) unfolds that list above the card; the click is still
+      // just the toggle, so the marks keep doing exactly one thing each.
+      const cancelClose = () => {
+        if (closeTimer.current) {
+          clearTimeout(closeTimer.current);
+          closeTimer.current = 0;
+        }
+      };
+      const scheduleClose = () => {
+        cancelClose();
+        closeTimer.current = setTimeout(() => setReveal(null), 200);
+      };
+      // Where the panel hangs. It is aligned to the side of the mark that has
+      // room: the sidebar sits on the left, so a mark there grows rightward,
+      // and the clamp keeps the whole box inside the viewport.
+      const FAVPOP_WIDTH = 208;
+      const unfoldList = (kind, event) => {
+        cancelClose();
+        const node = event && event.currentTarget;
+        if (!node || typeof node.getBoundingClientRect !== 'function') return;
+        const rect = node.getBoundingClientRect();
+        const bottom = Math.max(8, Math.round(window.innerHeight - rect.top + 8));
+        const room = Math.max(8, window.innerWidth - 8 - FAVPOP_WIDTH);
+        const place =
+          rect.left <= window.innerWidth / 2
+            ? { left: Math.min(Math.max(8, Math.round(rect.left)), room) }
+            : { right: Math.min(Math.max(8, Math.round(window.innerWidth - rect.right)), room) };
+        setReveal(Object.assign({ kind, bottom }, place));
+      };
+      const listHandlers = (kind) => ({
+        onPointerEnter: (event) => unfoldList(kind, event),
+        onPointerLeave: scheduleClose,
+        onFocus: (event) => unfoldList(kind, event),
+        onBlur: scheduleClose,
+      });
+
+      // A mark is never really `disabled`: a disabled button stops firing
+      // pointer events, and that would take the list away exactly when it is
+      // the only way to reach it. The click guards itself, and the dimming is
+      // driven by `aria-disabled` so hovering still unfolds the panel.
       const favouriteButton = actButton(
         `bhrl-act-fav${favourite ? ' is-on' : ''}`,
         () => store && hasStation && store.toggleFavorite(station),
         favourite ? t('unfavouriteAction') : t('favouriteAction'),
         h(StarGlyph, { size: 12, filled: favourite }),
-        { 'aria-pressed': favourite ? 'true' : 'false', disabled: !hasStation || !store },
+        Object.assign(
+          {
+            'aria-pressed': favourite ? 'true' : 'false',
+            'aria-disabled': !hasStation || !store ? 'true' : 'false',
+          },
+          listHandlers('stations'),
+        ),
       );
       const likeButton = actButton(
         `bhrl-act-like${liked ? ' is-on' : ''}`,
-        () => store && hasStation && store.toggleLike(station),
-        liked ? t('unlikeAction') : t('likeAction'),
+        () => store && song && store.toggleSongLike(song),
+        !song ? t('likeUnavailable') : liked ? t('unlikeSongAction') : t('likeSongAction'),
         h(HeartGlyph, { size: 11, filled: liked }),
-        { 'aria-pressed': liked ? 'true' : 'false', disabled: !hasStation || !store },
+        Object.assign(
+          {
+            'aria-pressed': liked ? 'true' : 'false',
+            'aria-disabled': !song || !store ? 'true' : 'false',
+          },
+          listHandlers('songs'),
+        ),
       );
+
+      // The unfolded list. It is an overlay pinned to the mark's corner, so it
+      // is never clipped by the foot and never moves the card's 236x93 box.
+      const listEntries = reveal ? (reveal.kind === 'stations' ? favouriteStations : likedSongs) : [];
+      const popover = reveal
+        ? h(
+            'div',
+            Object.assign(
+              {
+                className: 'bhrl-favpop',
+                style: {
+                  bottom: `${reveal.bottom}px`,
+                  right: reveal.right === undefined ? 'auto' : `${reveal.right}px`,
+                  left: reveal.left === undefined ? 'auto' : `${reveal.left}px`,
+                },
+                role: 'dialog',
+                'aria-label': reveal.kind === 'stations' ? t('favouriteListTitle') : t('likeListTitle'),
+              },
+              { onPointerEnter: cancelClose, onPointerLeave: scheduleClose },
+            ),
+            h(
+              'p',
+              { className: 'bhrl-favpop__title' },
+              `${reveal.kind === 'stations' ? t('favouriteListTitle') : t('likeListTitle')} · ${listEntries.length}`,
+            ),
+            listEntries.length === 0
+              ? h(
+                  'p',
+                  { className: 'bhrl-favpop__empty' },
+                  reveal.kind === 'stations' ? t('favouriteListEmpty') : t('likeListEmpty'),
+                )
+              : h(
+                  'ul',
+                  { className: 'bhrl-favpop__list' },
+                  listEntries.slice(0, 40).map((entry, index) => {
+                    const isStation = reveal.kind === 'stations';
+                    const name = isStation ? entry.name : entry.title;
+                    const meta = isStation
+                      ? [
+                          t(`genre_${String(entry.genre || 'other').replace(/[^a-z0-9]/gi, '')}`),
+                          knownLabel(entry.language),
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : entry.stationName || '';
+                    return h(
+                      'li',
+                      { className: 'bhrl-favpop__item', key: `${index}-${isStation ? entry.id : entry.key}` },
+                      h('span', { className: 'bhrl-favpop__name' }, name),
+                      meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
+                    );
+                  }),
+                ),
+          )
+        : null;
 
       // The hole has one door: the black-hole mark in the corner. Every other
       // pixel of the card belongs to the station — a stray click on a name
@@ -1405,10 +1626,9 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'bhrl-fcard__logo',
             onClick: openHole,
-            title: t('openHoleHint'),
             'aria-label': t('openHoleHint'),
           },
-          h(HoleGlyph, { size: 22 }),
+          h('span', { className: 'bhrl-fcard__mark', 'aria-hidden': 'true' }),
         ),
         h(
           'div',
@@ -1437,13 +1657,16 @@ window.__ModuleLoader__.load({
               max: '100',
               step: '1',
               value: String(Math.round(volume * 100)),
+              // The filled side of the rail: the value itself, handed to the
+              // gradient so the bar never disagrees with the thumb.
+              style: { '--bhrl-vol': `${Math.round(volume * 100)}%` },
               onChange: changeVolume,
-              title: t('fcardVolume'),
               'aria-label': t('fcardVolume'),
               disabled: !playback,
             }),
           ),
         ),
+        popover,
       );
     }
 
@@ -1530,7 +1753,6 @@ window.__ModuleLoader__.load({
           {
             type: 'button',
             className: `bhrl-foot-rail${isPlaying ? ' is-playing' : ''}`,
-            title: label,
             'aria-label': label,
             onClick: () => {
               if (typeof onOpen === 'function') onOpen();
@@ -2306,6 +2528,19 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The corner mark: the ring badge, inlined as a data URL.
+     *
+     * The source is a white brush drawing on a black square. The copy below has
+     * its background lifted into the alpha channel, so it is a monochrome mask
+     * rather than a picture: the card paints it with `currentColor` and it reads
+     * on a light theme and a dark one without a second file or a filter. Inlined
+     * because the client half is served as one file with no asset route, and
+     * because a 10 KB string in the bundle is cheaper than a second request
+     * that a sidebar cell would have to wait for.
+     */
+    const HOLE_MARK_URL = 'data:image/webp;base64,UklGRowdAABXRUJQVlA4TIAdAAAv3wAgEP8nJEjw/3jrBEzABCT0ewaCtm2T8IfdbtqPICImgLXKteOJS8BcqFS3qwRUCBbMYW+ytXJr5dbKrAsrs0q3Yg0VcASU0T15BaBya+UFv3qObFu1bdu2UiqltsHMtDYzMzMzxBmipMEWYNuWYEuwtxRbh63CFoEZeuuttlZbHXNHI/o/Ad7w/1PttP6/18xaO0oMgia4e3F3KFbDeloc6u76aemRuru7uxc9VVxaKFCD4gRPiOy9Zt7v2Wu9byRQSvI5tyP6PwF0WpZVCko6L8+01lrhr9ul9buEc2nPQ5V+XotCv97bDji+JOT/Q6U9ANB1e46YOHvo4LFdkH0ZZGFhX5SU5wFI7TT9qn9NmtGrUYPaMa9JI4B00p65kIAR8wE0m3jdPfdcPrj3lHN7nzl7dG6dOrU8VaxyFc+iM0GWAGg569EXX3zopssvvHDqvKuHNspRUDim1jyftjb37u4O5eN3PfyjlN943dWzz+o5MAYA2vNyGtZt9HB0sBvqM7V+Bfj5OSi47UcnsurF6aNHN68PoM7ACWdMPq3u0M4Nc+rWAYAUwAPUsdT/SgpIywJaPLJPRNZd16LHKU1qIf2cpxe+f9UZPXv26zvxtDGzL7r0mmnDWiKnfnpOSgwKgNIK/zOnNE5H51cOi5jlU6D7TO484435G3ctuPW6R1+f/0e5k8rJP6OPpgzI79m9sA00EEvPALLS/iexTjWqjRZPB2KS5ffkNL5p1c61CRFbsnnLYamc5MAkAlO6N374x/3fvLfy/dcfaVC/WWaXdu0aZqWp/29sol57qsFdJeLisveygU/sFQkltIkKFuHAGENkiciFQZg4fDBR9sn8nR/vvLCwXu6Qbg3q5GdUK1exRlOA83YLmyj4/MqXy0UCsoYdkyVmZiJmZmeOmuLyXw/s/HP7gXW/rF266IrhZw0+tXvtrBRdnea3Lwa6LhZJmGTRSx+TkGEmdsyOiMhYawJDRMwBU1BuTXlx6f7Dv65dd/eZsy6/evqZ7QCEuMVOjNuJgKvKJSDmsg1HJTRE7JjZGmM5kmMnrbWBJXZhkikplc3qj7ZH8bW3d85LeYFVaPIWkSVyhkJHjpnIGhOKiNCRP9ct+/7bb1f8/GdxJCIhGctkiYnIJjiy5tAhCbecX1DLjymvtvdiktLhpfBIKTvi0Fli5yiwIlK84tkrRndumOUDgErJLuw//c4vd4gIJwwxMRNxULH9yG8rD5V/e3t7aD87R+HqHLMfSqXEpm3aXVHhHDETMxkS4fWPTyzEMVVlVJ07eN53FSJkqyIOIzm8pXjFDz89MyrTR0pqE0pp7Xme5/ue53laVVJV9Vf5mP7711siS0TsiC2JbLm3TwyA8jxPK6VQWSmlPV8DQLubN4tYQ8TMjojFJSp+fPGqay6sn4aykNKe53kaf115vkYNrYEH4x/uF2YidmxY+OMJtQB4nsKxFY5TaV8BaWd9FYoJmCoR2yCgsu9vbA6kZQLOoj3fU6haZxd26t5/3LnTzrtq1oTxQ7sUxADkpqiaKJH9+YvLJLLOMTtrhd/tA8DXCidYAYD2AQz5XMRYJiIuNS4URz+vvaUJEKk1MhNV5rQaNPPmZxf8tP1Q4OQ46fCGt6/rnQ9k6ErakYF239z+ekTM7JiMyFs9Ac9T+JuVUr4GRi6VKCBit39V8dFika2fb3/q/FcjU41SGE1rPuK611bsLI+kcsTM1hiTiAfWWEqKSHL9A32z4dGwLSQf/nrqI2KYiZ11su5UwNM4GRXgedCXHZQ4MUXx+K/fr3hs+0ev3T/nV18cXjVsmJlsevvu7/3y15srRJKlxplEPJ4wJiBmJrKWiMmYIAhYhD/phFzEihY9jHm58/cSEDNTIMGtqfCCdk15+W8kacmykyPrbkbnnMI01IpleZ4fUwDg12017elVe+JSXhTZdQeLth40cSInEYfsKhERM5O1xDYI3N6j4+ED6oQ172P0QzlfimUiZisrewAeJrqQbBa41kqC2LlkdPA/F/TB8dYbcfNL6w8YkS2/rHv0qc1HjvzG7JKhiBzZuKdib9KSJbJ0nNZysmgZ94aHmtLDqDtwhwTOMdukPJYKX6FqaTYSA7dKkHTOmkgSS1+c1a1nn1atB1326Dv7xZUl963/eMlr/135M0sZu8Aky47Mf+T3nz7dXrzFBnFjLTORtcRMlohNcmf5+lRdU3gYeBnGlbBl52wyMRfQqI7GULBaLBMx20hEkqGUlYlIGB7dtHjjL78fYglDqdIGe3f8uuD7kpKKIB4a54IKS8xkbWCpSmvDEhmNWM2g0fsqNN0sloitHBoMX+GktAp4yP1KEsTsmIKEcWwdk0lYMgmWKBk6Ef7ju3Wbn3pv0du/lR38s6T40I4jicBZImsCS5UTtgpiZ6N5qh5UDRBodmNa5pdCjjkhOzrBR/X14L8lxjnHRMRM1hKTtUQciUhw6NXbFnzz0Zot/9105EginojImtLSkrKkJXJMQakjZqpkiZji8u/08dDVT3Lm5GGulAUuaeWPVvBRnbXyPhVyRFwlEYeOQhF74Lc/lr58Ze8O8xYf3HOQrIhE1pJNUGBsPDDEZI2xRMxE1hIR2YRckjWqJogypwD1tsmhcrayuyV8VG+tM3+QgIidSyYdGVtadnDzioUv/N+5U77cuuu3PV+dM2pwv9GTr73mmVWlIuVJdsl4KTuy1lJgiYiJiJiJbDLZtkljqGoXfL0LcJPs2xkmkge7wEN1T242R5aJowP7bSRCcvSzxavfXvTW+bf++Ouf/OAbX3vB1jdP+TRYRpE9YA7bpDXE1hIxHdvIb3NHVi/v+Cx07yWLVxPb+CD4qP5JxzJHxKEpfuOVRfPnP331VeMbAvm1MxmPyCwlBbh4675STpjAOEuWLB03G/kyCeiq5PorxDI+mHbB9pBkGnxVA1AwRwyRSyZL3j8TVSsAfpaMCBk3PB83yJJyZiolIrLHxWxkzV7I6s1PnqiunN32HYnLnfBRLa3Cx8timawVMY+1RIrvKUApADJdp+GPhd8ImbghdsfFTDboSVJre/KqJ6g1I/1MtvZN5anqUS1a5+4ILREzsxye5GmFE63Ssr/+eb5QYC0xWWuPwUSB3Iykg1fvYxhGpmauFTu/OTRqSg9niSFyTDbBciG8E6RCw1MWlBwJLR2bq2DmhHzpec5nM/KwDzftcb5EP06Gh2rtJPh4XwJ2TMQmuaNLJtSJ0Wg/pWxXBVliJkvMRERMRGRkTZ5SrI+jExhei8a7or03pWlVvSq1al3uiCo5K0unpuDEKj33h4r9ZC1RJWImYmaiQH5vAI0O5k2Gp8fqP5J4rDU0PfXwuBgiZiZ2vLU39ImIYdBB2l9BloiJiYiYmIk5Ibs6wUNNuHdElJPwFsnXY5QG4KqcpFXz8iQREzNTcfKJE+Jle19LmXGWqmbiqqysbwUP1dVJHgJKi4qDlzSBqtRRD09KwMxMTGHxn4Og/opCPdwhFcYSEVdiqpKJ5b+F8FS1ma4bhftlzkilUMNq1THBlpiIOWnDKVofh5XgY7awtXRMZmYiJnLBC81SPJxQVwAYXla807sNahxofCUBcZVG5sA7jlEPp0W2OLRkq+Bjki17aUieVidmlcLgT6RPf1+hxvXUP8QyMxFTQp6F/xc0BtvD68vZEhExMRETM7mEHJyRBYWaVH73VXYBaiCF7F2RpUps5An4UNti0LrJst9f2+eIuBITETFzMpBD5wAKNWnwtn+PLkhTqIE9vCoJ4spGLoOHYx+mpvp4c9UXpULHy0TOlYdL28BDzerjmV1HL6dHFueIdUzM7CpaQh9DIbVVNmb+9HE8tGSrYGImioK//+EX+xTRjiiduvGC0zO6HLQzIVcKoq+UVlVpZLbN8s97ebM4S5YqMxET8c7o918lSoBsdxbb0hjwId5khwRJ+UUsMXMgc+CjsgKan5KafsErG8QaIuKqmCPasfS9lzEoO0FPPUz+h/eIdc7gCgJfiSF2FG3PU6qSh4yR/VNyn1l6QCwRM1XJTOHe/UXnYfcgslzvsrSzCc6gcW0rtUOfLXihCiuT4AFQQMGQiUOaPLg9cgERMRETEZM1e39/ryWyhvD0DUd0NuvKXEUnrZGCeRIQB/IOPAVopA09tfspE780QkSWmMkyMbM1smkqsgoVlMeBvmp0mal1L2YsmC2Gg2hHI62UUqg/5ZKnZ80+LETMRERMzEwUiDxWB00apukSQW81RvQ7qWzLRG8bWpfoDR8a6Dp+ztv3vCsusEREzMTMxJZlw+jarVulQKXcJ/bnU4+7zuckN7bahlIKeXuTEU+CBx8Zwya++e4Fq8QSE9ljJY2U35z1sq/dggQdli8c7tBphZjqY+XIeMSQhg73ril674G4GHbMRJXYRGGpfaNziwmvBx0Yty8cfmpnv1dAKl6XjV2RmpaeP21J8eonfhc2xMxMzEQ2lH3r3xtbeMaQPDCly3L+rp29bsUwVx6shVSkDnu/OPj8hcNiiZiJmJ2zRipWPndB74mD6wNKv0vJ6JWHCX9OgdIY+GSJ7FlzQELLzMTERNZK9MVFl44aMaEtoNF5ad6lHPGAc18tRAay7nOlZYeLEhExcdUUiKy87LSppw/vDCiFmj2CZa2SdnOmng0AZ2wQSpYHQpa4snMURLLpvMFnzZ3VVUEpnNRiezNasV7dZFgzAE0nrJQEG04yEzETMxmRLdf1mDxnSt8YlMJJ60i7bpOzvbZsxstqqRCrd+blN65mZnLMxEzEFIRy4I5eY2+9pFMaPM1EF9u0oYnymouwooMK8DI0UDh66r8+jotlJmaqZE0k++Z1Hn3XeS1UXqoCnFDpXKuUtz4eYmegPB9o0q/H1I8OC1lmqsSO4kk5cm+TnhdMa5Oe5aE6ugpv33zTjq0oDa+gS+cBT+6WyBIzETsma0QO3t2p0SUTm3tpKQrqBLhc23tnIwSffvuILTSqAFW/bn6PR4slDCyzYyLniEW2/bNp9ohebdOVUqjZhciDA0fYf8dr+qLg5dav3/XBYhHLROQcEZMV2XFr2079O+WmIaZRcwsRgXvxiptkVM4uRia7AgEFKL9WZlb/p8qEE8SObSXDEqz/7NHaTTvUBjyFv9tVUYaEq1fcvfJlyVYtTBdAW9tqagr8UR+xUEBMzI6IbCR2y+LPnh3bzAcU/ka3zG0bqU1TPaS07Dm8+z5TL3cmyLIupn0gc8o3Is4QMROxo0Ck+MelH909JBeAUmx3htUrhfQWtYHmrbrO7e/hNnnan7BuzwfqXbVBhAPLjojZGifyxwPnPXJxAQClUKMr+Pk5CrkDWs+9thBapmaxA8oH0PG+IpHAsiNmRzZwklx126RJAwoBz9OAqtGQ1ypDod3Abg9MA7SKST3UHpAy/pOESGCImB0RkciRN2eNHNkjG/A9D8hI83UNppq2TEVmx7bn39URfmotn8mWlSlfAY2u+UmEA7LETESGRH67e3TPgU19wPNjQJP+LdOUqrkiI0uj7bihz96ZC+XX8VFpc07SHoD+zx8SCQwzETEZE4lddPGpAzrVAZSnAHR/cFbdgnaowdJH2pRL/rXrUuiUxhmoOU0A+bO+jyQMDDETEQUksvW+Ee07ta0FaAXt1xn3XuLtobH2hTVYFLS/9d+bEmcCfp+GStUMmgno91SRCBtiYmYbkIhdPLdtg8Z1PEArBWh8IlL6USt/RC6qrYvFfExe+PzhP3oAr9kpdFL7Cmh42fJQosAQO2a2AYv8eX//fL9BFiigUigoDcu3/yutVXelqs2ynoKPvIcWfiHf10fmhE8m9kD7Cqg19qV9Is5YIiImkxTZ/96kHPi5PqCMag/DJF62cUq9joUNoWoaBT9Vax8D1q5aI8v6Zehh3ZH1a18D6HXPryLJwLJzTCZhRNw3sxsB8BWgsF2lYJ4cLf1lAJo0S8HJaUtIq50WA+b+sXKnLBvVMFYnHcHate8DaHvlD6EIWUuOma2NJPr57h4APE8BUDgenbJeis3nzbumdvfVyTG7dQpo1QQ+6r5R/muxFPXo1EEXpGoqtQHHFACVkp4OoOlFixMibCwzExkjIjufHZ4CaE8r/GUPgyJXLjOH3jkuV1Wveo304Z2Vjy7bZE8kZV1HXJqhU6BqWlWAl51fPxVofvGHR0RCa8g5dmSTIkVvTc4D4GmcUA/PSpB0I546+3StUJNq5J7ZBimYUHxkR1IO9Jv2mIfqKlAuW3atBzSY9kGJSDII2DGRsZFIyftn1wXgezjBqvwDoZEPBzzfIw/VwtlE74n5QOxxie+vSJYOv+YtrVS1CKA8vOtDrwQK5n54QMQFloidMwknUrHgouYAPF/hhA+4TAIjZ983t6enUHMqYPgl3X3U/UpcwGFi3F3rzgmWV8ejAGgFIDWne98WWWh90efFIqExRM5RYESkZOHcVgBZZKo1SmdvCYNo89UPfPNVdETBH3/OrMZo9ZMEziZLb7jy6FUUGtcaiGXW79EpJSWzx79+SIg4Y4nYkbGRyNEFlzcHoH2ZLNUebhBj5LElD/4gg25qZJ856s7u6PyzxIldsHxQ/PdsrXAupQEorVMzkNG8a4/8zLzCsY/8EookA0PsHBmTFDn6xUVNAXgxjb9b6Tp7Q5ssvmldv+8dsFJn0GgwsdfCGzH0GyZryVWc/5Q8gGBxpTUA6PTUlMzM1oNPHdWnaX7fKz87LCI2sJxkZmNFpPjTOc0AZOVm4CT0cI8YK/MPvDroE7GWGTUKJ/Tc/AHqPxc4JhuEK7q6A6f74QJKa43KsZwWzbp0ajt+5vQze7TqedXHvzoRMQExE5ElESl6Z0YzAKk5fgx/q2Ma3eKWkuab0gcvvtbWnEuj+fARe//MbDFuRWiIqOLgf97bs3sWyhQ3USMzPa0AwK/domOfzm0nXD7v7sv+0bv31CfWWZGIjLVEjq1xIuFvr5xZB9A59dL8FPztAlCet1SMi/byzoHX3VLhhjVWzB1oN+HUQ/LUK1fMF8NMybKDGyp+3fvhQMgMAaVWNWrXd8SUyWPOv/mO5966+5aZ5z+9qlRE2BhDzNYYEpGyZfP6ZgLp9VrWy0jXOEl93CCGOVlc8U3jvgRdDJpeObYkLCo/tFYsEVtZt+WNQyWH1h74+QlAGsPe1cUrXv3q173mlW/58Bd+9LMHXvr08gcXfrX2tw0rfnrtydc//qVMRMgYS47JmIBEZMfH57dE5Xo9sjN8/I1WeOhlmCzRgUPnnp4lXVSoc12nlWEikHfLHLElK2s2LF4b0eG4rL91TOt0VOmfMnriHW9+t2b5j998M7+kbFup3bPy81dfWb21QkQ4sIYcE5GxIhL/6ZExeQDSc7Pqd26UrwDdcI5KpXM3RZZteMR+cFo3xJrcplT27WM/EiLZ81lkiIjYlW4MNrJ1oWVjVj018dpLL7pl6qU3XXv1v9784u0Fmz5e8fOKbz9d+MPi5dvLRSQ0xpJjJjI2FIl2fHhBBwBoMKRjh+HdG+YCMIAsYZV1Hj6UgB3Z8t/PPRceXdToNuNhMczh0UORrYKdK3emuCzkwDpnJB539uieI5FIYtehI/v3brI/7d4XJEWEA8tMzGSDIBKJipff1jcLQItO3fufOmVQwywFaA04uDo6HFjexzwJmB3Fyy46Ox9qJpexTqFev6v+iIylsGRPRFUyUxAkKn49yJZc+aZVXz74zmdv3bVo37K3P170x57DR8tZRJJkjWVmJmtMKCLxlfP61wP8Wo179b36mvMGFfgAPB9A+ivf/86bZNRFBlwoloid7Hh6aGdorHEOf+SliyucJWJTTsdkJraJkIsOlMfjzpHh/cxM5YFIFEZsyVhy7IisCZyICK96dFpjIK3zKWMv//fd994wrjkA7fsAUlr1GvnOM5ocOMuxZbbR0deGNtIKx3Y5t0m1QsOh//ffyBAxkzXHICJmJucCYywxEQuRc85aYiYiZiKygRURKT964IsbOgM5nUZMveXdN7587eY+WQC8mA8gu/uU6UMbAtTlCl81bNmR5QcvjOHEO8uSGgOHf7tKLDNZIiJLxHwsInaOmSwxE1lmYuectdYShyIiJb++N6t7QeM6dXL6PfDx20t+/u+rs9r7ANLSAahe066+5ex2MQDSYuHrfwktOcfyyiW5Sp+41j3MHndgZZKYiCwxWWurYKYqmJmIqiBrLREnpXLFvl8W3D+pT4e09rNuWrnrz20bv/34mRvPKQSQla8ANDjt3sULb+muAWiFFi186y9/s0zMsvz/WsJDzXHpmN8OHI0sETMdbxXMRGwtkSMicqGISDI4/Os3rz3/wpsfzX/z9R927xUp/u2HJcueOqdf7VhqLD2zNjLzRz64cs+6f/YGIKRNrXCNOMPM1lWs//erIpZzJus0xr3xjpTGiZjJ2mMxMTE7dtZFxFGSI05UlBVtWPPDux++++G3K/c6qRzf/tvajXfOHN69XqP81NSCOlBNxv5r2Y6SzXd2BwAvaNWD/6gQceXy4sSEDPqp/XVfrIsCZmaqzESWmImIyZpyG5Q4e/BI0XfLtyzbsHnd1kP74nLs4i1PzBnXr02HU3r844wxA2qjbt/r5gdC313TAYDyNE6gMykfBUskIHaO2QZuNoKeoMN1dySMJbLEzETMVMkSk7EJjhc7Li0rL4lzJCLMEZmS8qKibQuem921bdMeE+de+Pj9l5/VqXGPs5/6VaTkk3PqA9CexknsAaN3iKEqKBlNRUxwPluDRu1zt4sk4wlDxEREXImYiFzIxMQcGLYUSpW737v3stO75OY17zX7tpc+e/Lq8R3yUltNvvbZTRs/vLJnNgDtaQDqpFE+Mu8LxTAzO7IhT4WPTjoGjdjAF5cWiYiEbE2QCIJEIgiCRDwRGEsukqrNnhVv/ntG/4YA8hsM+c9DT90+vmeTFAC1O5wx/eyxXTIBwPMUTmrlAcPWCxtidqGJS/x0+DgJbWOiUgCaXvTMZxv3BZH81TAK9m9e/uUzN88e1jITALIatO9/2plj+3ZrkucBqFXQpufQ/u1qewC05ymc3HpA4XOhGGYiDm25bO0PHzWx9jQA+HXbDTpjxuU33H7vww8/dM9tt149d/SQvq3yY6gyq1GdQSMGD2jVtEFmCgBVKyNDZxUW5qcDgPa0wsluAVnX7BdrHbGzxGWypQ181NBGyWT2vduTV7ysXF/sHBVGM8vxzVEW2TRkhdoDcq/4Q8KAmIlZgp289IkBO7WpRmSZnhmGkbLVTDMDg1FljUr7Cqh/wzYRQ0zsDMuWQ2tne55oS05zgvMBiiqbIqACKgqgLOss6viU9jwA/oAn94kY6xyRsxJ88PKX7VC/7OxIzxVUcJMRNpSVqiqqVEpp7XkKANJ73rZWJKxIJB05okh+vP/Rkeg4KH/3MHkeZeUKaFBZaU8rHGd26zPuXR+KcIIk3FNEFEj5s1f8p0msT6+sUx7oqwusO5LR2Nk7bZiTlYrKXlqtvCZdB59x0b0f7CgToYqKpMia+ZvLOLLrXrnzLL9B+wZ5PQuxL73OYef+KADcrddi4OjTT5941qzrb7ntoTdefvadHw+HoSUnIgdeuvGdAyHZgxs+v7NNepu2mbXbpEFW7PMBHt+d7lxcDmzqnMYd+g4ZNnj4rLveWB93FIqU7d/57kVDprxqOTgc/ProKbqwXQry8gDFC7SHT+fxUL+gdvbIGZff9vgHC1dvLdq+9vvVGz559dzh/Rp4mYNvWRAX++MDvdLzGmdggLxAy+h+buPWjVr3al/Yun2Llg3qZ9Tq07VFCiq3fHK7SPn6SwoyWrRMB4qs10lOsSlXsCkzKq09P5bZdNJju8V9OWdIBrIL0wGFdq2TUccAt/RfAKGU0lppT3spddqd0qFjgUL9aZtFtjzSDYCXqaAVamS7JyAqHFOnokHjWmkpdbpMenrJ13cNyQR8z0/LVVrhf2DnGDUzvPRGBXmNm7XrOuD04efcOO/C8++46ez2AOBpqNT0FPy/bVuTnQYKfla9vKYtew4aN6J9r+51Y6isfE/hZLc7jTrH8trzPIUa3260KRoRkRER8uwC';
+
+    /**
      * Theme + layout. Scoped under `.bhrl-root`; one injected <style>, removed on
      * unload. The dark palette is artwork — this stage stays dark in light mode.
      */
@@ -2452,6 +2687,7 @@ window.__ModuleLoader__.load({
   .bhrl-cats, .bhrl-clusterbar { transition-duration: 0ms; animation: none; }
   .bhrl-eq, .bhrl-eq.is-on { animation: none; }
   .bhrl-fcard [data-overflow="true"] .bhrl-fcard__scroll { animation: none; }
+  .bhrl-favpop { animation: none; }
 }
 
 /* ---- phase 7: station actions, info overlay, mini player ----------------
@@ -2600,8 +2836,10 @@ window.__ModuleLoader__.load({
 
 /*
  * The station list of one volume. It sits over the canvas, so every row is a
- * StationCard in its row variant: the same play/pause, favourite and like
- * controls the hole's information layer and the search results carry.
+ * StationCard in its row variant: the same play/pause and favourite controls
+ * the hole's information layer and the search results carry. The heart is not
+ * among them — a row is a station, not a song, so the mark that belongs to a
+ * song lives on the foot card where the song does.
  */
 .bhrl-nebula-list {
   position: absolute; left: 16px; top: 100px; bottom: 76px; z-index: 7;
@@ -2709,25 +2947,31 @@ window.__ModuleLoader__.load({
 .bhrl-fcard__row { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .bhrl-fcard__row--sub { margin-top: 1px; }
 
-/* The corner: the only door to the hole. */
+/* The corner: the only door to the hole, and now the mark is the button.
+ * No ring, no fill, no plate: the badge is the whole of what is drawn, and it
+ * is a mask, so it takes the card's ink and inverts with the theme. */
 .bhrl-fcard__logo {
   grid-area: logo;
   align-self: start;
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; padding: 0;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-  background: color-mix(in srgb, currentColor 7%, transparent);
+  display: block;
+  width: 30px; height: 17.2px; padding: 0;
+  border: 0; background: none;
   color: color-mix(in srgb, currentColor 74%, transparent);
   cursor: pointer;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  transition: color 120ms ease;
 }
-.bhrl-fcard__logo:hover {
-  color: var(--bhrl-ink);
-  border-color: color-mix(in srgb, currentColor 36%, transparent);
-  background: color-mix(in srgb, currentColor 14%, transparent);
+.bhrl-fcard__logo:hover { color: var(--bhrl-ink); }
+.bhrl-fcard__logo:focus-visible { outline: 1px solid color-mix(in srgb, currentColor 60%, transparent); outline-offset: 3px; border-radius: 3px; }
+.bhrl-fcard__mark {
+  /* The badge, background lifted into alpha: 1080x620 of brush ring. */
+  --bhrl-mark: url('${HOLE_MARK_URL}');
+  display: block; width: 100%; height: 100%;
+  background-color: currentColor;
+  -webkit-mask-image: var(--bhrl-mark); mask-image: var(--bhrl-mark);
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center; mask-position: center;
+  -webkit-mask-size: contain; mask-size: contain;
 }
-.bhrl-fcard__logo:focus-visible { outline: 1px solid color-mix(in srgb, currentColor 60%, transparent); outline-offset: 2px; }
 
 /* Fixed slot widths: each mark sits exactly where its line ends, and a long
  * name scrolls inside the slot instead of pushing the mark around. */
@@ -2759,29 +3003,92 @@ window.__ModuleLoader__.load({
 
 .bhrl-fcard__acts { grid-area: acts; display: flex; align-items: center; gap: 4px; }
 
+/* Transport: bare glyphs. Previous, play and next are the mark and nothing
+ * else — no ring, no fill, no shadow, and nothing appears on hover either; the
+ * glyph itself answers by reaching full ink. */
+.bhrl-foot .bhrl-fcard__acts .bhrl-act,
+.bhrl-foot .bhrl-fcard__acts .bhrl-act:hover:not(:disabled) {
+  border: 0; background: none; box-shadow: none;
+}
+.bhrl-foot .bhrl-fcard__acts .bhrl-act:hover:not(:disabled) { color: var(--bhrl-ink); }
 .bhrl-foot .bhrl-fcard__acts .bhrl-act-play {
   width: 34px; height: 34px; flex: none;
-  border-color: color-mix(in srgb, currentColor 52%, transparent);
-  background: color-mix(in srgb, currentColor 13%, transparent);
   color: var(--bhrl-ink);
-  box-shadow: 0 2px 10px color-mix(in srgb, #000 18%, transparent);
 }
-.bhrl-foot .bhrl-fcard__acts .bhrl-act-play:hover:not(:disabled) { background: color-mix(in srgb, currentColor 16%, transparent); }
-.bhrl-fcard__vol { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 42px; margin-left: 2px; color: var(--bhrl-ink-faint); }
-/* The slider carries its own colour so the thumb is ink, not the faint icon tint. */
+.bhrl-foot .bhrl-fcard__acts .bhrl-act-play:hover:not(:disabled) { color: var(--bhrl-ink); background: none; }
+/* No colour here on purpose: the slider lives inside and paints itself from
+ * currentColor, so a faint tint on the wrapper would dim the whole bar. The
+ * icon asks for the faint tint itself. */
+.bhrl-fcard__vol { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 42px; margin-left: 2px; }
 .bhrl-fcard__range { color: var(--bhrl-ink); }
-.bhrl-fcard__volicon { display: inline-flex; flex: none; }
+.bhrl-fcard__volicon { display: inline-flex; flex: none; color: var(--bhrl-ink-faint); }
 .bhrl-fcard__range {
   -webkit-appearance: none; appearance: none;
   width: 100%; min-width: 0; height: 3px; border-radius: 999px;
-  background: color-mix(in srgb, currentColor 20%, transparent); outline: none; cursor: pointer;
+  /* Two colours, not one: what is set is filled with ink and what is left is
+   * the faint rail, so the level is read from the bar instead of being guessed
+   * from where the thumb sits. The custom property --bhrl-vol is written from
+   * the value on every render, which is why the gradient needs no second
+   * element. */
+  background-image: linear-gradient(to right,
+    color-mix(in srgb, currentColor 78%, transparent) 0 var(--bhrl-vol, 0%),
+    color-mix(in srgb, currentColor 14%, transparent) var(--bhrl-vol, 0%) 100%);
+  background-color: transparent;
+  outline: none; cursor: pointer;
 }
 .bhrl-fcard__range::-webkit-slider-thumb {
   -webkit-appearance: none; width: 9px; height: 9px; border: 0; border-radius: 50%;
-  background: color-mix(in srgb, currentColor 88%, transparent);
+  background: currentColor;
 }
-.bhrl-fcard__range::-moz-range-thumb { width: 9px; height: 9px; border: 0; border-radius: 50%; background: color-mix(in srgb, currentColor 88%, transparent); }
+.bhrl-fcard__range::-moz-range-thumb { width: 9px; height: 9px; border: 0; border-radius: 50%; background: currentColor; }
 .bhrl-fcard__range:disabled { opacity: 0.4; cursor: default; }
+
+/* ---- the two unfolded lists -------------------------------------------
+   One panel shape for both marks. It is an overlay rather than a child layout,
+   so it never pushes the card's 236x93 box around and the sidebar never clips
+   it; the corner it hangs from is decided in the component, not here. */
+.bhrl-favpop {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  max-width: min(260px, calc(100vw - 16px));
+  max-height: 240px;
+  overflow: hidden;
+  padding: 8px;
+  border: 1px solid var(--bhrl-line-soft);
+  border-radius: 10px;
+  background: var(--dsw-specific-menu, color-mix(in srgb, var(--bhrl-ink) 6%, transparent));
+  backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
+  color: var(--bhrl-ink);
+  text-align: left;
+  animation: bhrl-favpop-in 120ms ease both;
+}
+.bhrl-favpop__title { margin: 0 0 6px; font-size: 10px; line-height: 1.3; color: var(--bhrl-ink-dim); }
+.bhrl-favpop__empty { margin: 0; font-size: 10px; color: var(--bhrl-ink-faint); }
+.bhrl-favpop__list {
+  display: flex; flex-direction: column; gap: 5px;
+  margin: 0; padding: 0; list-style: none;
+  max-height: 196px; overflow-y: auto;
+}
+.bhrl-favpop__item {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 3px 4px; border-radius: 6px;
+}
+.bhrl-favpop__item:hover { background: color-mix(in oklab, var(--bhrl-ink) 8%, transparent); }
+.bhrl-favpop__name {
+  font-size: 11px; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bhrl-favpop__meta {
+  font-size: 10px; line-height: 1.25; color: var(--bhrl-ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@keyframes bhrl-favpop-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .bhrl-foot .bhrl-sep { opacity: 0.5; margin: 0 4px; }
 .bhrl-foot .bhrl-act {
@@ -2793,6 +3100,10 @@ window.__ModuleLoader__.load({
 }
 .bhrl-foot .bhrl-act:hover:not(:disabled) { color: var(--bhrl-ink); border-color: var(--bhrl-line); background: color-mix(in srgb, currentColor 11%, transparent); }
 .bhrl-foot .bhrl-act:disabled { opacity: 0.42; cursor: default; }
+/* A mark with nothing to act on looks dim but still answers the pointer, so
+   its list stays reachable from an empty card or before a title arrives. */
+.bhrl-foot .bhrl-act[aria-disabled="true"] { opacity: 0.42; cursor: default; }
+.bhrl-foot .bhrl-act[aria-disabled="true"]:hover { color: var(--bhrl-ink-dim); border-color: var(--bhrl-line-soft); background: color-mix(in srgb, currentColor 5%, transparent); }
 .bhrl-foot .bhrl-act.is-on { color: color-mix(in srgb, #ffab52 58%, currentColor); border-color: color-mix(in srgb, #ffab52 34%, transparent); }
 .bhrl-foot .bhrl-act-like.is-on { color: color-mix(in srgb, #ff6b8e 58%, currentColor); border-color: color-mix(in srgb, #ff6b8e 34%, transparent); }
 
@@ -2803,7 +3114,14 @@ window.__ModuleLoader__.load({
   width: 16px; height: 16px; border-color: transparent; background: transparent;
 }
 .bhrl-fcard__row .bhrl-act:hover:not(:disabled) { border-color: var(--bhrl-line-soft); }
-.bhrl-fcard__row--sub .bhrl-act { width: 14px; height: 14px; }
+/* The sub row's mark is a size smaller than the name row's, and it keeps that
+ * size under the pointer: the pair below has to repeat the hover clause the
+ * row rule above carries, or the resting 14px would lose to it on hover and
+ * grow the button by 2px — which re-centres the whole text block and nudges
+ * the name, the star and the heart sideways for as long as the pointer is
+ * there. */
+.bhrl-fcard__row--sub .bhrl-act,
+.bhrl-fcard__row--sub .bhrl-act:hover:not(:disabled) { width: 14px; height: 14px; }
 
 .bhrl-foot .bhrl-eq { display: inline-block; width: 3px; height: 8px; background: currentColor; }
 .bhrl-foot .bhrl-eq.is-on { animation: bhrl-eq 900ms ease-in-out infinite alternate; }
