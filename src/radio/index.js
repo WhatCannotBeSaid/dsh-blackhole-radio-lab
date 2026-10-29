@@ -13,6 +13,11 @@
  *   createRepositoryFromRows(rows, opts) → pure mapping, for tests and caches
  * Phase 6 adds the genre layer beside the taxonomy: the eight buckets stay the
  * artwork's vocabulary, the thirteen genres are the nebula space's.
+ *
+ * Phase 7 adds shared state: one station index carrying identity and business
+ * state (`createRadioStore`), and the single audio owner
+ * (`createPlaybackCore`). Neither imports React, the DOM or three.js, so the
+ * panel, the stage's overlays and the node-side tests all build the same thing.
  */
 
 export {
@@ -43,3 +48,5 @@ export {
   tagsOf,
 } from './genres.js';
 export { mapStation, mapStations, categoriesFor, isStreamUrl, streamUrlFor, MAPPING } from './radio-browser.js';
+export { createRadioStore, stationKey, mockSignature, RECENT_LIMIT } from './store.js';
+export { createPlaybackCore, SLOW_LOAD_MS } from './playback.js';

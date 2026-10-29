@@ -201,7 +201,10 @@ const LANGUAGE_TABLE = [
 
 const COUNTRY_BY_CODE = new Map();
 const REGION_CODES = new Map();
-const LANGUAGE_BY_CODE = new Map(LANGUAGE_TABLE);
+// `new Map(rows)` would take each three-column row as [key, value] and keep
+// only the Chinese name, so `known[1]` then read the second character of a
+// string. Index the table explicitly instead.
+const LANGUAGE_BY_CODE = new Map(LANGUAGE_TABLE.map(([code, zh, en]) => [code, { zh, en }]));
 
 for (const [code, zh, en, languages] of COUNTRY_TABLE) {
   COUNTRY_BY_CODE.set(code, { zh, en });
@@ -253,7 +256,7 @@ export function languageName(code) {
   const key = String(code || '').trim().toLowerCase();
   if (key.length === 0) return { zh: '语言未标注', en: 'Unspecified' };
   const known = LANGUAGE_BY_CODE.get(key);
-  if (known) return { zh: known[1], en: known[2] };
+  if (known) return { zh: known.zh, en: known.en };
   const zh = intlName(displayNames && displayNames.langZh, key);
   const en = intlName(displayNames && displayNames.en, key) || intlName(displayNames && displayNames.langZh, key);
   return { zh: zh || en || key, en: en || zh || key };

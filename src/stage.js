@@ -121,7 +121,7 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  * @param options.language - 'zh' | 'en'.
  * @param options.onSelect - fired with (station|null) for selections.
  * @param options.onMode - fired with the machine snapshot on every change.
- * @param options.onCenterClick - the hole centre was clicked (open search).
+ * @param options.onCenterClick - the hole centre was clicked (enter the genre field).
  * @param options.onHoverChange - (active) for the 600 ms category hover.
  * @returns a handle with selection, mode, camera and measurement helpers.
  */
@@ -1645,19 +1645,43 @@ export function mountStage(container, options) {
       return { inside: Math.hypot(px - region.x, py - region.y) <= region.r, region };
     };
 
-    const canOpenCenter = () => machine.mode === 'black-hole' && machine.progress < 0.05 && machine.ui !== 'search';
+    const canOpenCenter = () => machine.mode === 'black-hole' && machine.progress < 0.05;
 
+    /**
+     * The hole's centre is the way into the genre field.
+     *
+     * It used to open a search box; the search is gone, and the centre now
+     * enters the nebula — the thirteen-genre space — from which a genre opens
+     * its own cluster. The host is told through `onCenterClick` so it can
+     * mirror the same state in its own UI.
+     */
     const centerClick = () => {
       if (!canOpenCenter()) return;
       clearTimers();
-      machine.ui = 'search';
-      notifyMode();
       if (typeof settings.onCenterClick === 'function') {
         try {
           settings.onCenterClick();
         } catch {
           /* ignore */
         }
+      }
+    };
+
+    /**
+     * Right click goes back one level: an open cluster returns to the hole, an
+     * open genre leaves the nebula, and at the hole itself it does nothing.
+     * Suppressing the context menu is what makes the right click a gesture
+     * rather than a browser menu.
+     */
+    const onContextMenu = (event) => {
+      event.preventDefault();
+      if (document.body && document.body.getAttribute('data-bhrl-no-context') === 'true') return;
+      if (machine.mode === 'cluster' || machine.progress > 0.05) {
+        if (machine.target > 0.5) exitCluster({});
+        return;
+      }
+      if (machine.nebula > 0.05 || machine.nebulaTarget > 0.5) {
+        exitNebula({});
       }
     };
 
@@ -1814,8 +1838,8 @@ export function mountStage(container, options) {
         return;
       }
       if (centerAt(event.clientX, event.clientY).inside) {
-        // The centre always means search, even while the category panel is up:
-        // a hover must never turn a click into a category choice.
+        // The centre always means the genre field, even while the category
+        // panel is up: a hover must never turn a click into a category choice.
         centerClick();
         return;
       }
@@ -1867,6 +1891,7 @@ export function mountStage(container, options) {
     canvas.addEventListener('pointercancel', onPointerCancel);
     canvas.addEventListener('pointerleave', onPointerLeave);
     canvas.addEventListener('keydown', onKeyDown);
+    canvas.addEventListener('contextmenu', onContextMenu);
     disposers.push(() => {
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointermove', onPointerMove);
@@ -1874,6 +1899,7 @@ export function mountStage(container, options) {
       canvas.removeEventListener('pointercancel', onPointerCancel);
       canvas.removeEventListener('pointerleave', onPointerLeave);
       canvas.removeEventListener('keydown', onKeyDown);
+      canvas.removeEventListener('contextmenu', onContextMenu);
       clearTimers();
     });
 
