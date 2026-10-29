@@ -73,6 +73,12 @@ export const RADIO_BROWSER_DEFAULTS = Object.freeze({
   timeoutMs: 6000,
   /** Total time budget across mirrors and pages, ms. */
   budgetMs: 20000,
+  /**
+   * Pages fetched in parallel from one mirror. The directory answers each page
+   * independently, so four in flight turn a ten-page load into roughly three
+   * round trips instead of ten.
+   */
+  concurrency: 4,
   /** Hosts tried before giving up. */
   maxHosts: 3,
   seed: 20261022,
@@ -125,11 +131,42 @@ function normalizeRealOptions(options) {
     ),
     order: typeof source.order === 'string' && source.order.length > 0 ? source.order : RADIO_BROWSER_DEFAULTS.order,
     hidebroken: source.hidebroken !== false,
+    /**
+     * Station ids the panel must not offer: streams that failed to play in an
+     * earlier session. Kept as a Set so the page loop tests membership without
+     * an array scan per row.
+     */
+    blacklist: normalizeBlacklist(source.blacklist),
+    concurrency: Math.round(clampNumber(source.concurrency, RADIO_BROWSER_DEFAULTS.concurrency, 1, 8)),
     userAgent: typeof source.userAgent === 'string' && source.userAgent.length > 0
       ? source.userAgent
       : RADIO_BROWSER_DEFAULTS.userAgent,
     fetchImpl: typeof source.fetch === 'function' ? source.fetch : defaultFetch(),
+    // Carried through so a caller can cancel the in-flight batch; without it
+    // `collectRows` checked a signal that never arrived and could not abort.
+    signal: source.signal || null,
   };
+}
+
+/** Accept either a Set or an array of ids; anything else means "nothing blocked". */
+function normalizeBlacklist(value) {
+  if (value instanceof Set) {
+    const ids = new Set();
+    for (const id of value) {
+      const key = String(id || '').trim();
+      if (key) ids.add(key);
+    }
+    return ids;
+  }
+  if (Array.isArray(value)) {
+    const ids = new Set();
+    for (const id of value) {
+      const key = String(id || '').trim();
+      if (key) ids.add(key);
+    }
+    return ids;
+  }
+  return new Set();
 }
 
 function hashText(text) {
@@ -234,8 +271,12 @@ async function fetchJson(fetchImpl, url, { signal, timeoutMs, headers }) {
 }
 
 function stationQuery(opts, offset) {
+  // Every parallel page starts inside `limit`, so this is normally pageSize.
+  // The floor only guards a caller that asks for the exact end of the
+  // catalogue; the API rejects a non-positive limit.
+  const take = Math.max(1, Math.min(opts.pageSize, opts.limit - offset));
   const params = new URLSearchParams({
-    limit: String(Math.min(opts.pageSize, opts.limit - offset + 20)),
+    limit: String(take),
     offset: String(offset),
     order: opts.order,
     reverse: 'true',
@@ -245,9 +286,41 @@ function stationQuery(opts, offset) {
 }
 
 /**
+ * Run `worker` over `items` with at most `concurrency` in flight, preserving
+ * the input order in the result. Small enough to keep inline; the project
+ * deliberately carries no pool dependency.
+ */
+async function runPool(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const width = Math.max(1, Math.min(Math.round(concurrency) || 1, items.length));
+  const runners = [];
+  for (let slot = 0; slot < width; slot += 1) {
+    runners.push(
+      (async () => {
+        for (;;) {
+          const index = cursor;
+          cursor += 1;
+          if (index >= items.length) return;
+          results[index] = await worker(items[index], index);
+        }
+      })(),
+    );
+  }
+  await Promise.all(runners);
+  return results;
+}
+
+/**
  * Collect stations across mirrors until `limit` usable rows are held or the
  * budget runs out. Every failure is recorded; a mirror that answered partial
  * data is not tried again.
+ *
+ * Pages are fetched in parallel ({@link RADIO_BROWSER_DEFAULTS.concurrency} at
+ * a time) because the directory answers each offset independently. A page that
+ * fails does not stop its siblings: the rows that did arrive are kept, and the
+ * next mirror tops up the shortfall. A short page is simply the end of the
+ * catalogue, so no second round trip is spent confirming it.
  *
  * @returns {{rows, attempts, hostsUsed, exhaustedBudget}}
  */
@@ -270,17 +343,19 @@ async function collectRows(opts, signal) {
     };
   }
 
+  const pageCount = Math.max(1, Math.ceil(opts.limit / opts.pageSize));
+  const offsets = [];
+  for (let index = 0; index < pageCount; index += 1) offsets.push(index * opts.pageSize);
+
   for (const host of hosts) {
     if (rows.length >= opts.limit) break;
     if (signal && signal.aborted) break;
     if (Date.now() >= deadline) break;
     hostsUsed.push(host);
-    let offset = 0;
-    let hostFailed = false;
 
-    while (rows.length < opts.limit && !hostFailed) {
+    const pages = await runPool(offsets, opts.concurrency, async (offset) => {
       const remaining = deadline - Date.now();
-      if (remaining <= 0 || (signal && signal.aborted)) break;
+      if (remaining <= 0 || (signal && signal.aborted)) return { skipped: true };
       const path = stationQuery(opts, offset);
       const url = `https://${host}${path}`;
       try {
@@ -289,34 +364,40 @@ async function collectRows(opts, signal) {
           timeoutMs: Math.min(opts.timeoutMs, remaining),
           headers,
         });
-        let added = 0;
-        for (const row of page) {
-          const id = row && row.stationuuid ? String(row.stationuuid) : '';
-          if (id.length === 0 || seen.has(id)) continue;
-          seen.add(id);
-          rows.push(row);
-          added += 1;
-        }
-        attempts.push({ host, path, ok: true, received: page.length, added });
-        // A short page means the mirror has nothing more to give, and a page
-        // that added nothing new means the catalogue is exhausted at this
-        // offset: either way, stop paging this mirror and let the next one top
-        // up. A few unusable rows further down the list are not worth a second
-        // round trip — the mapping drops them after the fact.
-        if (page.length < opts.pageSize) break;
-        offset += page.length;
+        return { path, page };
       } catch (error) {
         const timedOut = Boolean(error && (error.timedOut || error.name === 'TimeoutError' || error.name === 'AbortError'));
-        attempts.push({
-          host,
+        return {
           path,
-          ok: false,
-          status: error && error.status ? error.status : null,
-          error: error && error.message ? error.message : String(error),
-          timedOut,
-        });
-        hostFailed = true;
+          error: {
+            host,
+            path,
+            ok: false,
+            status: error && error.status ? error.status : null,
+            error: error && error.message ? error.message : String(error),
+            timedOut,
+          },
+        };
       }
+    });
+
+    for (const result of pages) {
+      if (!result || result.skipped) continue;
+      if (result.error) {
+        attempts.push(result.error);
+        continue;
+      }
+      let added = 0;
+      for (const row of result.page) {
+        const id = row && row.stationuuid ? String(row.stationuuid) : '';
+        if (id.length === 0 || seen.has(id) || opts.blacklist.has(id)) continue;
+        seen.add(id);
+        rows.push(row);
+        added += 1;
+        if (rows.length >= opts.limit) break;
+      }
+      attempts.push({ host, path: result.path, ok: true, received: result.page.length, added });
+      if (rows.length >= opts.limit) break;
     }
   }
 
@@ -539,7 +620,14 @@ export function createMockRadioRepository(options) {
  */
 export function createRepositoryFromRows(rows, options) {
   const opts = normalizeRealOptions(options);
-  const mapped = mapStations(Array.isArray(rows) ? rows : []);
+  const source = Array.isArray(rows) ? rows : [];
+  // A station whose stream failed to play is filtered before mapping, so it
+  // cannot reach the scene, the search index or the genre counts at all.
+  const usableRows =
+    opts.blacklist.size > 0
+      ? source.filter((row) => !opts.blacklist.has(String((row && row.stationuuid) || '')))
+      : source;
+  const mapped = mapStations(usableRows);
   let stations = mapped.stations.slice(0, opts.limit);
 
   if (stations.length === 0) return null;
@@ -564,8 +652,9 @@ export function createRepositoryFromRows(rows, options) {
       provenance: {
         hosts: opts.hosts.slice(0, opts.maxHosts),
         order: opts.order,
-        received: Array.isArray(rows) ? rows.length : 0,
+        received: source.length,
         usable: stations.length,
+        blocked: source.length - usableRows.length,
         dropped: mapped.dropped,
         duplicateIds: mapped.duplicateIds,
         featured: featuredCount,
@@ -608,7 +697,10 @@ export async function fetchRadioBrowserCatalog(options) {
       ok: false,
       reason: 'no-usable-stations',
       detail: `${collected.rows.length} rows received, none had a stable id, a name and a valid stream URL`,
-      rows: collected.rows,
+      // These rows mapped to nothing; handing them to a caller that caches
+      // "the last successful catalogue" would poison that cache with rows the
+      // next read has to fetch past.
+      rows: [],
       attempts: collected.attempts,
     };
   }
@@ -650,7 +742,7 @@ export async function createRadioRepository(options) {
 
   if (mode === 'mock') {
     const repository = createMockRadioRepository(mockOptions);
-    return { repository, fallback: null, attempts: [], network: false };
+    return { repository, fallback: null, attempts: [], network: false, rows: [] };
   }
 
   let result;
@@ -684,7 +776,15 @@ export async function createRadioRepository(options) {
   }
 
   if (result && result.ok && result.repository && result.repository.list().length > 0) {
-    return { repository: result.repository, fallback: null, attempts: result.attempts || [], network: true };
+    return {
+      repository: result.repository,
+      fallback: null,
+      attempts: result.attempts || [],
+      network: true,
+      // The raw rows are returned so the caller can cache them verbatim; the
+      // mapped stations are a lossy view and a cache must be able to re-map.
+      rows: Array.isArray(result.rows) ? result.rows : [],
+    };
   }
 
   const repository = createMockRadioRepository(mockOptions);
@@ -697,6 +797,7 @@ export async function createRadioRepository(options) {
     },
     attempts: (result && result.attempts) || [],
     network: true,
+    rows: [],
   };
 }
 

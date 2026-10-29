@@ -72,9 +72,29 @@ window.__ModuleLoader__.load({
       // budget is what stops a slow mirror from stalling the boot.
       sourceLimit: 5000,
       sourcePageSize: 500,
+      sourceConcurrency: 4,
       sourceTimeoutMs: 12000,
       sourceBudgetMs: 60000,
     };
+
+    /**
+     * Which playback failures mean "this station is broken" rather than "this
+     * environment could not play it right now".
+     *
+     * A missing Audio element, an autoplay block, a paused load and a
+     * transient network error are all states a later attempt can survive, and
+     * blacklisting them would quietly delete working stations from every
+     * future catalogue. Only a source the media stack rejects outright is
+     * worth remembering.
+     */
+    const BROKEN_STREAM_ERRORS = new Set(['decode', 'unsupported-or-unreachable', 'bad-url']);
+
+    function isBrokenStream(reason) {
+      if (BROKEN_STREAM_ERRORS.has(reason)) return true;
+      // play() rejects with NotSupportedError when the format is not playable;
+      // AbortError and NotAllowedError are environment, not station.
+      return reason === 'play-failed:NotSupportedError';
+    }
 
     /** Close delay that lets the pointer travel from the hole into the panel. */
     const HOVER_CLOSE_MS = 320;
@@ -402,6 +422,12 @@ window.__ModuleLoader__.load({
       const shared = {
         radio: null,
         playback: null,
+        /** The IndexedDB handle, or null when this browser has no cache. */
+        cache: null,
+        /** Station ids that failed to play; filtered out of the next load. */
+        blacklist: null,
+        /** Failures recorded before the cache finished opening. */
+        pendingBlacklist: null,
         /**
          * The one catalogue promise for the whole plugin.
          *
@@ -425,29 +451,94 @@ window.__ModuleLoader__.load({
               const store = shared.ensureStore(radio.createRadioStore);
               let repository = null;
               let fallback = null;
-              try {
-                const outcome = await radio.createRadioRepository({
-                  count: conf.stationCount,
-                  seed: conf.seed,
-                  featuredCount: conf.featuredCount,
-                  mode: conf.sourceMode || 'auto',
-                  limit: conf.sourceLimit,
-                  pageSize: conf.sourcePageSize,
-                  timeoutMs: conf.sourceTimeoutMs,
-                  budgetMs: conf.sourceBudgetMs,
-                });
-                repository = outcome && outcome.repository ? outcome.repository : null;
-                fallback = outcome ? outcome.fallback : null;
-              } catch (error) {
-                // The chunk already guarantees a mock fallback; this only
-                // catches a failure below it (the mock generator itself).
-                repository = radio.createMockRadioRepository({
-                  count: conf.stationCount,
-                  seed: conf.seed,
-                  featuredCount: conf.featuredCount,
-                });
-                fallback = { reason: 'error', detail: String(error), attempts: [] };
+              let rows = null;
+              let fromCache = false;
+
+              // The cache is an optimisation, never a dependency: a private
+              // window, a quota error or a blocked upgrade resolves to null and
+              // the network path below runs exactly as it did before.
+              const cache = typeof radio.openRadioCache === 'function' ? await radio.openRadioCache() : null;
+              shared.cache = cache;
+              if (cache) {
+                shared.blacklist = await cache.readBlacklist();
+                // Failures recorded before the cache finished opening are
+                // flushed here, so a fast click on a broken stream is not lost.
+                // They also join the live set: the first catalogue of this
+                // session must already filter them out.
+                if (shared.pendingBlacklist && shared.pendingBlacklist.size > 0) {
+                  for (const id of shared.pendingBlacklist) {
+                    await cache.addBlacklisted(id);
+                    shared.blacklist.add(id);
+                  }
+                  shared.pendingBlacklist = null;
+                }
+              } else if (!shared.blacklist) {
+                shared.blacklist = new Set();
               }
+              const blacklist = shared.blacklist;
+
+              const repoOptions = {
+                count: conf.stationCount,
+                seed: conf.seed,
+                featuredCount: conf.featuredCount,
+                mode: conf.sourceMode || 'auto',
+                limit: conf.sourceLimit,
+                pageSize: conf.sourcePageSize,
+                concurrency: conf.sourceConcurrency,
+                timeoutMs: conf.sourceTimeoutMs,
+                budgetMs: conf.sourceBudgetMs,
+                blacklist,
+              };
+
+              // The catalogue is cached per query shape: a larger limit or a
+              // different order must fetch its own answer instead of reusing
+              // the previous shape's rows for a day.
+              const catalogKey = `catalog:v1:${conf.sourceLimit || 5000}:${conf.sourcePageSize || 500}:${conf.sourceOrder || 'clickcount'}`;
+
+              // A catalogue younger than the TTL paints the scene without a
+              // network round trip. Anything older is refetched; the cached
+              // rows stay on disk until the fresh answer replaces them.
+              if (cache && (conf.sourceMode || 'auto') !== 'mock') {
+                try {
+                  const cached = await cache.readCatalog(catalogKey);
+                  if (cached && Date.now() - cached.fetchedAt <= radio.CATALOG_TTL_MS) {
+                    const cachedRepository = radio.createRepositoryFromRows(cached.rows, repoOptions);
+                    if (cachedRepository && cachedRepository.list().length > 0) {
+                      repository = cachedRepository;
+                      fromCache = true;
+                    }
+                  }
+                } catch {
+                  /* an unreadable cache is the same as no cache */
+                }
+              }
+
+              if (!repository) {
+                try {
+                  const outcome = await radio.createRadioRepository(repoOptions);
+                  repository = outcome && outcome.repository ? outcome.repository : null;
+                  fallback = outcome ? outcome.fallback : null;
+                  rows = outcome && Array.isArray(outcome.rows) ? outcome.rows : null;
+                } catch (error) {
+                  // The chunk already guarantees a mock fallback; this only
+                  // catches a failure below it (the mock generator itself).
+                  repository = radio.createMockRadioRepository({
+                    count: conf.stationCount,
+                    seed: conf.seed,
+                    featuredCount: conf.featuredCount,
+                  });
+                  fallback = { reason: 'error', detail: String(error), attempts: [] };
+                }
+                if (cache && rows && rows.length > 0) {
+                  // Verbatim rows, not mapped stations: a cache must be able to
+                  // re-map when the mapping changes. Not awaited: the scene
+                  // paints first, the structured clone lands when it lands.
+                  cache.writeCatalog(rows, Date.now(), catalogKey).catch(() => {
+                    /* quota or private mode: the session still has the data */
+                  });
+                }
+              }
+
               if (store && repository) store.index(repository.list());
               if (!shared.env) shared.bindEnv(radio);
               if (fallback) {
@@ -461,6 +552,7 @@ window.__ModuleLoader__.load({
                 categories: repository ? repository.categories() : null,
                 anchors: repository ? repository.anchors() : null,
                 fallback,
+                fromCache,
               };
             });
           return shared.data;
@@ -474,7 +566,28 @@ window.__ModuleLoader__.load({
           return shared.radio;
         },
         ensurePlayback(createPlayback) {
-          if (!shared.playback && typeof createPlayback === 'function') shared.playback = createPlayback();
+          if (!shared.playback && typeof createPlayback === 'function') {
+            shared.playback = createPlayback();
+            // A stream that failed is remembered, not retried forever: the next
+            // catalogue load filters the station out. A browser autoplay block
+            // and a station without a stream are policy/answer, not a broken
+            // station, so neither is blacklisted.
+            if (shared.playback && typeof shared.playback.subscribe === 'function') {
+              shared.playback.subscribe((state) => {
+                if (!state || state.status !== 'error' || !state.stationId) return;
+                const reason = String(state.error || '');
+                if (!isBrokenStream(reason)) return;
+                const id = String(state.stationId);
+                if (shared.blacklist) shared.blacklist.add(id);
+                if (shared.cache && typeof shared.cache.addBlacklisted === 'function') {
+                  shared.cache.addBlacklisted(id).catch(() => {});
+                } else {
+                  if (!shared.pendingBlacklist) shared.pendingBlacklist = new Set();
+                  shared.pendingBlacklist.add(id);
+                }
+              });
+            }
+          }
           return shared.playback;
         },
         /**
@@ -506,6 +619,11 @@ window.__ModuleLoader__.load({
           shared.radio = null;
           shared.data = null;
           shared.env = null;
+          // The cache handle and the blocked ids belong to this session's
+          // data path; a dispose that kept them would outlive its owner.
+          shared.cache = null;
+          shared.blacklist = null;
+          shared.pendingBlacklist = null;
         },
       };
       return shared;
