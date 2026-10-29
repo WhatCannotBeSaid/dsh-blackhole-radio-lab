@@ -150,33 +150,20 @@ window.__ModuleLoader__.load({
       return reason === 'play-failed:NotSupportedError';
     }
 
-    /** Close delay that lets the pointer travel from the hole into the panel. */
-    const HOVER_CLOSE_MS = 320;
-
     const DICT = {
       zh: {
         sidebarEntry: '黑洞电台',
-        wordmark: '黑洞电台',
-        phaseTag: '第四阶段',
-        close: '返回对话',
         stageLabel: '三维舞台',
         stageLoading: '正在加载三维场景',
         stageError: '场景加载失败',
         stageRetry: '重新加载',
-        demoBadge: '演示数据',
-        liveBadge: '真实电台',
-        fallbackBadge: '模拟数据 · 实时源不可用',
         openSearch: '打开搜索',
-        enterGenres: '进入流派星团',
         searchLabel: '搜索',
         searchPlaceholder: '搜索电台、国家、语言或分类',
         searchClear: '清除',
         searchHint: '回车定位 · Esc 关闭',
         noResults: '这里还没有电台',
         categories: '分类',
-        categoriesHint: '停留显示 · 选择进入',
-        clusterBack: '黑洞',
-        clusterSearch: '搜索电台',
         clusterStations: '个电台',
         nebulaGroupAll: '全部',
         nebulaGroupBy: '按标签分组',
@@ -189,8 +176,6 @@ window.__ModuleLoader__.load({
         featuredNote: '精选电台 · 内环亮带中的稳定结构',
         demoNote: '模拟电台，仅用于界面演示；实时源不可用时替代显示，不含播放能力。',
         liveNote: '真实电台数据，来自 Radio Browser；本阶段尚未接入音频播放。',
-        hintBlackHole: '点击星点选中电台 · 点击中心进入流派星团 · 拖动环绕 · 滚轮缩放',
-        hintCluster: '拖动环绕星团 · 滚轮缩放 · 点击星点查看 · 右键返回黑洞',
         dataError: '模拟数据加载失败',
         // ---- phase 7: business actions -----------------------------------
         playAction: '播放',
@@ -212,8 +197,6 @@ window.__ModuleLoader__.load({
         playbackError: '播放失败',
         nowPlaying: '正在播放',
         miniPlayerEmpty: '未在播放',
-        viewNebula: '星云空间',
-        viewHole: '黑洞',
         nebulaBack: '黑洞',
         nebulaTitle: '星云空间',
         nebulaGenres: '个流派',
@@ -264,27 +247,17 @@ window.__ModuleLoader__.load({
       },
       en: {
         sidebarEntry: 'Black Hole Radio',
-        wordmark: 'BLACK HOLE RADIO',
-        phaseTag: 'PHASE 4',
-        close: 'Back to conversation',
         stageLabel: '3-D stage',
         stageLoading: 'loading the 3-D scene',
         stageError: 'scene failed to load',
         stageRetry: 'Reload',
-        demoBadge: 'Demo data',
-        liveBadge: 'Live stations',
-        fallbackBadge: 'Simulated · live source offline',
         openSearch: 'Open search',
-        enterGenres: 'Enter genre clusters',
         searchLabel: 'Search',
         searchPlaceholder: 'Search stations, countries, languages or categories',
         searchClear: 'Clear',
         searchHint: 'Enter to locate · Esc to close',
         noResults: 'No stations here yet',
         categories: 'Categories',
-        categoriesHint: 'Dwell to reveal · pick to enter',
-        clusterBack: 'Black hole',
-        clusterSearch: 'Search stations',
         clusterStations: 'stations',
         nebulaGroupAll: 'All',
         nebulaGroupBy: 'Grouped by tag',
@@ -297,8 +270,6 @@ window.__ModuleLoader__.load({
         featuredNote: 'Featured · a steadier structure in the inner rim',
         liveNote: 'Real station from Radio Browser. This phase does not play audio yet.',
         demoNote: 'Simulated stations for this interface only. Shown when the live source is offline; nothing plays.',
-        hintBlackHole: 'Click a star for its station card · click the centre for genre clusters · drag to orbit · scroll to zoom',
-        hintCluster: 'Drag to orbit the cluster · scroll to zoom · click a star · right-click for the hole',
         dataError: 'mock data failed to load',
         // ---- phase 7: business actions -----------------------------------
         playAction: 'Play',
@@ -320,8 +291,6 @@ window.__ModuleLoader__.load({
         playbackError: 'Playback failed',
         nowPlaying: 'Now playing',
         miniPlayerEmpty: 'Nothing playing',
-        viewNebula: 'Nebula space',
-        viewHole: 'Black hole',
         nebulaBack: 'Black hole',
         nebulaTitle: 'Nebula space',
         nebulaGenres: 'genres',
@@ -2409,14 +2378,6 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function ArrowRight({ size }) {
-      return h(
-        'svg',
-        { width: size || 13, height: size || 13, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
-        h('path', { d: 'M3 8h10M9 4l4 4-4 4', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-      );
-    }
-
     function Cross({ size }) {
       return h(
         'svg',
@@ -2425,7 +2386,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Panel({ localeSvc, closePanel, requireAsync, shared }) {
+    function Panel({ localeSvc, requireAsync, shared }) {
       const t = useT(localeSvc);
       const lang = activeLanguage(localeSvc).startsWith('zh') ? 'zh' : 'en';
       const langRef = useRef(lang);
@@ -2437,7 +2398,6 @@ window.__ModuleLoader__.load({
       const stageRef = useRef(null);
       const retryStage = useCallback(() => setAttempt((n) => n + 1), []);
 
-      const [categoriesOpen, setCategoriesOpen] = useState(false);
       /**
        * The nebula's open genre, or null for the volume field.
        *
@@ -2455,12 +2415,8 @@ window.__ModuleLoader__.load({
         transitioning: false,
       });
 
-      const catsRef = useRef(null);
-      const closeTimerRef = useRef(0);
-      const catsOpenRef = useRef(false);
       const modeRef = useRef(modeState);
       const nebulaGenreRef = useRef(nebulaGenreId);
-      catsOpenRef.current = categoriesOpen;
       modeRef.current = modeState;
       nebulaGenreRef.current = nebulaGenreId;
 
@@ -2479,22 +2435,14 @@ window.__ModuleLoader__.load({
             // scene no longer shows is closed here rather than left to rot as
             // an orphan list over a volume field.
             if (snapshot.mode !== 'nebula' && !snapshot.transitioning) setNebulaGenreId(null);
-            setCategoriesOpen(false);
           },
           /**
-           * The hole's centre is the way in: it enters the genre field — the
-           * thirteen-genre nebula — where each genre volume is one star
+           * The hole's centre is the way in: holding it enters the genre field
+           * — the thirteen-genre nebula — where each genre volume is one star
            * cluster. The nebula is a navigation level, not a second app.
            */
           onCenterClick() {
             if (actionsRef.current.enterNebula) actionsRef.current.enterNebula();
-          },
-          onHoverChange(active) {
-            if (active) {
-              if (actionsRef.current.openCategories) actionsRef.current.openCategories();
-            } else if (actionsRef.current.scheduleClose) {
-              actionsRef.current.scheduleClose();
-            }
           },
         }),
         [],
@@ -2590,16 +2538,6 @@ window.__ModuleLoader__.load({
       );
       const selectedKey = selected && store ? store.keyOf(selected) : null;
 
-      /** Real membership counts — a station can carry several categories. */
-      const categoryCounts = useMemo(() => {
-        const map = new Map();
-        if (!repository) return map;
-        for (const station of repository.list()) {
-          for (const id of station.categories || []) map.set(id, (map.get(id) || 0) + 1);
-        }
-        return map;
-      }, [repository]);
-
       const stageSettings = useMemo(() => {
         if (!cfg || !repository) return null;
         return {
@@ -2620,85 +2558,10 @@ window.__ModuleLoader__.load({
           onSelect: stageCallbacks.onSelect,
           onMode: stageCallbacks.onMode,
           onCenterClick: stageCallbacks.onCenterClick,
-          onHoverChange: stageCallbacks.onHoverChange,
         };
       }, [cfg, repository, anchors, stageCallbacks]);
 
       const stage = useStage(requireAsync, canvasNode, stageSettings, stageRef, attempt);
-      const stageReady = stage.status === 'ready';
-
-      // ---- category panel -------------------------------------------------
-
-      const openCategories = useCallback(() => {
-        if (!stageReady) return;
-        if (closeTimerRef.current) {
-          clearTimeout(closeTimerRef.current);
-          closeTimerRef.current = 0;
-        }
-        setCategoriesOpen(true);
-        const handle = stageRef.current;
-        if (handle && typeof handle.setInteraction === 'function') handle.setInteraction('category-panel');
-      }, [stageReady]);
-
-      const closeCategories = useCallback(() => {
-        if (closeTimerRef.current) {
-          clearTimeout(closeTimerRef.current);
-          closeTimerRef.current = 0;
-        }
-        setCategoriesOpen(false);
-        const handle = stageRef.current;
-        if (handle && typeof handle.setInteraction === 'function') handle.setInteraction('black-hole');
-      }, []);
-
-      const scheduleClose = useCallback(() => {
-        if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-        closeTimerRef.current = setTimeout(() => {
-          closeTimerRef.current = 0;
-          setCategoriesOpen(false);
-          const handle = stageRef.current;
-          if (handle && typeof handle.setInteraction === 'function') handle.setInteraction('black-hole');
-        }, HOVER_CLOSE_MS);
-      }, []);
-
-      const cancelClose = useCallback(() => {
-        if (closeTimerRef.current) {
-          clearTimeout(closeTimerRef.current);
-          closeTimerRef.current = 0;
-        }
-      }, []);
-
-      useEffect(
-        () => () => {
-          if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-        },
-        [],
-      );
-
-      // While the panel is up the pointer may travel from the hole to the panel
-      // (and back) without ever dismissing it. The canvas cannot see that
-      // journey — the panel sits on top of it — so the travel is tracked here:
-      // inside hole or panel keeps it, anywhere else starts the close delay.
-      useEffect(() => {
-        if (!categoriesOpen) return undefined;
-        const onMove = (event) => {
-          const node = catsRef.current;
-          const box = node ? node.getBoundingClientRect() : null;
-          const insidePanel =
-            box &&
-            event.clientX >= box.left &&
-            event.clientX <= box.right &&
-            event.clientY >= box.top &&
-            event.clientY <= box.bottom;
-          const handle = stageRef.current;
-          const hole = handle && typeof handle.holeScreen === 'function' ? handle.holeScreen() : null;
-          const radius = hole ? hole.region || hole.r : 0;
-          const insideHole = hole ? Math.hypot(event.clientX - hole.x, event.clientY - hole.y) <= radius : false;
-          if (insidePanel || insideHole) cancelClose();
-          else scheduleClose();
-        };
-        document.addEventListener('pointermove', onMove, { capture: true });
-        return () => document.removeEventListener('pointermove', onMove, { capture: true });
-      }, [categoriesOpen, cancelClose, scheduleClose]);
 
       // ---- mode transitions ----------------------------------------------
 
@@ -2714,21 +2577,19 @@ window.__ModuleLoader__.load({
        * is not a property of the view that happens to be mounted.
        */
       const enterNebulaView = useCallback(() => {
-        closeCategories();
         selectNone();
         setNebulaGenreId(null);
         const handle = stageRef.current;
         if (handle && typeof handle.enterNebula === 'function') handle.enterNebula();
-      }, [closeCategories, selectNone]);
+      }, [selectNone]);
 
       const exitNebulaView = useCallback(() => {
-        closeCategories();
         selectNone();
         setNebulaGenreId(null);
         const handle = stageRef.current;
         if (handle && typeof handle.exitNebula === 'function') handle.exitNebula();
         else if (handle && typeof handle.backToHole === 'function') handle.backToHole();
-      }, [closeCategories, selectNone]);
+      }, [selectNone]);
 
       /**
        * Fold the volume field away, or reopen it. Closing a genre is not a
@@ -2752,36 +2613,22 @@ window.__ModuleLoader__.load({
         if (handle && typeof handle.setGenre === 'function') handle.setGenre(next);
       }, []);
 
-      const enterCategory = useCallback(
-        (id) => {
-          closeCategories();
-          setNebulaGenreId(null);
-          selectNone();
-          const handle = stageRef.current;
-          if (handle && typeof handle.enterCluster === 'function') handle.enterCluster(id);
-        },
-        [closeCategories, selectNone],
-      );
-
       const backToHole = useCallback(() => {
-        closeCategories();
         setNebulaGenreId(null);
         selectNone();
         const handle = stageRef.current;
         if (!handle) return;
         if (typeof handle.clearSelection === 'function') handle.clearSelection(false);
         if (typeof handle.exitCluster === 'function') handle.exitCluster();
-      }, [closeCategories, selectNone]);
+      }, [selectNone]);
 
       // ---- station selection ---------------------------------------------
 
       const chooseStation = useCallback((station) => {
         if (!station) return;
         if (store) store.select(station);
-        setCategoriesOpen(false);
         const handle = stageRef.current;
         if (!handle) return;
-        if (typeof handle.setInteraction === 'function') handle.setInteraction('black-hole');
         // locateStation is the cross-mode path: it enters the scene that owns
         // the station first, then focuses it. selectById would only work when
         // the station already sits in the active scene.
@@ -2827,56 +2674,31 @@ window.__ModuleLoader__.load({
         if (handle && typeof handle.setLanguage === 'function') handle.setLanguage(lang);
       }, [lang, stage.status]);
 
-      const categoryName = useCallback(
-        (id) => {
-          const category = categories.find((item) => item.id === id);
-          if (!category) return id;
-          return lang === 'en' ? category.en : category.zh;
-        },
-        [categories, lang],
-      );
-
-      const categoryColor = useCallback(
-        (id) => {
-          const category = categories.find((item) => item.id === id);
-          if (!category) return '#9fb0cc';
-          return `#${Number(category.color).toString(16).padStart(6, '0')}`;
-        },
-        [categories],
-      );
+      const inCluster = modeState.mode === 'cluster' || modeState.state === 'transition-to-cluster';
 
       /**
-       * Which source is on screen, in words. Live stations and simulated ones
-       * must never look alike in the chrome.
+       * Escape belongs to the scene, not to the panel.
+       *
+       * It steps the nebula back to the hole and does nothing in the hole: the
+       * hole has no exit of its own — leaving it is the host's navigation, not
+       * a key this plugin owns.
        */
-      const dataBadge = radio.fallback ? t('fallbackBadge') : radio.repository && radio.repository.kind === 'radio-browser' ? t('liveBadge') : t('demoBadge');
-
-      const inCluster = modeState.mode === 'cluster' || modeState.state === 'transition-to-cluster';
-      const clusterCategory = modeState.categoryId || null;
-      const clusterCount = clusterCategory ? categoryCounts.get(clusterCategory) || 0 : 0;
-
-      // Esc closes the category panel; a second Esc leaves the cluster.
       useEffect(() => {
         const onKey = (event) => {
           if (event.key !== 'Escape') return;
-          if (catsOpenRef.current) {
-            event.preventDefault();
-            event.stopPropagation();
-            if (actionsRef.current.closeCategories) actionsRef.current.closeCategories();
-            return;
-          }
           const snapshot = modeRef.current;
-          if (snapshot.state === 'cluster' || snapshot.transitioning) {
-            event.preventDefault();
-            event.stopPropagation();
-            if (actionsRef.current.backToHole) actionsRef.current.backToHole();
-          }
+          const inNebula =
+            snapshot.mode === 'nebula' || snapshot.state === 'transition-to-nebula' || snapshot.transitioning;
+          if (!inNebula) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (actionsRef.current.exitNebula) actionsRef.current.exitNebula();
         };
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);
       }, []);
 
-      actionsRef.current = { enterNebula: enterNebulaView, openCategories, closeCategories, scheduleClose, cancelClose, backToHole };
+      actionsRef.current = { enterNebula: enterNebulaView, exitNebula: exitNebulaView, backToHole };
 
       // ---- nebula station surfaces ---------------------------------------
 
@@ -2950,8 +2772,6 @@ window.__ModuleLoader__.load({
         }
       }, [repository, nebulaGenreId]);
 
-      const showHint = stageReady && !selected;
-
       return h(
         'div',
         {
@@ -2983,78 +2803,12 @@ window.__ModuleLoader__.load({
               )
             : null,
 
-          h(
-            'div',
-            { className: 'bhrl-overlay' },
-            h(
-              'div',
-              { className: 'bhrl-brand', 'data-hidden': inCluster ? 'true' : 'false' },
-              h('span', { className: 'bhrl-brand__name' }, t('wordmark')),
-              h('span', { className: 'bhrl-brand__tag' }, t('phaseTag')),
-              h('span', { className: 'bhrl-brand__demo' }, dataBadge),
-            ),
-
-            // Keyboard focus stop over the hole. Pointer hits go to the canvas.
-            h('button', {
-              type: 'button',
-              className: 'bhrl-core',
-              'aria-label': t('enterGenres'),
-              title: t('enterGenres'),
-              onClick: enterNebulaView,
-              'data-hidden': inCluster ? 'true' : 'false',
-            }),
-
-            h(
-              'button',
-              { type: 'button', className: 'bhrl-quit', onClick: closePanel, title: t('close'), 'aria-label': t('close') },
-              h(Cross, { size: 14 }),
-            ),
-
-            /**
-             * The way into the nebula space, and the way back out of it.
-             *
-             * Two views of one catalogue: the hole is where stations are
-             * placed by category, the nebula is where they are placed by genre.
-             * Switching between them is a scene change, so it never touches
-             * the store or the transport — whatever is playing keeps playing.
-             */
-            h(
-              'div',
-              { className: 'bhrl-viewswitch', 'data-hidden': inCluster ? 'true' : 'false' },
-              modeState.mode === 'nebula'
-                ? h(
-                    'button',
-                    { type: 'button', className: 'bhrl-backbtn', onClick: exitNebulaView, title: t('viewHole') },
-                    h(ArrowLeft, { size: 13 }),
-                    h('span', null, t('viewHole')),
-                  )
-                : h(
-                    'button',
-                    { type: 'button', className: 'bhrl-backbtn', onClick: enterNebulaView, title: t('viewNebula') },
-                    h('span', null, t('viewNebula')),
-                    h(ArrowRight, { size: 13 }),
-                  ),
-            ),
-
-            h(
-              'div',
-              { className: 'bhrl-clusterbar', 'data-open': inCluster ? 'true' : 'false' },
-              h(
-                'button',
-                { type: 'button', className: 'bhrl-backbtn', onClick: backToHole, title: t('clusterBack') },
-                h(ArrowLeft, { size: 13 }),
-                h('span', null, t('clusterBack')),
-              ),
-              h(
-                'div',
-                { className: 'bhrl-clusterbar__title' },
-                h('strong', null, clusterCategory ? categoryName(clusterCategory) : t('categories')),
-                h('span', null, `${clusterCount} ${t('clusterStations')}`),
-              ),
-            ),
-
-            showHint ? h('p', { className: 'bhrl-hint' }, inCluster ? t('hintCluster') : t('hintBlackHole')) : null,
-          ),
+          /**
+           * The hole has no chrome at all: no wordmark, no close button, no
+           * way-in button, no hint line and no category list. It is a place,
+           * not a control panel — holding its centre enters the nebula.
+           * Everything drawn over the scene belongs to the nebula space.
+           */
 
           /**
            * The nebula's two surfaces: the volume field and, under it, the
@@ -3120,41 +2874,6 @@ window.__ModuleLoader__.load({
                 onFocus: (station) => locatePlaying(station && station.id),
               })
             : null,
-
-          h(
-            'div',
-            {
-              className: 'bhrl-cats',
-              ref: catsRef,
-              'data-open': categoriesOpen ? 'true' : 'false',
-              role: 'menu',
-              'aria-label': t('categories'),
-              onPointerEnter: cancelClose,
-              onPointerLeave: scheduleClose,
-              onPointerDown: (event) => event.stopPropagation(),
-            },
-            h(
-              'div',
-              { className: 'bhrl-cats__head' },
-              h('span', { className: 'bhrl-cats__title' }, t('categories')),
-              h('span', { className: 'bhrl-cats__hint' }, t('categoriesHint')),
-            ),
-            categories.map((category) =>
-              h(
-                'button',
-                {
-                  type: 'button',
-                  key: category.id,
-                  className: 'bhrl-cat',
-                  role: 'menuitem',
-                  onClick: () => enterCategory(category.id),
-                },
-                h(CategoryDot, { color: categoryColor(category.id) }),
-                h('span', { className: 'bhrl-cat__name' }, lang === 'en' ? category.en : category.zh),
-                h('span', { className: 'bhrl-cat__n' }, String(categoryCounts.get(category.id) || 0)),
-              ),
-            ),
-          ),
         ),
       );
     }
@@ -3214,44 +2933,8 @@ window.__ModuleLoader__.load({
 .bhrl-stage { position: absolute; inset: 0; overflow: hidden; }
 .bhrl-stage__canvas { position: absolute; inset: 0; }
 .bhrl-stage__canvas canvas { display: block; }
-.bhrl-overlay { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
-
-.bhrl-brand { position: absolute; left: 20px; top: 16px; display: flex; align-items: baseline; gap: 9px; transition: opacity 260ms ease; }
-.bhrl-brand[data-hidden="true"] { opacity: 0; }
-.bhrl-brand__name { font-size: 10px; font-weight: 600; letter-spacing: 0.26em; text-transform: uppercase; color: rgba(236, 240, 250, 0.78); }
-.bhrl-brand__tag, .bhrl-brand__demo { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(210, 220, 238, 0.36); }
-.bhrl-brand__demo { color: rgba(255, 170, 120, 0.42); }
-
-.bhrl-quit {
-  position: absolute; right: 14px; top: 12px; display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; padding: 0; border-radius: 50%; border: 1px solid transparent;
-  background: transparent; color: rgba(214, 224, 240, 0.5); cursor: pointer; pointer-events: auto;
-  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
-}
-.bhrl-quit:hover { color: var(--bhrl-ink); border-color: var(--bhrl-line); background: rgba(255, 255, 255, 0.04); }
-.bhrl-quit:focus-visible { outline: 1px solid rgba(255, 176, 120, 0.7); outline-offset: 2px; }
-
-.bhrl-core {
-  position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; margin: -60px 0 0 -60px;
-  padding: 0; border: 0; border-radius: 50%; background: transparent; color: transparent;
-  pointer-events: none; opacity: 0; transition: opacity 160ms ease;
-}
-.bhrl-core[data-hidden="true"] { display: none; }
 .bhrl-stage__canvas canvas:focus-visible { outline: 1px solid rgba(255, 190, 140, 0.55); outline-offset: -1px; }
-.bhrl-core:focus-visible { opacity: 1; outline: none; box-shadow: inset 0 0 0 1px rgba(255, 190, 140, 0.55), 0 0 40px rgba(255, 140, 60, 0.18); }
 
-.bhrl-hint {
-  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); margin: 0; padding: 0 14px;
-  max-width: 88%; font-size: 10.5px; letter-spacing: 0.06em; color: rgba(206, 218, 238, 0.34);
-  text-align: center; pointer-events: none; animation: bhrl-fade-in 700ms ease both;
-}
-
-.bhrl-clusterbar {
-  position: absolute; left: 16px; top: 12px; display: flex; align-items: center; gap: 12px;
-  padding: 6px 8px 6px 4px; border-radius: 10px; opacity: 0; transform: translateY(-4px);
-  pointer-events: none; visibility: hidden; transition: opacity 240ms ease, transform 240ms ease;
-}
-.bhrl-clusterbar[data-open="true"] { opacity: 1; transform: none; pointer-events: auto; visibility: visible; }
 .bhrl-backbtn, .bhrl-iconbtn {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 7px;
   border: 1px solid var(--bhrl-line-soft); background: rgba(8, 11, 18, 0.5); color: rgba(228, 234, 246, 0.78);
@@ -3263,17 +2946,6 @@ window.__ModuleLoader__.load({
 .bhrl-clusterbar__title strong { font-size: 12px; font-weight: 550; letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bhrl-clusterbar__title span { font-size: 9.5px; letter-spacing: 0.08em; color: var(--bhrl-ink-faint); white-space: nowrap; }
 
-.bhrl-cats {
-  position: absolute; left: calc(50% + 104px); top: 50%; z-index: 8; width: 190px; padding: 9px;
-  border-radius: 12px; border: 1px solid var(--bhrl-line-soft); background: rgba(6, 8, 14, 0.72);
-  backdrop-filter: blur(10px); box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
-  opacity: 0; transform: translateY(-50%) translateX(-7px); pointer-events: none; visibility: hidden;
-  transition: opacity 240ms ease, transform 240ms ease;
-}
-.bhrl-cats[data-open="true"] { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; visibility: visible; }
-.bhrl-cats__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 1px 4px 6px; }
-.bhrl-cats__title { font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(232, 238, 250, 0.6); }
-.bhrl-cats__hint { font-size: 8.5px; letter-spacing: 0.04em; color: rgba(206, 218, 238, 0.3); }
 .bhrl-cat {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px; border: 0; border-radius: 7px;
   background: transparent; color: inherit; font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
@@ -3309,17 +2981,8 @@ window.__ModuleLoader__.load({
 @keyframes bhrl-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes bhrl-rise-in { from { opacity: 0; transform: translate(-50%, -48%); } to { opacity: 1; transform: translate(-50%, -50%); } }
 
-@media (max-width: 900px) {
-  .bhrl-cats { left: 50%; top: calc(50% + 128px); transform: translate(-50%, 0); width: min(320px, 74%); }
-  .bhrl-cats[data-open="true"] { transform: translate(-50%, 0); }
-}
-@media (max-width: 560px) {
-  .bhrl-brand__tag, .bhrl-brand__demo { display: none; }
-  .bhrl-clusterbar { left: 10px; top: 10px; gap: 8px; }
-}
 @media (prefers-reduced-motion: reduce) {
   .bhrl-boot__disc { animation: none; }
-  .bhrl-cats, .bhrl-clusterbar { transition-duration: 0ms; animation: none; }
   .bhrl-eq, .bhrl-eq.is-on { animation: none; }
   .bhrl-fcard [data-overflow="true"] .bhrl-fcard__scroll { animation: none; }
   .bhrl-favpop { animation: none; }
@@ -3429,13 +3092,7 @@ window.__ModuleLoader__.load({
 .bhrl-state.is-paused { color: rgba(214, 224, 240, 0.6); }
 .bhrl-act-close { font-size: 15px; line-height: 1; }
 
-/* ---- nebula space: view switch, genre field, station list ------------- */
-
-.bhrl-viewswitch {
-  position: absolute; right: 52px; top: 12px; display: flex; align-items: center; gap: 6px;
-  pointer-events: auto; transition: opacity 220ms ease;
-}
-.bhrl-viewswitch[data-hidden="true"] { opacity: 0; pointer-events: none; }
+/* ---- nebula space: genre field, station list -------------------------- */
 
 .bhrl-nebulabar {
   position: absolute; left: 16px; top: 12px; z-index: 7; display: flex; align-items: center; gap: 12px;
@@ -3504,7 +3161,6 @@ window.__ModuleLoader__.load({
 @media (max-width: 720px) {
   .bhrl-nebula-list { left: 10px; right: 10px; width: auto; top: 96px; bottom: 70px; }
   .bhrl-nebulacats { left: 10px; right: 10px; }
-  .bhrl-viewswitch { right: 46px; }
 }
 
 /* ------------------------------------------------------------------ *
@@ -3877,14 +3533,6 @@ window.__ModuleLoader__.load({
           if (typeof dispose === 'function') disposers.push(dispose);
         };
 
-        const closePanel = () => {
-          try {
-            if (layoutSvc && typeof layoutSvc.selectPanel === 'function') layoutSvc.selectPanel('conversation');
-          } catch {
-            /* no conversation entry in this composition — leave the panel up */
-          }
-        };
-
         /**
          * The card is the way in.
          *
@@ -3919,7 +3567,7 @@ window.__ModuleLoader__.load({
           }),
         );
 
-        claim({ name: 'main', key: PANEL_ID }, () => h(Panel, { localeSvc, closePanel, requireAsync: require.async, shared }));
+        claim({ name: 'main', key: PANEL_ID }, () => h(Panel, { localeSvc, requireAsync: require.async, shared }));
 
         ctx.effect(
           () => () => {

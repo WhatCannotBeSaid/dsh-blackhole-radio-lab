@@ -31,13 +31,12 @@
  *
  * The interaction machine (single source of truth for the panel):
  *
- *   black-hole ──click centre──▶ search ──Esc/close──▶ black-hole
- *   black-hole ──hover 600ms──▶ category-panel ──leave──▶ black-hole
+ *   black-hole ──hold centre──▶ nebula (the genre field)
  *   black-hole ──pick category──▶ transition-to-cluster ──▶ cluster
  *   cluster ──Esc/back──▶ transition-to-black-hole ──▶ black-hole
  *
- * Picking, hovering, long-press and the keyboard all funnel into this machine;
- * the panel never writes scene state directly.
+ * Picking, holding and the keyboard all funnel into this machine; the panel
+ * never writes scene state directly.
  */
 
 import {
@@ -81,9 +80,7 @@ const CLICK_SLOP = 6;
 /** Hover picking is throttled: a pointer moving across 2,000 dots must not
  * run 2,000 projections per pointer event. */
 const HOVER_INTERVAL_MS = 90;
-/** Resting on the hole this long reveals the category panel. */
-const HOVER_OPEN_MS = 600;
-/** Touch has no hover: holding the centre this long opens the same panel. */
+/** Holding the hole's centre this long enters the genre field. */
 const LONG_PRESS_MS = 560;
 /** A press held longer than this is not a click, whatever else it did. */
 const PRESS_CLICK_MS = 800;
@@ -121,8 +118,7 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  * @param options.language - 'zh' | 'en'.
  * @param options.onSelect - fired with (station|null) for selections.
  * @param options.onMode - fired with the machine snapshot on every change.
- * @param options.onCenterClick - the hole centre was clicked (enter the genre field).
- * @param options.onHoverChange - (active) for the 600 ms category hover.
+ * @param options.onCenterClick - the hole centre was held (enter the genre field).
  * @returns a handle with selection, mode, camera and measurement helpers.
  */
 export function mountStage(container, options) {
@@ -1300,15 +1296,6 @@ export function mountStage(container, options) {
       }
     };
 
-    const notifyHover = (active) => {
-      if (typeof settings.onHoverChange !== 'function') return;
-      try {
-        settings.onHoverChange(Boolean(active));
-      } catch {
-        /* ignore */
-      }
-    };
-
     const notifyMode = () => {
       const snapshot = stateSnapshot();
       const key = `${snapshot.state}|${snapshot.categoryId || ''}|${snapshot.transitioning ? 1 : 0}`;
@@ -1358,30 +1345,19 @@ export function mountStage(container, options) {
     };
 
     const setUi = (ui) => {
-      const next = ui === 'search' || ui === 'category-panel' ? ui : 'black-hole';
+      const next = ui === 'search' ? ui : 'black-hole';
       if (machine.ui === next) return;
-      const previous = machine.ui;
       machine.ui = next;
-      if (next === 'search') {
-        hoverSuspended = true;
-      } else if (previous === 'search') {
-        hoverSuspended = true;
-        clearTimers();
-      }
+      clearTimers();
       notifyMode();
     };
 
-    /** Stop every pending hover/long-press timer. Called on mode changes. */
+    /** Stop every pending long-press timer. Called on mode changes. */
     const clearTimers = () => {
-      if (hoverTimer) {
-        clearTimeout(hoverTimer);
-        hoverTimer = 0;
-      }
       if (longTimer) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
-      hoverNotified = false;
     };
 
     const select = (index, selectOptions) => {
@@ -1625,17 +1601,11 @@ export function mountStage(container, options) {
       return select(index, { focus: true, notify: true });
     };
 
-    // ---- pointer / hover / long-press -------------------------------------
+    // ---- pointer / long-press ---------------------------------------------
 
     const press = { active: false, id: -1, x: 0, y: 0, downX: 0, downY: 0, at: 0, consumed: false, moved: false };
     let lastHover = 0;
-    let hoverTimer = 0;
     let longTimer = 0;
-    let hoverNotified = false;
-    // After search closes, the pointer is still parked on the centre. Hover must
-    // wait until it actually leaves the hole, otherwise closing a search would
-    // instantly summon the category panel under the same cursor.
-    let hoverSuspended = false;
 
     const centerAt = (clientX, clientY) => {
       const region = centerRegion();
@@ -1685,34 +1655,6 @@ export function mountStage(container, options) {
       }
     };
 
-    const showCategories = () => {
-      if (!canOpenCenter()) return;
-      if (machine.ui === 'category-panel') return;
-      machine.ui = 'category-panel';
-      notifyMode();
-      if (typeof settings.onHoverChange === 'function') {
-        try {
-          settings.onHoverChange(true);
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-
-    const releaseHover = () => {
-      if (hoverTimer) {
-        clearTimeout(hoverTimer);
-        hoverTimer = 0;
-      }
-      if (!hoverNotified && machine.ui !== 'category-panel') return;
-      hoverNotified = false;
-      if (machine.ui === 'category-panel') {
-        machine.ui = 'black-hole';
-        notifyMode();
-      }
-      notifyHover(false);
-    };
-
     const onPointerDown = (event) => {
       if (event.button !== 0) return;
       press.active = true;
@@ -1724,19 +1666,14 @@ export function mountStage(container, options) {
       press.at = performance.now();
       press.consumed = false;
       press.moved = false;
-      // A press ends any pending dwell: no panel may open mid-click or mid-drag.
-      if (hoverTimer) {
-        clearTimeout(hoverTimer);
-        hoverTimer = 0;
-      }
-      if (event.pointerType === 'touch' && canOpenCenter() && centerAt(event.clientX, event.clientY).inside) {
-        // Long press is the touch equivalent of the 600 ms hover.
+      // The centre is entered by holding it. A press and release there is a
+      // press on the hole itself, which is not a button and does nothing.
+      if (canOpenCenter() && centerAt(event.clientX, event.clientY).inside) {
         longTimer = setTimeout(() => {
           longTimer = 0;
           if (!press.active) return;
           press.consumed = true;
-          hoverNotified = true;
-          showCategories();
+          centerClick();
         }, LONG_PRESS_MS);
       }
     };
@@ -1749,9 +1686,6 @@ export function mountStage(container, options) {
             clearTimeout(longTimer);
             longTimer = 0;
           }
-          // A camera drag retracts the category panel; a hover must not linger
-          // over a view the user is actively moving.
-          if (hoverNotified) releaseHover();
         }
         return;
       }
@@ -1759,8 +1693,8 @@ export function mountStage(container, options) {
       if (now - lastHover < HOVER_INTERVAL_MS) return;
       lastHover = now;
 
-      // The nebula space has its own hover: the hole's 600 ms dwell, its centre
-      // control and its station picking are all absent there.
+      // The nebula space has its own hover: the hole's centre control and its
+      // station picking are both absent there.
       if (machine.mode === 'nebula' && machine.nebula > 0.5) {
         const hit = pickNebulaAt(event.clientX, event.clientY);
         setNebulaHover(hit ? hit.index : -1);
@@ -1768,45 +1702,16 @@ export function mountStage(container, options) {
       }
 
       if (!canOpenCenter()) {
-        if (hoverTimer) {
-          clearTimeout(hoverTimer);
-          hoverTimer = 0;
-        }
-        if (hoverNotified) releaseHover();
         canvas.style.cursor = 'grab';
         return;
       }
 
       const hit = centerAt(event.clientX, event.clientY);
       // A pointer over a fixture image gets a pointer cursor from the same id
-      // read a click would use, and does not arm the hover-to-open panel: the
-      // label on screen must stay readable.
+      // read a press would use.
       const overRadio = radio ? pickRadio(event.clientX, event.clientY) : null;
       canvas.style.cursor =
         overRadio || hit.inside ? 'pointer' : pick(event.clientX, event.clientY) >= 0 ? 'pointer' : 'grab';
-      if (overRadio) {
-        if (hoverTimer) {
-          clearTimeout(hoverTimer);
-          hoverTimer = 0;
-        }
-        return;
-      }
-      if (!hit.inside) hoverSuspended = false;
-      if (hit.inside) {
-        if (!hoverTimer && !hoverNotified && machine.ui === 'black-hole' && !hoverSuspended) {
-          hoverTimer = setTimeout(() => {
-            hoverTimer = 0;
-            if (!canOpenCenter()) return;
-            hoverNotified = true;
-            showCategories();
-          }, HOVER_OPEN_MS);
-        }
-      } else if (hoverTimer) {
-        clearTimeout(hoverTimer);
-        hoverTimer = 0;
-      } else if (hoverNotified) {
-        releaseHover();
-      }
     };
 
     const onPointerUp = (event) => {
@@ -1838,9 +1743,9 @@ export function mountStage(container, options) {
         return;
       }
       if (centerAt(event.clientX, event.clientY).inside) {
-        // The centre always means the genre field, even while the category
-        // panel is up: a hover must never turn a click into a category choice.
-        centerClick();
+        // Holding the centre is what enters the genre field; letting go of it
+        // is not, so a press that ended before the timer fired leaves the hole
+        // as it was instead of selecting or clearing anything.
         return;
       }
       const index = pick(event.clientX, event.clientY);
@@ -1865,16 +1770,6 @@ export function mountStage(container, options) {
     const onPointerLeave = () => {
       canvas.style.cursor = 'grab';
       if (machine.mode === 'nebula' && hoverNebulaIndex >= 0) setNebulaHover(-1);
-      if (press.active) return;
-      if (hoverTimer) {
-        clearTimeout(hoverTimer);
-        hoverTimer = 0;
-      }
-      // Leaving the canvas for the category panel is not a dismiss: the panel
-      // lives above the canvas, so it decides when the pointer really left via
-      // its own document-level tracker. Only a panel that was never entered
-      // (state already back to black-hole) is cleaned up here.
-      if (hoverNotified && machine.ui !== 'category-panel') releaseHover();
     };
 
     const onKeyDown = (event) => {
@@ -2042,7 +1937,7 @@ export function mountStage(container, options) {
       /**
        * Panel → stage notification of the overlay state. The stage owns the
        * machine, so a panel that opens or closes search must say so; otherwise
-       * hover and centre clicks would disagree with what is on screen.
+       * a held centre would disagree with what is on screen.
        */
       setInteraction(ui) {
         if (ui === 'search') clearTimers();
