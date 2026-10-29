@@ -77,6 +77,36 @@ window.__ModuleLoader__.load({
       sourceBudgetMs: 60000,
     };
 
+    /** A shipped snapshot older than this loses to the live API. */
+    const SNAPSHOT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+    /**
+     * Fetch the build-time catalogue the host publishes at `/catalog`.
+     *
+     * The snapshot is health-checked at build time and far larger than one live
+     * fetch, so it is preferred over the network path. Every failure — a host
+     * without the route, a malformed file, a stale build — returns null and
+     * lets the caller fall through to Radio Browser exactly as before.
+     */
+    async function fetchCatalogSnapshot(conf) {
+      const configured = Number(conf.sourceTimeoutMs);
+      const timeout = Number.isFinite(configured) && configured > 0 ? Math.min(configured, 8000) : 8000;
+      try {
+        const res = await fetch('/blackhole-radio-lab/catalog', {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(timeout),
+        });
+        if (!res.ok) return null;
+        const body = await res.json();
+        if (!body || !Array.isArray(body.stations) || body.stations.length === 0) return null;
+        const builtAt = Date.parse(body.builtAt || '');
+        if (!Number.isFinite(builtAt) || Date.now() - builtAt > SNAPSHOT_MAX_AGE_MS) return null;
+        return { rows: body.stations, builtAt: body.builtAt, fetchedAt: builtAt };
+      } catch {
+        return null;
+      }
+    }
+
     /**
      * Which playback failures mean "this station is broken" rather than "this
      * environment could not play it right now".
@@ -453,6 +483,7 @@ window.__ModuleLoader__.load({
               let fallback = null;
               let rows = null;
               let fromCache = false;
+              let fromSnapshot = false;
 
               // The cache is an optimisation, never a dependency: a private
               // window, a quota error or a blocked upgrade resolves to null and
@@ -498,11 +529,15 @@ window.__ModuleLoader__.load({
               // A catalogue younger than the TTL paints the scene without a
               // network round trip. Anything older is refetched; the cached
               // rows stay on disk until the fresh answer replaces them.
-              if (cache && (conf.sourceMode || 'auto') !== 'mock') {
+              if (cache && (conf.sourceMode || 'auto') !== 'mock' && (conf.sourceMode || 'auto') !== 'live') {
                 try {
                   const cached = await cache.readCatalog(catalogKey);
                   if (cached && Date.now() - cached.fetchedAt <= radio.CATALOG_TTL_MS) {
-                    const cachedRepository = radio.createRepositoryFromRows(cached.rows, repoOptions);
+                    // The cached rows were written by whichever path won last
+                    // time (a 5000-row live fetch or a 12000-row snapshot), so
+                    // the read-back limit must be the row count, not sourceLimit.
+                    const cachedOptions = Object.assign({}, repoOptions, { limit: cached.rows.length });
+                    const cachedRepository = radio.createRepositoryFromRows(cached.rows, cachedOptions);
                     if (cachedRepository && cachedRepository.list().length > 0) {
                       repository = cachedRepository;
                       fromCache = true;
@@ -510,6 +545,35 @@ window.__ModuleLoader__.load({
                   }
                 } catch {
                   /* an unreadable cache is the same as no cache */
+                }
+              }
+
+              if (!repository) {
+                // Second choice: the build-time snapshot. It is already
+                // health-checked, so a fresh install gets a large working
+                // catalogue without waiting on thousands of live probes.
+                const mode = conf.sourceMode || 'auto';
+                if (mode !== 'mock' && mode !== 'live') {
+                  const snapshot = await fetchCatalogSnapshot(conf);
+                  if (snapshot) {
+                    // The snapshot was already curated and health-checked; use
+                    // all of it instead of re-applying the live-fetch limit.
+                    const snapshotOptions = Object.assign({}, repoOptions, { limit: snapshot.rows.length });
+                    const snapshotRepository = radio.createRepositoryFromRows(snapshot.rows, snapshotOptions);
+                    if (snapshotRepository && snapshotRepository.list().length > 0) {
+                      repository = snapshotRepository;
+                      rows = snapshot.rows;
+                      fromSnapshot = true;
+                      if (cache) {
+                        // Cache it under the same key as a live answer: the
+                        // next boot paints from IndexedDB instead of refetching
+                        // the snapshot.
+                        cache.writeCatalog(rows, snapshot.fetchedAt, catalogKey).catch(() => {
+                          /* quota or private mode: the session still has the data */
+                        });
+                      }
+                    }
+                  }
                 }
               }
 
@@ -553,6 +617,7 @@ window.__ModuleLoader__.load({
                 anchors: repository ? repository.anchors() : null,
                 fallback,
                 fromCache,
+                fromSnapshot,
               };
             });
           return shared.data;

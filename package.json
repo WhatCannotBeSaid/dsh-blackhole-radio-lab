@@ -23,10 +23,13 @@
     "icon.svg",
     "README.md",
     "src",
-    "tools/build-stage.mjs"
+    "data/catalog.v1.json.gz",
+    "tools/build-stage.mjs",
+    "tools/build-catalog.mjs"
   ],
   "scripts": {
-    "build": "node tools/build-stage.mjs"
+    "build": "node tools/build-stage.mjs",
+    "build:catalog": "node tools/build-catalog.mjs"
   },
   "keywords": [
     "deepseek-harness",

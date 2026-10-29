@@ -112,7 +112,7 @@ function normalizeRealOptions(options) {
     Array.isArray(source.hosts) && source.hosts.length > 0
       ? source.hosts.map((host) => String(host).replace(/^https?:\/\//, '').replace(/\/+$/, '')).filter(Boolean)
       : RADIO_BROWSER_HOSTS.slice();
-  const limit = Math.round(clampNumber(source.limit, RADIO_BROWSER_DEFAULTS.limit, 50, 5000));
+  const limit = Math.round(clampNumber(source.limit, RADIO_BROWSER_DEFAULTS.limit, 50, 20000));
   const pageSize = Math.round(clampNumber(source.pageSize, RADIO_BROWSER_DEFAULTS.pageSize, 20, 2000));
   return {
     hosts,
@@ -636,6 +636,19 @@ export function createRepositoryFromRows(rows, options) {
   // so it is the station's index in the catalogue the layout walks.
   for (let index = 0; index < stations.length; index += 1) {
     stations[index].metadata.index = index;
+  }
+
+  // Real rows never carry `isFeatured`, so without this the photon-ring arcs
+  // stay empty. Pick the most-clicked stations; ties break on the catalogue
+  // index, which keeps the choice stable across reloads and snapshots.
+  const ringCount = Math.min(opts.featuredCount, stations.length);
+  if (ringCount > 0) {
+    const ranked = stations
+      .map((station, index) => ({ index, clicks: Number(station.metadata && station.metadata.clickcount) || 0 }))
+      .sort((a, b) => b.clicks - a.clicks || a.index - b.index);
+    for (let rank = 0; rank < ringCount; rank += 1) {
+      stations[ranked[rank].index].isFeatured = true;
+    }
   }
 
   const catalog = catalogFor(stations);

@@ -72,6 +72,12 @@ window.__ModuleLoader__.load({
 
 **只改 `src/` 里的文件，然后 `npm run build`。** 不要在 `client.js` 里 `import 'three'`：浏览器侧没有 `three` 的基座模块，解析会直接失败。
 
+### 目录快照
+
+`npm run build:catalog` 拉取更大范围的真实电台，逐条探测流地址，按国家与流派保底挑台，写出 `data/catalog.v1.json` 及其 `.gz`。Host 半通过 `/blackhole-radio-lab/catalog` 提供该文件；浏览器半的取数顺序是 IndexedDB 缓存（24 小时内）→ 目录快照 → 实时 Radio Browser，前一环缺失或过期才落到下一环。发布包只带 `.gz`，Host 会解压一次并缓存。
+
+参数全部走环境变量：`CATALOG_TARGET`、`CATALOG_FETCH`、`CATALOG_CHECK`、`CATALOG_CHECK_CONCURRENCY`、`CATALOG_CHECK_TIMEOUT`、`CATALOG_COUNTRY_FLOOR`、`CATALOG_GENRE_FLOOR`。探测第三方流需要数分钟到数十分钟，所以不放进 `npm run build`。
+
 ## 配置
 
 `cordis.patch.yml` 的条目上可挂 `config`：
@@ -105,7 +111,7 @@ repo.categories();              // [{ id, label, count, color }]
 repo.anchors();                 // 分类计数与云心（3D 只用于标签定位）
 ```
 
-第四阶段接真实数据时，实现同一个接口替换 `createMockRadioRepository` 即可；舞台只消费 `list()`（含 `position` 与 `metadata.layout/clouds`）与 `anchors()`，不读生成逻辑。
+第四阶段已接真实数据：`createRadioRepository` 从 Radio Browser 拉取并映射，`createRepositoryFromRows` 负责把快照或缓存里的原始行重新映射，`openRadioCache` 提供 IndexedDB 目录缓存与坏流黑名单。舞台只消费 `list()`（含 `position` 与 `metadata.layout/clouds`）与 `anchors()`，不读生成逻辑。
 
 ## 安装
 

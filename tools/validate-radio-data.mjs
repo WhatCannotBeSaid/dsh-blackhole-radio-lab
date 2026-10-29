@@ -260,8 +260,15 @@ check(
 );
 
 // featured(), categories(), getById(), search().
-check('featured is a subset of list', real && real.featured().every((item) => list.includes(item)));
-check('no real station claims the photon ring', real && real.featured().length === 0);
+const ring = real ? real.featured() : [];
+check('featured is a subset of list', ring.every((item) => list.includes(item)));
+check('featured fills the photon ring', ring.length === 6, real && `${ring.length}`);
+check(
+  'featured picks the most-clicked stations',
+  ring.every((item) => rows.slice(0, 6).some((row) => row.stationuuid === item.id)),
+  ring.map((item) => item.id).join(','),
+);
+check('provenance agrees with featured()', real && real.provenance.featured === ring.length);
 check('categories carry counts', real && real.categories().every((category) => Number.isInteger(category.count)));
 check('getById finds a station', real && real.getById(list[3].id) === list[3]);
 check('getById is case-insensitive for uuids', real && real.getById(list[3].id.toUpperCase()) === list[3]);
@@ -417,6 +424,34 @@ if (OFFLINE_ONLY || typeof fetch !== 'function') {
       console.log(`live: SHORT — the upstream returned only ${items.length} usable stations`);
     }
   }
+}
+
+// --- 4. Shipped snapshot --------------------------------------------------
+//
+// The build-time catalogue is what a fresh install paints from, so its age is
+// a release concern: a stale snapshot silently loses to the live API.
+
+section('snapshot');
+
+const snapshotPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'catalog.v1.json');
+let snapshot = null;
+try {
+  snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+} catch {
+  console.log('  (no data/catalog.v1.json — run npm run build:catalog)');
+}
+if (snapshot) {
+  check('snapshot has version 1', snapshot.v === 1);
+  check('snapshot carries stations', Array.isArray(snapshot.stations) && snapshot.stations.length > 0);
+  const builtAt = Date.parse(snapshot.builtAt || '');
+  check('snapshot has a build time', Number.isFinite(builtAt));
+  const ageDays = Number.isFinite(builtAt) ? (Date.now() - builtAt) / 86400000 : Infinity;
+  check('snapshot is younger than 30 days', ageDays < 30, `${ageDays.toFixed(1)} days`);
+  check(
+    'snapshot rows have an id and a url',
+    snapshot.stations.every((row) => row.stationuuid && (row.url_resolved || row.url)),
+  );
+  console.log(`snapshot: ${snapshot.stations.length} stations, built ${snapshot.builtAt}`);
 }
 
 // --- report ---------------------------------------------------------------

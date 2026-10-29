@@ -21,6 +21,9 @@
  */
 
 import { createNowPlayingResolver, parseStreamUrl } from './src/host/now-playing.js';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 
 /** Plugin identity for cordis.yml rows and diagnostics. */
 export const name = 'blackhole-radio-lab';
@@ -30,6 +33,60 @@ export const inject = ['webServer'];
 
 /** Route prefix owned by this plugin. Nothing else may claim it. */
 const PREFIX = '/blackhole-radio-lab';
+
+/**
+ * Build-time station snapshot (`npm run build:catalog`).
+ *
+ * The browser half asks for this first and only falls back to the live API when
+ * the file is missing — the snapshot is already health-checked, so a fresh
+ * install starts with a large working catalogue instead of a few hundred
+ * streams that may be dead.
+ */
+const CATALOG_PATH = fileURLToPath(new URL('./data/catalog.v1.json', import.meta.url));
+/** The gzip twin written by the same build, so the route never recompresses. */
+const CATALOG_GZ_PATH = fileURLToPath(new URL('./data/catalog.v1.json.gz', import.meta.url));
+
+/** Parsed snapshot cache, keyed by the mtime + size of both twins. */
+let catalogCache = { key: '', json: '', gz: null, builtAt: '' };
+
+/**
+ * Read the snapshot, re-gzipping only when the file changed.
+ *
+ * Both twins take part in the cache key: a build that wrote the JSON but was
+ * interrupted before the gzip twin (or a hand-edited JSON) must not keep
+ * serving the previous gzip under a fresh etag. When only the gzip ships, the
+ * JSON is inflated once and cached alongside it.
+ *
+ * @returns {{json: string, gz: Buffer, builtAt: string}|null}
+ */
+function readCatalog() {
+  let jsonStat = null;
+  let gzStat = null;
+  try {
+    jsonStat = statSync(CATALOG_PATH);
+  } catch {
+    jsonStat = null;
+  }
+  try {
+    gzStat = statSync(CATALOG_GZ_PATH);
+  } catch {
+    gzStat = null;
+  }
+  if (!jsonStat && !gzStat) return null;
+  const key = `${jsonStat ? `${jsonStat.mtimeMs}:${jsonStat.size}` : '-'}|${gzStat ? `${gzStat.mtimeMs}:${gzStat.size}` : '-'}`;
+  if (catalogCache.key === key) return catalogCache;
+  try {
+    let json = jsonStat ? readFileSync(CATALOG_PATH, 'utf8') : '';
+    let gz = gzStat ? readFileSync(CATALOG_GZ_PATH) : null;
+    if (!json && gz) json = gunzipSync(gz).toString('utf8');
+    if (!gz) gz = gzipSync(Buffer.from(json, 'utf8'), { level: 9 });
+    const parsed = JSON.parse(json);
+    catalogCache = { key, json, gz, builtAt: String((parsed && parsed.builtAt) || '') };
+    return catalogCache;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Defaults applied before the profile patch layer is consulted.
@@ -226,6 +283,49 @@ export function apply(ctx, config) {
     },
   });
   if (typeof releaseNowPlaying === 'function') disposers.push(releaseNowPlaying);
+
+  // Catalogue snapshot: one exact route over a local file. It is served with a
+  // short public cache because the file only changes on a rebuild, and gzipped
+  // when the client accepts it — the raw JSON is a few megabytes.
+  const releaseCatalog = webServer.register({
+    kind: 'exact',
+    path: `${PREFIX}/catalog`,
+    handler: (req, res) => {
+      const method = String(req.method ?? 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD') {
+        res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET, HEAD' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      const catalog = readCatalog();
+      if (!catalog) {
+        sendJson(res, 404, { error: 'catalog-unavailable' }, method === 'HEAD');
+        return;
+      }
+      const etag = `"${catalog.builtAt}"`;
+      if (String(req.headers['if-none-match'] || '') === etag) {
+        res.writeHead(304, { etag, 'cache-control': 'public, max-age=3600', vary: 'accept-encoding' });
+        res.end();
+        return;
+      }
+      const gzip = String(req.headers['accept-encoding'] || '').includes('gzip');
+      const body = gzip ? catalog.gz : Buffer.from(catalog.json, 'utf8');
+      try {
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-length': body.length,
+          'cache-control': 'public, max-age=3600',
+          etag,
+          vary: 'accept-encoding',
+          ...(gzip ? { 'content-encoding': 'gzip' } : {}),
+        });
+        res.end(method === 'HEAD' ? undefined : body);
+      } catch {
+        /* the browser cancelled the request while the read was running */
+      }
+    },
+  });
+  if (typeof releaseCatalog === 'function') disposers.push(releaseCatalog);
 
   // Everything this half acquired is released with the plugin fiber, so
   // disabling or uninstalling the bundle leaves no route and no handler behind.
