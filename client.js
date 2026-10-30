@@ -3563,7 +3563,7 @@ window.__ModuleLoader__.load({
  *  separate subtree. It therefore declares its own tokens and its own copy
  *  of the surface/act rules the panel uses, at the same visual weight.
  * ------------------------------------------------------------------ */
-/* FROZEN (2026-10-30): every rule from here through the `.bhrl-fcard` block
+/* FROZEN (2026-10-30): every rule from here through the \`.bhrl-fcard\` block
  * belongs to the left-column station card and changes only with the user's
  * explicit second confirmation. See AGENTS.md. */
 .bhrl-foot {
