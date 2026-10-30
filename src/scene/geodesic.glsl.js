@@ -346,11 +346,26 @@ float fbm3Lod(vec3 p, float footprint) {
  */
 const DISC = `
 const float DISC_INNER = ${f(IMAGING_CONSTANTS.ISCO)};
+/**
+ * Where the disc actually starts, in Rs units. Equal to DISC_INNER at rest; the
+ * hold pulls it inward, which is what makes the shadow shrink: the gas reaches
+ * closer in, so less of the frame is hole and more of it is disc.
+ */
+uniform float uDiscInner;
 const float DISC_OUTER = ${f(IMAGING_CONSTANTS.DISK_OUTER)};
 // r at which T(r) peaks, (49/36) r_in, used to normalise the profile.
 const float DISC_R_PEAK = ${f((49 / 36) * IMAGING_CONSTANTS.ISCO)};
 const float T_PEAK = ${f(IMAGING_CONSTANTS.T_PEAK)};
 const float DISC_GAIN = ${f(IMAGING_CONSTANTS.DISC_GAIN)};
+/**
+ * Wind-up under the hold, 0..1.
+ *
+ * Applied to the station raster only: the points that make up the disc are the
+ * catalogue's stations, and the hold makes those stations turn faster toward the
+ * inner edge while drawing very slightly inward. The procedural turbulence and
+ * the shadow are untouched, so what moves is the point layer itself.
+ */
+uniform float uCharge;
 const float T_PROFILE_MAX = pow(
   (1.0 - sqrt(DISC_INNER / DISC_R_PEAK)) / (DISC_R_PEAK * DISC_R_PEAK * DISC_R_PEAK),
   0.25);
@@ -362,8 +377,8 @@ float keplerOmega(float r) {
 
 /** Normalised effective temperature, 0..1, peaking at 1. */
 float discTemperatureProfile(float r) {
-  if (r <= DISC_INNER) return 0.0;
-  float raw = pow(max(1.0 - sqrt(DISC_INNER / r), 0.0) / (r * r * r), 0.25);
+  if (r <= uDiscInner) return 0.0;
+  float raw = pow(max(1.0 - sqrt(uDiscInner / r), 0.0) / (r * r * r), 0.25);
   return raw / T_PROFILE_MAX;
 }
 
@@ -489,15 +504,20 @@ uniform float uStationEmission;
  * lets the motion resume from exactly there.
  */
 uniform float uStationPhase;
+// -1: ordinary imaging. 0..1: the captured disc has become moving fragments;
+// this pass owns ONLY the background/shadow, never a second copy of the disc.
+uniform float uDiscTransfer;
 
 /** Normalised raster coordinates for one advected disc point. */
 vec2 stationUvAt(float r, float phi, float age) {
   // The raster lives in the disc's co-rotating frame: rewind the azimuth by
-  // the local Keplerian advance, so a station stays with its parcel of gas
-  // instead of sliding through the pattern.
-  float spun = phi - keplerOmega(r) * age;
+  // The local Keplerian advance, so a station stays with its parcel of gas
+  // instead of sliding through the pattern. The hold adds the same differential
+  // twist the density detail gets, so the stations themselves wind up under the
+  // hand: this is the point layer moving, not a pattern over it.
+  float spun = phi - keplerOmega(r) * age + uCharge * 2.2 / max(r, 1.0);
   float u = fract(spun * 0.15915494309189535); // 1 / (2 pi)
-  float v = (r - uStationInner) / max(1e-6, uStationOuter - uStationInner);
+  float v = (r * (1.0 - 0.05 * uCharge) - uStationInner) / max(1e-6, uStationOuter - uStationInner);
   return vec2(u, v);
 }
 
@@ -554,7 +574,7 @@ float stationIndexAt(float r, float phi, float clock) {
 vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint, float detailTrust, out float stationId) {
   stationId = -1.0;
   float r = length(discPos);
-  if (r < DISC_INNER || r > DISC_OUTER) return vec4(0.0);
+  if (r < uDiscInner || r > DISC_OUTER) return vec4(0.0);
 
   float profile = discTemperatureProfile(r);
   if (profile <= 0.0) return vec4(0.0);
@@ -576,7 +596,7 @@ vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint,
   float concentration = field.g;
   // Radial tapers: a zero-torque inner edge whose emission dies away, and a soft
   // outer rim so the disc does not end on a hard circle.
-  float innerRamp = smoothstep(DISC_INNER, DISC_INNER * 1.05, r);
+  float innerRamp = smoothstep(uDiscInner, uDiscInner * 1.05, r);
   float outerFade = 1.0 - smoothstep(DISC_OUTER * 0.70, DISC_OUTER, r);
   // The catalogue reaches further out than the procedural disc's own taper, so
   // the stations get a later rim of their own. Held to the disc's taper they
@@ -1198,9 +1218,18 @@ void main() {
   // Using viewDir directly (as the previous version did) fed a LOCAL angle to a
   // CHART formula, which inflates uDot by 1/sqrt(f) and the shadow by the same
   // factor: 2.43% at the default camera distance, measured on the GPU.
-  float rCam = length(uCamPos);
+  // Only the disc-free passage changes the apparent lens size. A virtual
+  // observer recedes radially while the REAL camera and captured disc cells stay
+  // untouched: the shadow and its lensed rim shrink together about the hole.
+  // Probes/capture and the resting image retain the original observer exactly.
+  float holeScale = 1.0;
+  if (uDiscTransfer >= 0.0 && uProbeMode == 0) {
+    holeScale = 1.0 - smoothstep(0.0, 1.0, uDiscTransfer);
+  }
+  vec3 traceCamPos = uCamPos / max(holeScale, 0.002);
+  float rCam = length(traceCamPos);
   float u = 1.0 / rCam;
-  vec3 eXPrime = uCamPos / rCam;
+  vec3 eXPrime = traceCamPos / rCam;
   float fCam = max(1.0 - u, 1e-6);
   float sqrtF = sqrt(fCam);
   float dRadial = dot(viewDir, eXPrime);
@@ -1462,6 +1491,23 @@ void main() {
   color = backgroundColor * (1.0 - merged1) * (1.0 - merged0)
     + (disc1.rgb * a1 + radioPrem1) * (1.0 - merged0)
     + (disc0.rgb * a0 + radioPrem0);
+
+  // Capture the actual displayed disc, not another procedural particle field.
+  // Coverage is binary here: a source tile carries the complete original pixel,
+  // including its lensed arc and local sky contribution. At progress zero these
+  // tiles reconstruct the original image exactly over the disc-free background.
+  if (uProbeMode == 66) {
+    float present = max(a0 * disc0.a, a1 * disc1.a) > 0.00001 ? 1.0 : 0.0;
+    fragColor = vec4(linearToSrgb(acesFilmic(max(color, vec3(0.0)))), present);
+    return;
+  }
+  if (uDiscTransfer >= 0.0 && uProbeMode == 0) {
+    vec3 straightSky = backgroundDiffuse(viewDir) + backgroundStars(viewDir, 1.0);
+    // Keep a solid silhouette while it contracts; dissolve only the last small
+    // remnant. Running the same progress backwards reveals it before it expands.
+    float dissolve = 1.0 - smoothstep(0.0, 0.12, holeScale);
+    color = mix(backgroundColor, straightSky, dissolve);
+  }
 
   // Visible id: the far patch only counts for what survives the near crossing.
   // The id carries TWO independent labels: the table slot the trace used, and

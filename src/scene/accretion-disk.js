@@ -36,6 +36,7 @@ import {
   NearestFilter,
   PerspectiveCamera,
   NoBlending,
+  NormalBlending,
   PlaneGeometry,
   RawShaderMaterial,
   RedFormat,
@@ -150,6 +151,12 @@ export function createAccretionDisk(options = {}) {
     uStationOn: { value: 0 },
     uStationPhase: { value: 0 },
     uStationEmission: { value: 0.30 },
+    // Wind-up under the hold, 0..1. Only the disc pattern reads it.
+    uCharge: { value: 0 },
+    uDiscTransfer: { value: -1 },
+    // Where the disc starts, in Rs units. At rest this is the ISCO; the hold
+    // pulls it inward, which is what shrinks the shadow on screen.
+    uDiscInner: { value: ISCO_RADIUS / RS },
   };
 
   const material = new RawShaderMaterial({
@@ -157,12 +164,12 @@ export function createAccretionDisk(options = {}) {
     vertexShader: VERTEX_SHADER,
     fragmentShader: FRAGMENT_SHADER,
     glslVersion: GLSL3,
-    // The pass writes the whole image, background included, so it does not
-    // blend with anything and does not participate in depth at all.
-    transparent: false,
+    // At opacity 1 this remains the exact full-frame image. Transitions must
+    // actually blend RGB: NoBlending ignored uOpacity until the pass vanished.
+    transparent: true,
     depthTest: false,
     depthWrite: false,
-    blending: NoBlending,
+    blending: NormalBlending,
     side: DoubleSide,
   });
   material.name = 'bhrl.imaging';
@@ -407,6 +414,29 @@ export function createAccretionDisk(options = {}) {
   }
 
   /**
+   * Wind-up under the hold, 0..1.
+   *
+   * Adds a differential twist to the disc pattern and a little vertical shear,
+   * so the same turbulence tightens into spiral bands toward the inner edge. It
+   * changes the pattern's phase only: no extra light, and the shadow is
+   * untouched. Zero restores the disc exactly.
+   */
+  function setCharge(value) {
+    const next = Number(value);
+    uniforms.uCharge.value = Number.isFinite(next) ? Math.min(1, Math.max(0, next)) : 0;
+  }
+
+  /**
+   * Inner edge of the disc, in Rs units. Lowering it lets the gas reach closer
+   * to the horizon, so the shadow reads smaller without moving the camera or
+   * touching the trace: the hole shrinks because more of it is covered.
+   */
+  function setDiscInner(value) {
+    const next = Number(value);
+    uniforms.uDiscInner.value = Number.isFinite(next) ? Math.max(1.2, Math.min(ISCO_RADIUS / RS, next)) : ISCO_RADIUS / RS;
+  }
+
+  /**
    * Freeze or resume the field's rotation, 0..1.
    *
    * The pointer pins a station so the card can stay open without the record
@@ -633,6 +663,61 @@ export function createAccretionDisk(options = {}) {
     return { width, height, data: out };
   }
 
+  /** Capture the current visible material and its real station attribution. */
+  function captureDisc(camera) {
+    if (disposed || !renderer) return null;
+    renderer.getDrawingBufferSize(drawBuffer);
+    const scale = Math.min(1, 1024 / Math.max(drawBuffer.x, drawBuffer.y));
+    const width = Math.max(1, Math.round(drawBuffer.x * scale));
+    const height = Math.max(1, Math.round(drawBuffer.y * scale));
+    const pixels = new Uint8Array(width * height * 4);
+    const target = new WebGLRenderTarget(width, height, {
+      type: UnsignedByteType, format: RGBAFormat, minFilter: NearestFilter,
+      magFilter: NearestFilter, depthBuffer: false, stencilBuffer: false,
+    });
+    const parent = object.parent;
+    const previous = {
+      target: renderer.getRenderTarget(), mode: uniforms.uProbeMode.value,
+      viewport: uniforms.uViewport.value.clone(), rect: uniforms.uProbeRect.value.clone(),
+      visible: object.visible, blending: material.blending,
+      opacity: uniforms.uOpacity.value, transfer: uniforms.uDiscTransfer.value,
+    };
+    let identity;
+    try {
+      uniforms.uProbeMode.value = 66;
+      uniforms.uOpacity.value = 1;
+      uniforms.uDiscTransfer.value = -1;
+      uniforms.uViewport.value.set(width, height);
+      uniforms.uProbeRect.value.set(0, 0, 0, 0);
+      material.blending = NoBlending;
+      object.visible = true;
+      probeScene.add(object);
+      renderer.setRenderTarget(target);
+      renderer.clear();
+      renderer.render(probeScene, probeCamera);
+      renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+      if (parent) parent.add(object);
+      identity = probe({ mode: 65, width, height, unpack: 'fast' });
+    } finally {
+      if (parent && object.parent !== parent) parent.add(object);
+      else if (!parent && object.parent) object.removeFromParent();
+      renderer.setRenderTarget(previous.target);
+      uniforms.uProbeMode.value = previous.mode;
+      uniforms.uViewport.value.copy(previous.viewport);
+      uniforms.uProbeRect.value.copy(previous.rect);
+      uniforms.uOpacity.value = previous.opacity;
+      uniforms.uDiscTransfer.value = previous.transfer;
+      object.visible = previous.visible;
+      material.blending = previous.blending;
+      target.dispose();
+    }
+    return { width, height, pixels, ids: identity.data, camera: camera.clone() };
+  }
+
+  function setDiscTransfer(value) {
+    uniforms.uDiscTransfer.value = Number.isFinite(value) && value >= 0 ? Math.min(1, value) : -1;
+  }
+
   function dispose() {
     if (disposed) return;
     disposed = true;
@@ -662,6 +747,10 @@ export function createAccretionDisk(options = {}) {
     setStationPlaying,
     setStationGain,
     setStationEmission,
+    setCharge,
+    setDiscInner,
+    captureDisc,
+    setDiscTransfer,
     setStationSpin,
     isStationSpinSettled,
     getInfo,

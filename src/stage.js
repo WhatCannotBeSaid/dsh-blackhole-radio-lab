@@ -51,10 +51,10 @@ import {
   WebGLRenderer,
 } from 'three';
 import { createAccretionDisk } from './scene/accretion-disk.js';
+import { createDiscTransfer, DISC_TRANSFER_LANDING, discTransferHandoff } from './scene/disc-transfer.js';
 import { buildStationField, rewriteStationBits } from './scene/station-field.js';
 import { createCameraRig } from './scene/camera-rig.js';
 import { createStarfield } from './scene/starfield.js';
-import { createWormhole } from './scene/wormhole.js';
 import {
   HORIZON_RADIUS,
   CRITICAL_IMPACT_PARAMETER,
@@ -277,6 +277,7 @@ export function mountStage(container, options) {
       stations.length > 0
         ? add(createStationsLayer(stations, { seed: catalog.seed, pixelRatio: ratio }))
         : null;
+    const discTransfer = add(createDiscTransfer(renderer));
     if (layer) {
       scene.add(layer.marker);
       // The hole's own image has to win the first glance: the catalogue is
@@ -332,11 +333,9 @@ export function mountStage(container, options) {
     const labels = createLabelOverlay(container);
     disposers.push(() => labels.dispose());
 
-    // The wormhole pass and the ring that feeds it. Both are created even when
-    // the switch is off only if the feature is on: with `wormhole: false` the
-    // mount is byte-for-byte the old stage, with no extra draw call and no
-    // extra DOM.
-    const wormholeFx = wormholeEnabled ? add(createWormhole()) : null;
+    // The ring that feeds the hold. The transition itself is the matter layer
+    // reorganising, so there is no extra pass and no extra DOM besides this one
+    // indicator: with `wormhole: false` the mount is the old stage byte for byte.
     const holdRing = wormholeEnabled ? createHoldRing(container) : null;
     if (holdRing) disposers.push(() => holdRing.dispose());
 
@@ -419,11 +418,18 @@ export function mountStage(container, options) {
       nebulaSavedCamera: null,
       /**
        * The hole is gone from the frame even though the nebula is still faint.
-       * The wormhole needs those two states to be separate for its last 500 ms:
-       * the black has already swallowed the image while the dust is still
-       * arriving, so the disk must not reappear under the fading mask.
+       * The hold needs those two states to be separate for its last stretch:
+       * the matter has already left the disc while the arriving space is still
+       * coming up, so the disc must not reappear underneath it.
        */
       wormCover: 0,
+      /**
+       * Hold pressure, 0..1. The disc winds up and swells under the ring; the
+       * burst itself follows `progress`, so this only ever has to unwind.
+       */
+      wormCharge: 0,
+      /** How far the frame has been dimmed for the fold, 0..1. */
+      wormDark: 0,
     };
     const layoutCache = new Map();
     let lastModeKey = '';
@@ -855,7 +861,6 @@ export function mountStage(container, options) {
       }
       labels.resize(w, h, renderer.getPixelRatio());
       if (radio) radio.resize(w, h, renderer.getPixelRatio());
-      if (wormholeFx) wormholeFx.setViewport(w, h);
       if (nebula) {
         nebula.setPixelRatio(renderer.getPixelRatio());
         nebula.setViewport(w, h, camera.fov);
@@ -951,7 +956,10 @@ export function mountStage(container, options) {
 
     /** Applied to every scene part from the two transition values. */
     const applyTransition = () => {
+      // Dissolution and gathering share the hold's progress from the first
+      // frame. The commit threshold does not switch layouts or cut the image.
       const rise = smoothstep01(machine.progress);
+
       const nebulaRise = smoothstep01(machine.nebula);
       // Whichever space is taking over drives the hole out. The hole leaves a
       // little after the content starts moving, and returns a little before it
@@ -959,12 +967,42 @@ export function mountStage(container, options) {
       // `wormCover` is the third source: the wormhole has already swallowed the
       // frame, so the hole is gone even while the nebula is still at zero.
       const cover = clamp01(machine.wormCover);
+      // Hold pressure is not a source of "the hole is leaving": the disc is
+      // winding up under the shadow, and the shadow itself must not move. The
+      // hold only makes the traced disc's own points brighter and hotter, which
+      // is the only way to show a wind-up without drawing a second population
+      // of points over the first.
+      const charge = clamp01(machine.wormCharge);
       const leaving = Math.max(rise, nebulaRise, cover);
-      const holeFade = smoothstep01(clamp01((leaving - 0.05) / 0.72));
-      disk.setOpacity(1 - holeFade);
+      const holeFade = smoothstep01(clamp01((leaving - 0.05) / 0.62));
+      // A captured source cell and the imaged disc are NEVER drawn together.
+      // During the passage this pass supplies only the sky/shadow; all visible
+      // disc material lives in discTransfer, including the gas between stations.
+      const transferred = discTransfer.active;
+      const handoff = transferred ? discTransferHandoff(machine.progress) : 1;
+      discTransfer.setProgress(machine.progress);
+      disk.setDiscTransfer(transferred ? Math.min(1, machine.progress / DISC_TRANSFER_LANDING) : -1);
+      disk.setOpacity(transferred ? 1 - handoff : 1 - holeFade);
+      disk.setStationEmission(0.30);
+      disk.setStationGain(5);
+
+      // The disc winds up on its own: a differential twist in the pattern plus
+      // a little vertical shear. This is the hold's whole visible effect, and it
+      // lives inside the one disc the frame already has.
+      disk.setCharge(charge);
+      // The disc's inner edge does not move. Walking it inward put a second,
+      // thicker ring of gas around the shadow — the gas reaching closer is
+      // exactly what the frame does not need while the points are being pulled
+      // out of it. The shadow is left to the light: it goes when the disc goes.
       // Kept so this call site need not know that the analytic ring is gone:
       // the imaging pass draws the ring where the winding piles up, itself.
       disk.setRingIntensity(0.62 * (1 - holeFade));
+      // The light goes before the geometry does. The two cones have to read as
+      // one silhouette, and the fold has to happen where the eye can finish the
+      // shape itself instead of being shown a lit diagram of it.
+      const dark = clamp01(machine.wormDark);
+      renderer.toneMappingExposure = 1.15 + 0.08 * charge - 0.74 * dark;
+
       // The starfield stays as the deep background in the nebula space: the
       // camera sits inside its outer shells there, and empty black around the
       // volumes reads as a missing backdrop, not as space.
@@ -974,10 +1012,14 @@ export function mountStage(container, options) {
         // so it needs the same gate: the cluster amount is what fades the
         // stations that are not part of what is on screen.
         layer.setClusterAmount(Math.max(rise, nebulaRise));
-        // The station sprites belong to the cluster space. In the black hole
-        // view the stations are the disc itself, carried by the density field
-        // the imaging shader samples, so no sprite may be drawn on top of it.
-        layer.setHoleOnly(clamp01(1 - Math.max(machine.progress, machine.nebula)));
+        // The normal particle population is a resting-state representation,
+        // not an in-flight substitute. It returns only after the source cells
+        // have reached their station destinations.
+        layer.object.visible = !transferred || handoff > 0;
+        layer.setHoleOnly(clamp01(1 - Math.max(clamp01(rise * 1.6), machine.nebula)));
+
+        layer.setDiskMatter(clamp01(1 - rise));
+        layer.setDim((HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
       }
       if (nebula) {
         nebula.object.visible = nebulaRise > 0.001;
@@ -1151,7 +1193,9 @@ export function mountStage(container, options) {
 
       // Advance the one transition value. Reversing simply flips the sign of
       // this climb; no queue, no competing tween.
-      if (machine.progress !== machine.target) {
+      // A hold/recoil owns progress exclusively; the ordinary navigation tween
+      // must not pull it back toward the previous page between two hold frames.
+      if (!worm.kind && machine.progress !== machine.target) {
         const delta = machine.target - machine.progress;
         const step = TRANSITION_RATE * dt;
         machine.progress += Math.sign(delta) * Math.min(Math.abs(delta), step);
@@ -1186,15 +1230,16 @@ export function mountStage(container, options) {
         dirty = true;
       }
 
+      // Resolve the timeline before uploading particle buffers and disk uniforms.
+      advanceWormhole(now);
+
       currentLod = computeLod();
       if (layer) {
         layer.setLod(currentLod);
         const hole = silhouette();
         layer.setHole(hole.x, hole.y, hole.r * 1.02);
-        // The station sprites exist only in the cluster space. The black hole
-        // disc carries the stations in its own density field, so piling sprites
-        // on top of it would be a second layer competing with the disc.
-        layer.setHoleOnly(clamp01(1 - Math.max(machine.progress, machine.nebula)));
+        // Visibility belongs to applyTransition; do not overwrite its handover
+        // here after the timeline has authored this frame.
         if (layer.update(dt, camera, viewport.h)) dirty = true;
         // The grid lives on the render loop, not on the pointer: a camera move
         // has to refresh it even when the pointer never moves again.
@@ -1221,10 +1266,6 @@ export function mountStage(container, options) {
         if (!reducedMotion) dirty = true;
       }
 
-      // The hold goes last: it reads the hole and the camera as they are this
-      // frame, and on its way to the end it may hand the transition to the
-      // nebula, which then integrates from the following frame on.
-      advanceWormhole(now);
 
       // The eased field spin only moves when frames are drawn, and hovering is
       // the one interaction that happens with a still camera: keep drawing
@@ -1235,6 +1276,9 @@ export function mountStage(container, options) {
       }
 
       if (dirty) draw();
+      // Only acknowledge completion after the exact end-state buffers were
+      // uploaded and rendered. A full progress ring must never lead the image.
+      if (worm.landed) finishWormhole();
       const morphing = layer ? layer.isAnimating : false;
       const nebulaDrift = nebula ? nebula.amount > 0.001 && !reducedMotion : false;
       if (
@@ -2361,29 +2405,58 @@ export function mountStage(container, options) {
       phase: null,
       /** Where a retreat started from: the phase on screen at the cancel. */
       from: null,
-    };
-
-    /** The hold ring and the wormhole pass are both optional by switch. */
-    const vfx = reducedMotion ? null : wormholeFx;
-
-    /** Where the shadow is, in the coordinates the overlay wants. */
-    const wormFrame = () => {
-      const hole = silhouette();
-      const w = Math.max(1, viewport.w);
-      const h = Math.max(1, viewport.h);
-      const aspect = w / h;
-      return {
-        center: { x: hole.x / w, y: 1 - hole.y / h },
-        shadow: hole.r / h,
-        // The radius that covers the farthest corner, plus a margin so the
-        // frame is black before anything behind the mask is allowed to change.
-        cover: Math.sqrt(aspect * aspect + 1) * 0.5 + 0.12,
-      };
+      /** Wind-up on screen when the hold was cancelled, so a new press resumes it. */
+      charge: 0,
+      /** Gathering already under way, so a cancel can slide it home. */
+      blend: 0,
+      layoutReady: false,
+      landed: false,
     };
 
     const ringPoint = (event) => {
       const rect = container.getBoundingClientRect();
       return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+
+    const prepareDiscTransfer = (options) => {
+      let field = layoutCache.get('field');
+      if (!field) {
+        field = buildClusterLayout(stations, { seed: catalog.seed, vocabulary: GENRE_IDS });
+        layoutCache.set('field', field);
+      }
+      if (!reducedMotion && !discTransfer.active) {
+        // Exit reconstructs the SAVED hole view, not a screenshot taken from a
+        // focused cluster camera. The rig eases toward this same framing.
+        let sourceCamera = camera;
+        const framing = options && options.holeFraming;
+        if (framing) {
+          sourceCamera = camera.clone();
+          const center = framing.target || { x: 0, y: 0, z: 0 };
+          sourceCamera.position.setFromSphericalCoords(framing.radius, framing.phi, framing.theta);
+          sourceCamera.position.add(new Vector3(center.x, center.y, center.z));
+          sourceCamera.lookAt(center.x, center.y, center.z);
+          sourceCamera.updateMatrixWorld();
+        }
+        try {
+          // Capture/build first; install the driven layout only after success.
+          // A readback failure must not strand an ownerless flow=0 layer.
+          disk.update(elapsed, sourceCamera);
+          discTransfer.begin(disk.captureDisc(sourceCamera), field);
+        } catch (error) {
+          discTransfer.end();
+          disk.setDiscTransfer(-1);
+          console.warn('Black Hole Radio: disc transfer capture failed', describe(error));
+          return false;
+        } finally {
+          disk.update(elapsed, camera);
+        }
+        disk.setStationSpin(0);
+      }
+      layer.setCluster(field);
+      layer.setFlow(discTransfer.active ? clamp01(machine.progress / DISC_TRANSFER_LANDING) : machine.progress);
+      worm.layoutReady = true;
+      applyTransition();
+      return true;
     };
 
     const startHold = (kind, event) => {
@@ -2395,35 +2468,30 @@ export function mountStage(container, options) {
       // old long press to do whatever it did. Checked before the recoil is
       // dropped, so a refused start leaves nothing half cleared behind it.
       if (kind === 'enter' && !layer) return;
-      // Taking a recoil back up resumes from the phase that is on screen, not
-      // from zero: the press picks the fall up where the cancel left it, so the
-      // mask neither jumps back to the shadow nor forward to the lock.
+      if (kind === 'enter' && !prepareDiscTransfer()) return false;
+      // Taking a cancelled wind-up back up resumes from where the disc was
+      // left, not from zero: the press picks the swell up mid-way, so the disc
+      // neither snaps back to rest nor jumps ahead to the commit.
       let resumeAt = 0;
-      if (worm.kind === 'recoil' && worm.phase) {
-        const f = wormFrame();
-        if (kind === 'exit') {
-          const e = worm.phase.alpha / 0.45;
-          if (e > 0.02) resumeAt = Math.pow(clamp01(e), 1 / 0.72) * WORM_OUT_RING_S;
-        } else {
-          const span = f.cover - f.shadow;
-          const u = span > 1e-4 ? clamp01((worm.phase.radius - f.shadow) / span) : 0;
-          if (u > 0.004) resumeAt = Math.pow(u, 1 / 1.3) * WORM_COVER_S;
-        }
+      if (worm.kind === 'recoil' && kind === 'enter' && !reducedMotion) {
+        // Invert the same smoothstep used by the flight, not the old charge clock.
+        const p = clamp01(machine.progress);
+        resumeAt = (0.5 - Math.sin(Math.asin(1 - 2 * p) / 3)) * (WORM_END_S - 0.18);
       }
       if (worm.kind === 'recoil') {
-        worm.phase = null;
-        worm.from = null;
-        worm.alpha = 0;
-        if (vfx) vfx.reset();
+        worm.charge = 0;
       }
       const p = ringPoint(event);
       worm.kind = kind;
+      if (kind === 'enter') worm.target = 'cluster';
+      worm.landed = false;
       worm.locked = false;
       worm.covered = false;
       worm.veiled = false;
       worm.phase = null;
       worm.from = null;
       worm.alpha = 0;
+      worm.charge = 0;
       worm.hiddenAt = 0;
       worm.pointerId = event.pointerId;
       worm.button = event.button === 2 ? 2 : 0;
@@ -2438,6 +2506,7 @@ export function mountStage(container, options) {
       }
       dirty = true;
       requestFrame();
+      return true;
     };
 
     /**
@@ -2446,9 +2515,15 @@ export function mountStage(container, options) {
      * back to where the frame stood, not a cut. That is `WORM_RECOIL_S` of
      * damped retreat instead of a jump the eye would catch.
      */
-    const cancelHold = () => {
+    const cancelHold = (force) => {
       if (!worm.kind || worm.kind === 'recoil') return;
-      const recoiling = vfx && worm.phase && (worm.alpha > 0.004 || worm.phase.streak > 0.004);
+      // Once the ring is full the crossing has committed: letting go of the
+      // pointer no longer cancels it, or the burst would be swallowed by the
+      // recoil the instant the hand lifts.
+      if (worm.locked && !force) return;
+      // Only the wind-up has to be given back. Once the burst has started there
+      // is nothing here to undo — the lens does not leave.
+      const recoiling = worm.kind === 'enter' && (machine.wormCharge > 0.004 || machine.progress > 0.0001 || worm.layoutReady);
       worm.locked = false;
       worm.covered = false;
       worm.veiled = false;
@@ -2457,21 +2532,17 @@ export function mountStage(container, options) {
       worm.button = 0;
       if (holdRing) holdRing.hide();
       if (recoiling) {
-        // Retreated from the phase that is on screen right now, so the curve
-        // starts where the eye left it rather than where the last frame ended.
-        // Remember which direction the retreat must run: the fall grew into the
-        // frame, the exit only thickened a veil over it, and the two have
-        // different paths back.
-        const retreatKind = worm.kind === 'exit' ? 'exit' : 'enter';
+        // Retreated from the swell that is on screen right now, so the release
+        // starts where the eye left it rather than unwinding a fixed 1 s.
         worm.kind = 'recoil';
-        worm.from = { ...worm.phase, kind: retreatKind };
+        worm.charge = machine.wormCharge;
         worm.startedAt = performance.now();
       } else {
         worm.kind = null;
         worm.phase = null;
         worm.from = null;
         worm.alpha = 0;
-        if (vfx) vfx.reset();
+        worm.charge = 0;
       }
       dirty = true;
       requestFrame();
@@ -2481,16 +2552,9 @@ export function mountStage(container, options) {
     const lockHold = () => {
       if (worm.locked) return;
       worm.locked = true;
-      if (holdRing) holdRing.complete();
-      if (worm.kind === 'enter') {
-        if (reducedMotion) {
-          // No wormhole: the ring is the whole feedback, then one short fade.
-          nebulaSpeed = WORM_CALM_RATE;
-          enterCluster();
-          cancelHold();
-        }
-        return;
-      }
+      // Locking prevents accidental cancellation; it is not visual completion.
+      if (worm.kind === 'enter') return;
+      // Completion belongs to the landed draw, not this input-lock threshold.
       // Leaving for the hole. Which space is being left decides the target:
       // the cluster field has the hole one step up, and a shelf field opened
       // from a berth goes back to that berth, not to the hole.
@@ -2503,11 +2567,15 @@ export function mountStage(container, options) {
         nebulaSpeed = WORM_CALM_RATE;
         if (fromShelf) exitNebula({});
         else if (fromCluster) exitCluster({});
-        cancelHold();
+        cancelHold(true);
         return;
       }
       worm.target = fromShelf ? 'field' : fromCluster ? 'cluster' : 'nebula';
-      machine.wormCover = 1;
+      if (fromCluster && !prepareDiscTransfer({ holeFraming: machine.savedCamera })) {
+        cancelHold(true);
+        return;
+      }
+      machine.wormCover = fromCluster ? 0 : 1;
       nebulaSpeed = WORM_REVEAL_RATE;
       if (fromShelf) exitNebula({});
       else if (fromCluster) exitCluster({});
@@ -2519,7 +2587,8 @@ export function mountStage(container, options) {
      * opening onto the new space and not a cross-fade between two pictures.
      */
     const beginCover = () => {
-      machine.wormCover = 1;
+      // Entry dissolves continuously with progress, never with an opaque cut.
+      machine.wormCover = 0;
       nebulaSpeed = WORM_REVEAL_RATE;
       // The host is told at the moment the space actually changes, exactly as
       // the old centre hold told it. Its handler calls enterCluster(); if the
@@ -2575,8 +2644,24 @@ export function mountStage(container, options) {
       } else {
         finishNebulaTransition();
       }
-      if (vfx) vfx.reset();
-      if (holdRing) holdRing.hide();
+      // The passage is over: no cones, no swell, no dimmer left on the frame.
+      if (layer) layer.setBurst(0);
+      // Hand the blend back to the layer, already at the value it should rest on.
+      if (layer) layer.setFlow(-1);
+      machine.wormCharge = 0;
+      machine.wormDark = 0;
+      discTransfer.end();
+      disk.setDiscTransfer(-1);
+      disk.setStationSpin(1);
+      if (layer) layer.setTakeover(0);
+      if (layer) layer.setCharge(0);
+      if (holdRing) {
+        if (worm.kind === 'enter' || target === 'cluster') holdRing.complete();
+        else holdRing.hide();
+      }
+      worm.layoutReady = false;
+      worm.landed = false;
+      worm.blend = 0;
       worm.kind = null;
       worm.locked = false;
       worm.covered = false;
@@ -2584,9 +2669,11 @@ export function mountStage(container, options) {
       worm.from = null;
       worm.veiled = false;
       worm.alpha = 0;
+      worm.charge = 0;
       worm.hiddenAt = 0;
       worm.pointerId = -1;
       worm.button = 0;
+      applyTransition();
       dirty = true;
       requestFrame();
     };
@@ -2615,7 +2702,8 @@ export function mountStage(container, options) {
       if (Math.abs(next - machine.nebula) < 1e-4) return;
       machine.nebula = next;
       applyTransition();
-      dirty = true;    };
+      dirty = true;
+    };
 
     /**
      * Advance the one hold. Called from the frame loop; returns whether a frame
@@ -2623,55 +2711,71 @@ export function mountStage(container, options) {
      * same length whatever the frame rate was.
      */
     /**
-     * The tunnel wants a crossing, not a growing disc: the timeline that used
-     * to open a mask now pushes the camera down the tube and drags the exit
-     * ring past the lens. Derived from the mask phase rather than replacing it,
-     * so the hold / recoil bookkeeping above keeps running on one clock.
+     * The hold's three channels. `progress` is the geometry — the disc tearing
+     * open along its axis and folding back down into the cluster; `charge` is
+     * only the wind-up that comes before the commit; `dark` is the dimmer the
+     * fold is watched through. Each is written from the wall clock, so a dropped
+     * frame shortens the animation instead of desynchronising the parts.
      */
     /**
-     * The crossing's other destination. The wormhole now lands on the cluster
-     * field, not on the genre nebula, so its timeline drives `progress` — the
-     * scalar the station cloud gathers on — instead of `nebula`.
+     * The crossing's other destination. The hold lands on the cluster field,
+     * not on the genre nebula, so its timeline drives `progress` — the scalar
+     * the station cloud gathers on — instead of `nebula`.
      */
     const driveCluster = (value) => {
       const next = clamp01(value);
-      if (Math.abs(next - machine.progress) < 1e-4) return;
+      // The cones are built out of this same blend, so the layer has to be
+      // told to run on this clock rather than on its own ease. Done before the
+      // no-op check: on the first frame of the burst the value has not moved
+      // yet, but the handover still has to happen.
+      if (layer) layer.setFlow(discTransfer.active ? clamp01(next / DISC_TRANSFER_LANDING) : next);
+      if (next === machine.progress || (next > 0 && next < 1 && Math.abs(next - machine.progress) < 1e-4)) return;
       machine.progress = next;
       applyTransition();
       dirty = true;
     };
 
-    const tunnelPhase = (frame, phase, t, kind) => {
-      if (kind === 'exit') {
-        const u = clamp01(t / WORM_OUT_END_S);
-        return {
-          ...phase,
-          center: frame.center,
-          shadow: frame.shadow,
-          mouth: phase.radius,
-          progress: 1 - u,
-          throat: 0.55,
-          exitR: 0.05 + 1.5 * (1 - smoothstep01(clamp01(u / 0.8))),
-          // The far mouth brightens, it does not bloom: the exit is a place to
-          // arrive at, and a frame that whites out hides the arrival.
-          exitGlow: 0.22 + 0.42 * (1 - smoothstep01(clamp01(u / 0.6))),
-          exitAlpha: smoothstep01(clamp01((u - 0.1) / 0.5)) * clamp01(phase.alpha),
-        };
-      }
-      const u = clamp01(t / WORM_END_S);
-      const open = smoothstep01(clamp01((u - 0.42) / 0.58));
-      return {
-        ...phase,
-        center: frame.center,
-        shadow: frame.shadow,
-        mouth: phase.radius,
-        progress: u,
-        throat: 0.55,
-        exitR: 0.045 + 1.5 * open,
-        exitGlow: 0.18 + 0.5 * open,
-        exitAlpha: smoothstep01(clamp01((u - 0.28) / 0.45)) * clamp01(phase.alpha),
-      };
+    const driveCharge = (value) => {
+      const next = clamp01(value);
+      if (Math.abs(next - machine.wormCharge) < 1e-4) return;
+      machine.wormCharge = next;
+      if (layer) layer.setCharge(next);
+      applyTransition();
+      dirty = true;
     };
+
+    const driveDark = (value) => {
+      const next = clamp01(value);
+      if (Math.abs(next - machine.wormDark) < 1e-4) return;
+      machine.wormDark = next;
+      applyTransition();
+      dirty = true;
+    };
+
+    /**
+     * The one envelope both cones ride, evaluated on the same blend the layer
+     * uses, so the sprite swell cannot drift from the flight it is describing.
+     * Zero on the disc, one at the top of the cone, zero again on the cluster.
+     */
+    /**
+     * The one envelope both cones ride, evaluated on the same blend the layer
+     * uses, so the sprite swell cannot drift from the flight it is describing.
+     * Zero on the disc, one at the top of the cone, zero again on the cluster.
+     * The layer eases the blend before taking the sine, so this does too.
+     */
+    const burstOf = (blend) => Math.sin(Math.PI * smoothstep01(clamp01(blend)));
+
+    /**
+     * How much light the passage is allowed, as a function of the same blend.
+     * One hump, deepest while the cones fold back down, and it is gone by the
+     * time the three threads land — the dark is where the fold hides, not a
+     * fade laid over the whole trip. Keyed on `blend` so running the timeline
+     * backwards reproduces it exactly.
+     */
+    // No dark hold in this passage. The matter is thrown and lands in one
+    // continuous move; dimming the frame halfway through was what made it read
+    // as two separate events.
+    const darkAt = () => 0;
 
     const advanceWormhole = (now) => {
       if (!worm.kind) return false;
@@ -2681,111 +2785,77 @@ export function mountStage(container, options) {
       if (worm.hiddenAt) return true;
       const t = (now - worm.startedAt) / 1000;
 
-      // A cancelled hold retreats along the path it took in. Short, damped, and
-      // it starts from the exact phase that was on screen when the press ended.
+      // A cancelled hold un-winds. The travel has already begun under the hand,
+      // so it has to come back too: the points slide home on the same short
+      // clock, and nothing is left in flight when the press ends.
       if (worm.kind === 'recoil') {
+        const start = worm.charge;
+        const startBlend = worm.blend || 0;
         const e = smoothstep01(clamp01(1 - t / WORM_RECOIL_S));
-        const frame = wormFrame();
-        const from = worm.from;
-        if (vfx && from) {
-          const veiling = from.kind === 'exit';
-          // The fall grew into the frame, so its retreat gives the radius back
-          // and stays opaque until the last third, where it hands over to the
-          // shadow at rest. The exit never grew: it only laid a veil over a frame
-          // that was already covered, so its retreat has no radius to return and
-          // simply lifts the veil where it stands.
-          const radius = veiling ? from.radius : frame.shadow + (from.radius - frame.shadow) * e;
-          const alpha = veiling
-            ? from.alpha * e
-            : from.alpha * smoothstep01(clamp01(e / 0.3));
-          const streak = from.streak * e;
-          const rim = from.rim * e;
-          vfx.setPhase(tunnelPhase(frame, { radius, alpha, streak, rim }, t, from.kind));
-          vfx.update(0.016);
-          // Kept live so a capture (and the cancel's own "did it draw yet?" test)
-          // sees what is really on screen during the retreat.
-          worm.phase = { radius, alpha, streak, rim };
-          worm.alpha = alpha;
-        } else {
-          worm.alpha = 0;
-        }
+        driveCharge(start * e);
+        driveCluster(startBlend * e);
+        if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(startBlend * e));
         dirty = true;
         if (t >= WORM_RECOIL_S) {
+          driveCharge(0);
+          driveCluster(0);
+          if (layer) layer.setBurst(0);
+          // The layout was only installed to give the under-hand move a
+          // destination; releasing before the commit has to put the disc back
+          // exactly as it was, or the next press would start from a half-built
+          // cluster.
+          if (layer) {
+            layer.setCluster(null);
+            layer.setFlow(-1);
+          }
+          discTransfer.end();
+          disk.setDiscTransfer(-1);
+          disk.setStationSpin(1);
+          applyTransition();
+          worm.layoutReady = false;
+          worm.charge = 0;
+          worm.blend = 0;
           worm.kind = null;
           worm.phase = null;
           worm.from = null;
           worm.alpha = 0;
-          if (vfx) vfx.reset();
         }
         return true;
       }
 
       if (worm.kind === 'enter') {
-        // The ring, up to the commit.
-        if (t < WORM_RING_S) {
-          if (holdRing) holdRing.setProgress(clamp01(t / WORM_RING_S), worm.cursorX, worm.cursorY);
-        } else if (!worm.locked) {
-          lockHold();
-          if (!worm.kind) return false; // reduced motion has already finished
-        }
-        if (t >= WORM_COVER_S && !worm.covered) {
+        // Prepare the real 13-category destination before the first moving frame,
+        // including when a slow first frame has already crossed the lock point.
+        if (layer && !worm.layoutReady) prepareDiscTransfer();
+        const duration = reducedMotion ? WORM_RING_S + 1 / WORM_CALM_RATE : WORM_END_S;
+        // Geometry arrives slightly before the ring, leaving a visible settled
+        // interval rather than a countdown followed by a second animation.
+        const arrival = duration - (reducedMotion ? 0.03 : 0.18);
+        const travel = reducedMotion
+          ? smoothstep01(clamp01((t - WORM_RING_S) / (arrival - WORM_RING_S)))
+          : smoothstep01(clamp01(t / arrival));
+        if (t >= WORM_RING_S && !worm.locked) lockHold();
+        if (worm.locked && !worm.covered) {
           worm.covered = true;
           beginCover();
         }
-        if (t >= WORM_COVER_S) {
-          // The dust rises underneath the mask, on this same clock.
-          driveCluster(smoothstep01(clamp01((t - WORM_COVER_S) / (WORM_END_S - WORM_COVER_S))));
-        }
-        if (t >= WORM_END_S) {
-          finishWormhole();
-          return false;
-        }
-        if (vfx) {
-          const frame = wormFrame();
-          let radius = frame.shadow;
-          let alpha = 0;
-          let streak = 0;
-          let rim = 0;
-          if (t < WORM_COVER_S) {
-            // The fall starts on the press, not on the commit: the shadow swells
-            // from the first frame of the ring, so the hold is travel rather than
-            // a countdown. The mask opens exactly on the shadow's own radius,
-            // which is why beginning here costs no pop and needs no flash frame.
-            // The curve leans backwards on purpose — the horizon widens at once
-            // but full coverage still lands on the lock, not half way there.
-            const u = clamp01(t / WORM_COVER_S);
-            const e = Math.pow(u, 1.3);
-            radius = frame.shadow + (frame.cover - frame.shadow) * e;
-            alpha = smoothstep01(clamp01(u / 0.18));
-            // A soft halo is on the edge from the first frame, so the press is
-            // answered before anything else has happened.
-            streak = 0.25 + 0.75 * e;
-            rim = 0.25 + 0.75 * e;
-          } else {
-            // The frame is black. What is left is the mask giving way as the dust
-            // arrives underneath it, on the same clock.
-            radius = frame.cover;
-            const v = clamp01((t - WORM_COVER_S) / (WORM_END_S - WORM_COVER_S));
-            alpha = 1 - smoothstep01(clamp01(v / 0.62));
-            // The light goes first: by half way through the reveal the frame is
-            // the nebula and nothing else, so no ray is left crossing it.
-            const gone = 1 - smoothstep01(clamp01(v / 0.4));
-            streak = gone;
-            rim = gone;
-          }
-          vfx.setPhase(tunnelPhase(frame, { radius, alpha, streak, rim }, t, worm.kind));
-          worm.phase = { radius, alpha, streak, rim };
-          worm.alpha = alpha;
-        }
-        if (vfx) vfx.update(0.016);
+        worm.blend = travel;
+        driveCharge(reducedMotion ? 0 : Math.sin(Math.PI * travel));
+        driveCluster(travel);
+        if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(travel));
+        driveDark(0);
+        if (holdRing) holdRing.setProgress(Math.min(0.999, clamp01(t / duration)), worm.cursorX, worm.cursorY);
+        if (t >= duration) worm.landed = true;
         dirty = true;
         return true;
       }
 
-      // Leaving the nebula.
-      if (t < WORM_OUT_RING_S) {
-        if (holdRing) holdRing.setProgress(clamp01(t / WORM_OUT_RING_S), worm.cursorX, worm.cursorY);
-      } else if (!worm.locked) {
+      // Leaving for the hole: the same passage, run backwards on the shorter
+      // clock. Nothing here is a second choreography — the cluster comes apart
+      // first and the cones reassemble last because that is what the forward
+      // passage looks like from the other end.
+      if (holdRing) holdRing.setProgress(Math.min(0.999, clamp01(t / WORM_OUT_END_S)), worm.cursorX, worm.cursorY);
+      if (t >= WORM_OUT_RING_S && !worm.locked) {
         lockHold();
         if (!worm.kind) return false;
       }
@@ -2796,50 +2866,30 @@ export function mountStage(container, options) {
         applyTransition();
       }
       if (t >= WORM_OUT_RING_S) {
-        // The dust sinks on the same clock as the veil coming down.
-        const sink = 1 - smoothstep01(clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S)));
-        if (worm.target === 'nebula') driveNebula(sink);
-        // A shelf that goes back to its berth is already in place underneath the
-        // veil, so that leg has nothing left to sink: only the tube is peeling.
-        else if (worm.target !== 'field') driveCluster(sink);
+        if (worm.target === 'nebula') {
+          // The genre nebula never had cones to unsend: it only sinks, on its
+          // own veiling window.
+          driveNebula(1 - smoothstep01(clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S))));
+        } else if (worm.target !== 'field') {
+          const u = clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_END_S - WORM_OUT_RING_S));
+          const blend = smoothstep01(1 - u);
+          driveCluster(blend);
+          if (layer) layer.setBurst(burstOf(blend));
+          // Coming back to the hole there is nothing to wind up: the disc
+          // reassembles at the very end, already at rest.
+          driveCharge(0);
+          driveDark(darkAt(blend));
+        }
       }
       if (t >= WORM_OUT_END_S) {
-        finishWormhole();
-        return false;
-      }
-      if (vfx) {
-        const frame = wormFrame();
-        let radius = frame.cover;
-        let alpha = 0;
-        let streak = 0;
-        let rim = 0;
-        if (t < WORM_OUT_RING_S) {
-          // Same rule on the way out: the curtain starts closing on the press, so
-          // the nebula dims while the ring fills instead of waiting for it.
-          const e = Math.pow(clamp01(t / WORM_OUT_RING_S), 0.72);
-          alpha = 0.45 * e;
-          streak = 0.16 * e;
-          rim = 0.12 * e;
-        } else if (t < WORM_OUT_VEIL_S) {
-          const e = smoothstep01(clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S)));
-          radius = frame.cover;
-          alpha = 0.45 + 0.55 * e;
-          streak = 0.16 + 0.19 * e;
-          rim = 0.12 + 0.13 * e;
-        } else {
-          const u = clamp01((t - WORM_OUT_VEIL_S) / (WORM_OUT_END_S - WORM_OUT_VEIL_S));
-          const e = smoothstep01(u);
-          // The edge sweeps inward until it lands on the shadow: the hole is
-          // uncovered from the outside in, and the last frame is the real one.
-          radius = frame.cover + (frame.shadow - frame.cover) * e;
-          alpha = 1 - smoothstep01(clamp01((u - 0.86) / 0.14));
-          streak = 0.25 + 0.9 * (1 - e);
-          rim = 0.2 + 0.8 * Math.sin(Math.PI * u);
+        // Restore the real normal-disc owner BEFORE the final draw. Completion
+        // after that draw must not acknowledge a still-captured image instead.
+        if (worm.target === 'cluster') {
+          discTransfer.end();
+          disk.setDiscTransfer(-1);
+          applyTransition();
         }
-        vfx.setPhase(tunnelPhase(frame, { radius, alpha, streak, rim }, t, worm.kind));
-        worm.phase = { radius, alpha, streak, rim };
-        worm.alpha = alpha;
-        vfx.update(0.016);
+        worm.landed = true;
       }
       dirty = true;
       return true;
@@ -3667,7 +3717,7 @@ export function mountStage(container, options) {
        * reads it, and it is removed when the investigation closes.
        */
       handles() {
-        return { scene, camera, rig, renderer, canvas, parts: { starfield, disk, layer, labels, nebula } };
+        return { scene, camera, rig, renderer, canvas, parts: { starfield, disk, layer, labels, nebula, discTransfer } };
       },
       /** TEMPORARY DIAGNOSTIC: synchronously draw and read the frame back. */
       renderNow() {
@@ -3728,8 +3778,7 @@ export function mountStage(container, options) {
         ) return false;
         const rect = container.getBoundingClientRect();
         const hole = silhouette();
-        startHold(kind, { clientX: rect.left + hole.x, clientY: rect.top + hole.y });
-        return true;
+        return startHold(kind, { clientX: rect.left + hole.x, clientY: rect.top + hole.y }) === true;
       },
       endHold() {
         if (worm.kind && !worm.locked) cancelHold();

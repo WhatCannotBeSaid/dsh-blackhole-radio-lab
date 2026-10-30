@@ -37,7 +37,7 @@ import {
 } from 'three';
 import { categoryRgb } from '../radio/taxonomy.js';
 import { centered, hash32, mulberry32 } from '../radio/random.js';
-import { DISK_INNER, DISK_OUTER, CRITICAL_IMPACT_PARAMETER } from '../scene/dimensions.js';
+import { DISK_INNER, DISK_OUTER, CRITICAL_IMPACT_PARAMETER, RS } from '../scene/dimensions.js';
 import { STATION_RADIUS } from '../radio/distribution.js';
 import { NOISE_GLSL } from '../scene/glsl.js';
 
@@ -46,6 +46,15 @@ const FEATURED_PARTICLES = 8;
 const MAX_POINT_PX = 44;
 /** How fast the cluster transition settles, per station-speed unit. */
 const CLUSTER_RATE = 3.1;
+
+/**
+ * The winding that comes before the burst.
+ *
+ * The angle itself is the traced disc's, so there is no constant here: the
+ * shader turns its stations by `uCharge * 2.2 / r`, and these sprites have to
+ * ride the same curve or the two lattices shear apart on screen.
+ */
+const CHARGE_LIFT = 0.17;
 
 const VERTEX_SHADER = /* glsl */ `
   ${NOISE_GLSL}
@@ -77,6 +86,16 @@ const VERTEX_SHADER = /* glsl */ `
   uniform float uBandOuter;
   uniform float uClusterAmount;
   uniform float uClusterRadius;
+  uniform float uBurst;
+  // 1 while these points are the matter of the black hole's own disc rather
+  // than the catalogue's stars. The traced image already draws that disc, so
+  // the sprites have to wear its colour instead of their own heat palette:
+  // otherwise the hold shows two populations of points in one picture.
+  uniform float uDiskMatter;
+  // 0..1, the hand-over from the traced disc's own texels to these sprites.
+  // Raised while the hold fills, held at 1 through the burst, so the disc's
+  // stations are one population that changes hands, never two in one frame.
+  uniform float uTakeover;
   // 1 while the black-hole panel owns the frame: phase 5 hides the station
   // sprites so only the traced image is visible. The data model is untouched.
   uniform float uHoleOnly;
@@ -159,6 +178,10 @@ const VERTEX_SHADER = /* glsl */ `
     float clusterSize = aBase * mix(0.95, 1.45, coreWeight) * mix(1.0, 2.4, aVeil) * (1.0 + aTier * 0.5)
       * uPixelRatio * uScale / dist;
     sizePx = mix(sizePx, clusterSize, cluster);
+    // Airborne matter is smeared by a motion it does not really have. A modest
+    // swell is enough to read as speed, and it costs nothing: the energy below
+    // is pulled back by the same factor so the burst does not clip to white.
+    sizePx *= 1.0 + uBurst * 0.75;
     gl_PointSize = clamp(sizePx, 1.0, ${MAX_POINT_PX.toFixed(1)});
 
     gl_Position = projectionMatrix * mv;
@@ -191,7 +214,8 @@ const VERTEX_SHADER = /* glsl */ `
     // sprites overlap there, and the density must read as many stars, not as a
     // single over-exposed disc. The rim keeps enough light to stay findable.
     float energy = mix(0.52, 0.62 + 0.30 * coreWeight, cluster)
-      * mix(1.0, 1.85, cluster * aVeil);
+      * mix(1.0, 1.85, cluster * aVeil)
+      * mix(1.0, 0.74, uBurst);
     // Tiny sprites are filtered out gradually in the disk, but a cluster star
     // must remain a findable speck even at the far rim.
     float sizeFade = mix(
@@ -209,9 +233,18 @@ const VERTEX_SHADER = /* glsl */ `
     float diskLight = mix(doppler * (0.70 + 0.64 * heat), 1.0, cluster);
     float live = step(abs(aStation - uPlaying), 0.5);
     float liveGain = mix(1.0, 1.42, live);
+    // Standing in for the traced disc's stations, these are the same weak
+    // texels the shader was drawing, not catalogue stars: at full brightness
+    // they out-shone the gas and read as a separate, denser disc on top of it.
+    // uTakeover is the hand-over itself, so the two sets never overlap: the
+    // shader's texels go out exactly as these come up.
+    float standIn = mix(1.0, 0.42 * uTakeover, uDiskMatter);
+
+
     vAlpha = aPresence * matter * dim * boost * lodAlpha * diskFade
-      * sizeFade * energy * memberFade * clusterGain * diskLight * liveGain
+      * sizeFade * energy * memberFade * clusterGain * diskLight * liveGain * standIn
       * (1.0 - uHoleOnly);
+
 
     // Black-body ladder: dull red at the outer edge, amber in the body, white
     // hot at the rim. A featured station does NOT grow — it shifts one step up
@@ -239,6 +272,14 @@ const VERTEX_SHADER = /* glsl */ `
     // density gradient into a legend.
     vec3 clusterColor = mix(vec3(1.0, 0.72, 0.50), vec3(0.86, 0.92, 1.0), clusterRad);
     vec3 mixedColor = mix(tinted, mix(clusterColor, aTint, 0.08), cluster);
+    // Under the hole these are not catalogue stars at all: they are the disc's
+    // own matter, and the traced image behind them has already decided what
+    // that looks like. Wearing its colour is what keeps the hold from reading
+    // as a second disc appearing on top of the first, so this is the traced
+    // disc's warm gold, not the blue-white the shader never shows.
+    vec3 diskMatterColor = mix(vec3(1.0, 0.58, 0.24), vec3(1.0, 0.88, 0.66), heat);
+    mixedColor = mix(mixedColor, diskMatterColor, uDiskMatter);
+
     vColor = mix(mixedColor, vec3(1.0, 0.97, 0.92), selected * 0.45);
 
     // The sprite's projected tangent, taken a hair off-centre so the elongation
@@ -377,8 +418,27 @@ export function createStationsLayer(stations, options) {
   const clusterHold = new Float32Array(count);
   const clusterMembers = new Uint8Array(count);
   const clusterSwirl = new Float32Array(count);
+  /**
+   * Which face of the disc a station is thrown from. Fixed per station and
+   * never recomputed: half the matter has to leave upward and half downward, or
+   * the burst reads as one cone with a shadow under it instead of two lobes.
+   */
+  const stationSide = new Float32Array(count);
   let clusterRadius = 3;
   let knotScale = 0.03;
+  const flightPosition = new Vector3();
+
+  // Hold pressure, 0..1, and where it is heading. It drives the winding and the
+  // swell only; the burst itself follows the cluster blend, so releasing the
+  // hold can never strand the disc half burst.
+  let charge = 0;
+  let chargeTarget = 0;
+  // 0..1 single-peak envelope of the burst, mirrored to the shader so the
+  // sprites swell while they are thrown and settle as they land.
+  let burst = 0;
+  // Set while a hand-authored passage drives the blend: -1 hands the blend back
+  // to the timed ease, 0..1 (and over) means the timeline owns it exactly.
+  let flow = -1;
 
   // Current blend towards the cloud state. Declared before the build loop
   // because the initial buffer fill reads it (as a factor of zero).
@@ -434,6 +494,7 @@ export function createStationsLayer(stations, options) {
     clusterSwirl[i] =
       (((hash32(seed, i, 'swirl') % 1000) / 1000) * 0.9 + 0.35) *
       (hash32(seed, i, 'sdir') % 2 === 0 ? 1 : -1);
+    stationSide[i] = hash32(seed, i, 'side') % 2 === 0 ? 1 : -1;
     stationCategories[i] = station.categories || [];
     stationClouds[i] = station.metadata.clouds || [];
 
@@ -510,7 +571,14 @@ export function createStationsLayer(stations, options) {
     uHoleRadiusPx: { value: 1 },
     uClusterAmount: { value: 0 },
     uClusterRadius: { value: clusterRadius },
+    // Single-peak envelope of the burst, 0 on the disc and on the cluster, 1 at
+    // the top of the cone. Only the sprite size reads it.
+    uBurst: { value: 0 },
     uDim: { value: 1 },
+    // 1 while the sprites stand in for the disc's own matter, so they take the
+    // traced disc's colour rather than the catalogue's heat palette.
+    uDiskMatter: { value: 0 },
+    uTakeover: { value: 0 },
     // Phase 5: 1 hides every catalogue sprite. The data behind them is untouched;
     // this is a visibility gate, not a data change.
     uHoleOnly: { value: 0 },
@@ -585,6 +653,25 @@ export function createStationsLayer(stations, options) {
     return t * t * (3 - 2 * t);
   }
 
+  // One allocation-free cubic path for sprites, hit targets, labels and markers.
+  // Its departure tangent follows orbital motion; the destination tangent eases
+  // into the category knot. Both endpoints are exact and reverse on the same path.
+  function sampleFlight(x, y, z, tx, ty, tz, blend) {
+    const radius = Math.max(0.001, Math.hypot(x, z));
+    const tangentX = -z / radius;
+    const tangentZ = x / radius;
+    const reach = Math.min(2.2, radius * 0.65);
+    const u = 1 - blend;
+    const c1 = 3 * u * u * blend;
+    const c2 = 3 * u * blend * blend;
+    const end = blend * blend * blend;
+    return flightPosition.set(
+      u * u * u * x + c1 * (x + tangentX * reach) + c2 * (tx - tangentX * reach * 0.25) + end * tx,
+      u * u * u * y + c1 * y + c2 * ty + end * ty,
+      u * u * u * z + c1 * (z + tangentZ * reach) + c2 * (tz - tangentZ * reach * 0.25) + end * tz,
+    );
+  }
+
   /**
    * Write one micro-sprite's world position at the current disk/cluster blend.
    *
@@ -604,9 +691,24 @@ export function createStationsLayer(stations, options) {
     const ar = offsets[particle * 3 + 1];
     const ay = offsets[particle * 3 + 2];
 
-    const diskX = cos * r + (-sin * ax + cos * ar) * diskScale;
-    const diskY = curY[stationIndex] + ay * (1 + 0.4 * matchCur[stationIndex] * filterActive);
-    const diskZ = sin * r + (cos * ax + sin * ar) * diskScale;
+    let diskX = cos * r + (-sin * ax + cos * ar) * diskScale;
+    let diskY = curY[stationIndex] + ay * (1 + 0.4 * matchCur[stationIndex] * filterActive);
+    let diskZ = sin * r + (cos * ax + sin * ar) * diskScale;
+
+    // Hold pressure: the disc winds up under the hand and its two faces swell
+    // apart. The angle is the traced disc's own, `uCharge * 2.2 / r` in Rs
+    // units, so these sprites turn exactly where the shader's stations turn;
+    // anything else would put two lattices on one disc.
+    if (charge > 0.0005) {
+      const wind = (charge * 2.2) / Math.max(r / RS, 1.0);
+      const cw = Math.cos(wind);
+      const sw = Math.sin(wind);
+      const woundX = diskX * cw - diskZ * sw;
+      const woundZ = diskX * sw + diskZ * cw;
+      diskX = woundX;
+      diskZ = woundZ;
+      diskY += charge * CHARGE_LIFT * stationSide[stationIndex];
+    }
 
     const blend = smoothstep01(clusterBlend[stationIndex]);
     if (blend <= 0.0001) {
@@ -616,11 +718,6 @@ export function createStationsLayer(stations, options) {
       return;
     }
 
-    const turn = clusterSwirl[stationIndex] * Math.sin(Math.PI * blend);
-    const cs = Math.cos(turn);
-    const sn = Math.sin(turn);
-    const spunX = diskX * cs - diskZ * sn;
-    const spunZ = diskX * sn + diskZ * cs;
 
     // Keep a little local structure at the destination. A station is one star,
     // but its sprites are spread into a knot a few pixels wide: that is what
@@ -635,9 +732,10 @@ export function createStationsLayer(stations, options) {
     const clusterYW = clusterY[stationIndex] + ny * knot;
     const clusterZW = clusterZ[stationIndex] + nz * knot;
 
-    positions[particle * 3] = spunX + (clusterXW - spunX) * blend;
-    positions[particle * 3 + 1] = diskY + (clusterYW - diskY) * blend;
-    positions[particle * 3 + 2] = spunZ + (clusterZW - spunZ) * blend;
+    const point = sampleFlight(diskX, diskY, diskZ, clusterXW, clusterYW, clusterZW, blend);
+    positions[particle * 3] = point.x;
+    positions[particle * 3 + 1] = point.y;
+    positions[particle * 3 + 2] = point.z;
   }
 
   /** Station centre (no sprite offset), used for picking, labels and marker. */
@@ -646,23 +744,15 @@ export function createStationsLayer(stations, options) {
       const a = curA[i];
       const cos = Math.cos(a);
       const sin = Math.sin(a);
-      const diskX = cos * curR[i];
-      const diskZ = sin * curR[i];
+      const wind = charge > 0.0005 ? (charge * 2.2) / Math.max(curR[i] / RS, 1.0) : 0;
+      const diskX = Math.cos(a + wind) * curR[i];
+      const diskZ = Math.sin(a + wind) * curR[i];
+      const diskY = curY[i] + (charge > 0.0005 ? charge * CHARGE_LIFT * stationSide[i] : 0);
       const blend = smoothstep01(clusterBlend[i]);
-      if (blend <= 0.0001) {
-        worldX[i] = diskX;
-        worldY[i] = curY[i];
-        worldZ[i] = diskZ;
-        continue;
-      }
-      const turn = clusterSwirl[i] * Math.sin(Math.PI * blend);
-      const cs = Math.cos(turn);
-      const sn = Math.sin(turn);
-      const spunX = diskX * cs - diskZ * sn;
-      const spunZ = diskX * sn + diskZ * cs;
-      worldX[i] = spunX + (clusterX[i] - spunX) * blend;
-      worldY[i] = curY[i] + (clusterY[i] - curY[i]) * blend;
-      worldZ[i] = spunZ + (clusterZ[i] - spunZ) * blend;
+      const point = sampleFlight(diskX, diskY, diskZ, clusterX[i], clusterY[i], clusterZ[i], blend);
+      worldX[i] = point.x;
+      worldY[i] = point.y;
+      worldZ[i] = point.z;
     }
   }
 
@@ -928,11 +1018,74 @@ export function createStationsLayer(stations, options) {
     },
 
     /**
+     * Hold pressure, 0..1. Drives the winding and the face swell only: the
+     * burst itself is a function of the cluster blend, so a released hold can
+     * never strand the disc half burst — it just unwinds.
+     */
+    setCharge(value) {
+      const next = clamp01(Number(value) || 0);
+      if (next === chargeTarget) return;
+      chargeTarget = next;
+      animating = true;
+      dirtyBuffers = true;
+    },
+
+    /**
+     * Burst envelope, 0..1. Mirrored from the same curve the geometry rides so
+     * the sprites swell while they are being thrown and tighten as they land.
+     */
+    setBurst(value) {
+      const next = clamp01(Number(value) || 0);
+      if (Math.abs(next - burst) < 0.0015) return;
+      burst = next;
+      uniforms.uBurst.value = burst;
+    },
+
+    /**
+     * Hand the cluster blend to a timeline, or take it back with -1.
+     *
+     * The passage out of the hole is authored against wall-clock seconds, and
+     * its two cones are built out of this blend. Letting the layer keep easing
+     * the blend on its own clock would put the geometry a fixed fraction of a
+     * second behind the dimmer and the swell that are describing it, which is
+     * exactly the kind of drift that made the old crossing read as two effects
+     * playing at once. While this is set, the timeline IS the clock.
+     */
+    setFlow(value) {
+      const next = Number(value);
+      const wanted = Number.isFinite(next) && next >= 0 ? clamp01(next) : -1;
+      if (wanted === flow) return;
+      flow = wanted;
+      animating = true;
+      dirtyBuffers = true;
+    },
+
+    /**
      * Catalogue brightness as a whole, 0..1. The black-hole view dims it so
      * the stations read as matter inside the disk; the cluster restores it.
      */
     setDim(value) {
       uniforms.uDim.value = Math.min(1, Math.max(0, Number(value)));
+    },
+
+    /**
+     * How much these sprites are the disc's matter rather than the catalogue's
+     * stars, 0..1. 1 borrows the traced disc's colour; the passage eases it
+     * back to 0 as the matter leaves, so the burst ends up its own colour.
+     */
+    setDiskMatter(value) {
+      uniforms.uDiskMatter.value = Math.min(1, Math.max(0, Number(value)));
+    },
+
+    /**
+     * Hand-over from the traced disc's texels to these sprites, 0..1. At 0 the
+     * shader owns the disc's stations and these sprites are invisible; at 1 the
+     * sprites own them and the shader's texels are dark. It exists so the two
+     * populations never share a frame, which is what made the hold read as a
+     * second disc laid over the first.
+     */
+    setTakeover(value) {
+      uniforms.uTakeover.value = Math.min(1, Math.max(0, Number(value)));
     },
 
     /**
@@ -999,6 +1152,19 @@ export function createStationsLayer(stations, options) {
         const fadeMoving = Math.abs(filterTarget - filterActive) > 0.002;
 
         let moving = false;
+
+        // Hold pressure. Rises slower than it falls: the wind-up is the part the
+        // eye should have time to read, the release is a snap back.
+        const dc = chargeTarget - charge;
+        if (Math.abs(dc) > 0.0006) {
+          const rate = dc > 0 ? 9.5 : 15.0;
+          charge += dc * (1 - Math.exp(-step * rate));
+          moving = true;
+        } else if (charge !== chargeTarget) {
+          charge = chargeTarget;
+          moving = true;
+        }
+
         for (let i = 0; i < count; i += 1) {
           // Disk cloud target.
           if (hold[i] > 0) {
@@ -1028,8 +1194,14 @@ export function createStationsLayer(stations, options) {
             }
           }
 
-          // Cluster target, on its own stagger.
-          if (clusterHold[i] > 0) {
+          // Cluster target, on its own stagger — unless a hand-authored
+          // passage owns the blend this frame, in which case the timeline is
+          // the only clock and the stagger would only make the two disagree.
+          if (flow >= 0) {
+            clusterBlend[i] = clusterMembers[i] === 1 ? flow : 0;
+            clusterHold[i] = 0;
+            moving = true;
+          } else if (clusterHold[i] > 0) {
             clusterHold[i] = Math.max(0, clusterHold[i] - step);
             moving = true;
           } else {
