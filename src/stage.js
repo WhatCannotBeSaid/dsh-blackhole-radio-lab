@@ -99,8 +99,12 @@ const TRANSITION_RATE = 0.95;
  */
 /** Left hold: the ring is full, the transition can no longer be cancelled. */
 const WORM_RING_S = 1.2;
-/** The shadow has swallowed the whole frame. */
-const WORM_COVER_S = 1.4;
+/**
+ * The shadow has swallowed the whole frame. Same instant as the ring: the fall
+ * begins on the press, so by the time the ring locks the frame is already black
+ * and everything left is the nebula arriving underneath it.
+ */
+const WORM_COVER_S = WORM_RING_S;
 /** The nebula has finished arriving. */
 const WORM_END_S = 1.7;
 /** Right hold: the ring is full. */
@@ -111,8 +115,10 @@ const WORM_OUT_VEIL_S = 1.0;
 const WORM_OUT_END_S = 1.6;
 /** Movement beyond this many CSS px turns a hold into a camera drag. */
 const WORM_DEADZONE_PX = 8;
-/** Nebula fade speed while the wormhole drives the reveal (0.3 s). */
+/** Nebula fade speed while the wormhole drives the reveal (0.5 s). */
 const WORM_REVEAL_RATE = 1 / (WORM_END_S - WORM_COVER_S);
+/** How long an abandoned hold takes to retreat to where the frame was (ms/s). */
+const WORM_RECOIL_S = 0.22;
 /** Reduced motion: no wormhole, one 200 ms cross-fade. */
 const WORM_CALM_RATE = 1 / 0.2;
 /** Catalogue brightness while the hole is the subject. */
@@ -339,7 +345,7 @@ export function mountStage(container, options) {
       nebulaSavedCamera: null,
       /**
        * The hole is gone from the frame even though the nebula is still faint.
-       * The wormhole needs those two states to be separate for its last 300 ms:
+       * The wormhole needs those two states to be separate for its last 500 ms:
        * the black has already swallowed the image while the dust is still
        * arriving, so the disk must not reappear under the fading mask.
        */
@@ -351,7 +357,7 @@ export function mountStage(container, options) {
     let nebulaMoving = false;
     /**
      * How fast the nebula scalar climbs. Its own number because the wormhole
-     * reveals the nebula in 300 ms while the old cross-fade took 1.28 s, and the
+     * reveals the nebula in 500 ms while the old cross-fade took 1.28 s, and the
      * integrator should not have to know which gesture started it.
      */
     let nebulaSpeed = TRANSITION_RATE * 0.82;
@@ -1691,12 +1697,14 @@ export function mountStage(container, options) {
     // being pushed ('enter' from the hole, 'exit' from the nebula), `startedAt`
     // is a wall clock reading so a slow frame shortens the wait instead of
     // stretching it, and `locked` is the point of no return: before it a release
-    // cancels with nothing to rewind, after it the timeline runs to the end.
+    // cancels, after it the timeline runs to the end.
     //
-    // Nothing visual happens before the lock except light on the shadow's edge.
-    // That is deliberate: a cancelled hold must leave the frame exactly as it
-    // was, and a mask that had already grown would have to be pulled back —
-    // which is a rewind, and rewinds produce dirty frames.
+    // The fall starts on the press, not on the lock: the shadow widens from the
+    // first frame, and the ring is only the countdown drawn beside the cursor.
+    // That means a cancel has something to give back, which is the recoil: a
+    // short damped retreat over the phase that was on screen at the release.
+    // It is not a rewind of the timeline — only that one phase interpolates —
+    // so nothing half applied is left behind when it lands.
 
     const worm = {
       kind: null,
@@ -1721,6 +1729,10 @@ export function mountStage(container, options) {
       /** One-off guards, so a threshold can fire only once per hold. */
       covered: false,
       veiled: false,
+      /** The last phase handed to the mask, so a cancel can retreat from it. */
+      phase: null,
+      /** Where a retreat started from: the phase on screen at the cancel. */
+      from: null,
     };
 
     /** The hold ring and the wormhole pass are both optional by switch. */
@@ -1748,21 +1760,46 @@ export function mountStage(container, options) {
 
     const startHold = (kind, event) => {
       // One hold at a time, ever. A second press mid-transition would overwrite
-      // the timeline of the first and leave the mask half drawn.
-      if (worm.kind) return;
+      // the timeline of the first and leave the mask half drawn. A recoil is not
+      // a hold: it is only the cancel fading out, so a new press may cut it off.
+      if (worm.kind && worm.kind !== 'recoil') return;
       // No nebula layer means nowhere to fly to: stay on the hole and leave the
-      // old long press to do whatever it did.
+      // old long press to do whatever it did. Checked before the recoil is
+      // dropped, so a refused start leaves nothing half cleared behind it.
       if (kind === 'enter' && !nebula) return;
+      // Taking a recoil back up resumes from the phase that is on screen, not
+      // from zero: the press picks the fall up where the cancel left it, so the
+      // mask neither jumps back to the shadow nor forward to the lock.
+      let resumeAt = 0;
+      if (worm.kind === 'recoil' && worm.phase) {
+        const f = wormFrame();
+        if (kind === 'exit') {
+          const e = worm.phase.alpha / 0.45;
+          if (e > 0.02) resumeAt = Math.pow(clamp01(e), 1 / 0.72) * WORM_OUT_RING_S;
+        } else {
+          const span = f.cover - f.shadow;
+          const u = span > 1e-4 ? clamp01((worm.phase.radius - f.shadow) / span) : 0;
+          if (u > 0.004) resumeAt = Math.pow(u, 1 / 1.3) * WORM_COVER_S;
+        }
+      }
+      if (worm.kind === 'recoil') {
+        worm.phase = null;
+        worm.from = null;
+        worm.alpha = 0;
+        if (vfx) vfx.reset();
+      }
       const p = ringPoint(event);
       worm.kind = kind;
       worm.locked = false;
       worm.covered = false;
       worm.veiled = false;
+      worm.phase = null;
+      worm.from = null;
       worm.alpha = 0;
       worm.hiddenAt = 0;
       worm.pointerId = event.pointerId;
       worm.button = event.button === 2 ? 2 : 0;
-      worm.startedAt = performance.now();
+      worm.startedAt = performance.now() - resumeAt * 1000;
       worm.downX = event.clientX;
       worm.downY = event.clientY;
       worm.cursorX = p.x;
@@ -1776,21 +1813,38 @@ export function mountStage(container, options) {
     };
 
     /**
-     * Throw the hold away. Everything it started before the lock is light on
-     * the edge, so there is nothing to undo and nothing to animate.
+     * Throw the hold away. The frame is already part way through the fall — the
+     * mask has been growing since the press — so the cancel is a short recoil
+     * back to where the frame stood, not a cut. That is `WORM_RECOIL_S` of
+     * damped retreat instead of a jump the eye would catch.
      */
     const cancelHold = () => {
-      if (!worm.kind) return;
-      worm.kind = null;
+      if (!worm.kind || worm.kind === 'recoil') return;
+      const recoiling = vfx && worm.phase && (worm.alpha > 0.004 || worm.phase.streak > 0.004);
       worm.locked = false;
       worm.covered = false;
       worm.veiled = false;
-      worm.alpha = 0;
       worm.hiddenAt = 0;
       worm.pointerId = -1;
       worm.button = 0;
       if (holdRing) holdRing.hide();
-      if (vfx) vfx.reset();
+      if (recoiling) {
+        // Retreated from the phase that is on screen right now, so the curve
+        // starts where the eye left it rather than where the last frame ended.
+        // Remember which direction the retreat must run: the fall grew into the
+        // frame, the exit only thickened a veil over it, and the two have
+        // different paths back.
+        const retreatKind = worm.kind === 'exit' ? 'exit' : 'enter';
+        worm.kind = 'recoil';
+        worm.from = { ...worm.phase, kind: retreatKind };
+        worm.startedAt = performance.now();
+      } else {
+        worm.kind = null;
+        worm.phase = null;
+        worm.from = null;
+        worm.alpha = 0;
+        if (vfx) vfx.reset();
+      }
       dirty = true;
       requestFrame();
     };
@@ -1860,6 +1914,8 @@ export function mountStage(container, options) {
       worm.kind = null;
       worm.locked = false;
       worm.covered = false;
+      worm.phase = null;
+      worm.from = null;
       worm.veiled = false;
       worm.alpha = 0;
       worm.hiddenAt = 0;
@@ -1909,6 +1965,45 @@ export function mountStage(container, options) {
       if (worm.hiddenAt) return true;
       const t = (now - worm.startedAt) / 1000;
 
+      // A cancelled hold retreats along the path it took in. Short, damped, and
+      // it starts from the exact phase that was on screen when the press ended.
+      if (worm.kind === 'recoil') {
+        const e = smoothstep01(clamp01(1 - t / WORM_RECOIL_S));
+        const frame = wormFrame();
+        const from = worm.from;
+        if (vfx && from) {
+          const veiling = from.kind === 'exit';
+          // The fall grew into the frame, so its retreat gives the radius back
+          // and stays opaque until the last third, where it hands over to the
+          // shadow at rest. The exit never grew: it only laid a veil over a frame
+          // that was already covered, so its retreat has no radius to return and
+          // simply lifts the veil where it stands.
+          const radius = veiling ? from.radius : frame.shadow + (from.radius - frame.shadow) * e;
+          const alpha = veiling
+            ? from.alpha * e
+            : from.alpha * smoothstep01(clamp01(e / 0.3));
+          const streak = from.streak * e;
+          const rim = from.rim * e;
+          vfx.setPhase({ center: frame.center, radius, alpha, streak, rim });
+          vfx.update(0.016);
+          // Kept live so a capture (and the cancel's own "did it draw yet?" test)
+          // sees what is really on screen during the retreat.
+          worm.phase = { radius, alpha, streak, rim };
+          worm.alpha = alpha;
+        } else {
+          worm.alpha = 0;
+        }
+        dirty = true;
+        if (t >= WORM_RECOIL_S) {
+          worm.kind = null;
+          worm.phase = null;
+          worm.from = null;
+          worm.alpha = 0;
+          if (vfx) vfx.reset();
+        }
+        return true;
+      }
+
       if (worm.kind === 'enter') {
         // The ring, up to the commit.
         if (t < WORM_RING_S) {
@@ -1935,28 +2030,32 @@ export function mountStage(container, options) {
           let alpha = 0;
           let streak = 0;
           let rim = 0;
-          if (t < WORM_RING_S) {
-            // Before the commit: light on the edge only. If the user lets go
-            // here, killing the glow is the whole cancel.
-            const e = smoothstep01(clamp01(t / WORM_RING_S));
-            streak = 0.16 * e;
-            rim = 0.22 * e;
-          } else {
-            const u = clamp01((t - WORM_RING_S) / (WORM_COVER_S - WORM_RING_S));
-            const e = smoothstep01(u);
+          if (t < WORM_COVER_S) {
+            // The fall starts on the press, not on the commit: the shadow swells
+            // from the first frame of the ring, so the hold is travel rather than
+            // a countdown. The mask opens exactly on the shadow's own radius,
+            // which is why beginning here costs no pop and needs no flash frame.
+            // The curve leans backwards on purpose — the horizon widens at once
+            // but full coverage still lands on the lock, not half way there.
+            const u = clamp01(t / WORM_COVER_S);
+            const e = Math.pow(u, 1.3);
             radius = frame.shadow + (frame.cover - frame.shadow) * e;
-            streak = 0.16 + 0.84 * e;
-            rim = 0.22 + 0.78 * e;
-            alpha = 1;
-            if (t > WORM_COVER_S) {
-              const v = clamp01((t - WORM_COVER_S) / (WORM_END_S - WORM_COVER_S));
-              alpha = 1 - smoothstep01(clamp01(v / 0.62));
-              // The light goes first: by half way through the reveal the frame is
-              // the nebula and nothing else, so no ray is left crossing it.
-              const gone = 1 - smoothstep01(clamp01(v / 0.4));
-              streak *= gone;
-              rim *= gone;
-            }
+            alpha = smoothstep01(clamp01(u / 0.18));
+            // A soft halo is on the edge from the first frame, so the press is
+            // answered before anything else has happened.
+            streak = 0.25 + 0.75 * e;
+            rim = 0.25 + 0.75 * e;
+          } else {
+            // The frame is black. What is left is the mask giving way as the dust
+            // arrives underneath it, on the same clock.
+            radius = frame.cover;
+            const v = clamp01((t - WORM_COVER_S) / (WORM_END_S - WORM_COVER_S));
+            alpha = 1 - smoothstep01(clamp01(v / 0.62));
+            // The light goes first: by half way through the reveal the frame is
+            // the nebula and nothing else, so no ray is left crossing it.
+            const gone = 1 - smoothstep01(clamp01(v / 0.4));
+            streak = gone;
+            rim = gone;
           }
           vfx.setPhase({
             center: frame.center,
@@ -1965,6 +2064,7 @@ export function mountStage(container, options) {
             streak,
             rim,
           });
+          worm.phase = { radius, alpha, streak, rim };
           worm.alpha = alpha;
         }
         if (vfx) vfx.update(0.016);
@@ -1999,27 +2099,31 @@ export function mountStage(container, options) {
         let alpha = 0;
         let streak = 0;
         let rim = 0;
-        if (t >= WORM_OUT_RING_S) {
-          if (t < WORM_OUT_VEIL_S) {
-            const e = smoothstep01(
-              clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S)),
-            );
-            radius = frame.cover;
-            alpha = e;
-            streak = 0.35 * e;
-            rim = 0.25 * e;
-          } else {
-            const u = clamp01((t - WORM_OUT_VEIL_S) / (WORM_OUT_END_S - WORM_OUT_VEIL_S));
-            const e = smoothstep01(u);
-            // The edge sweeps inward until it lands on the shadow: the hole is
-            // uncovered from the outside in, and the last frame is the real one.
-            radius = frame.cover + (frame.shadow - frame.cover) * e;
-            alpha = 1 - smoothstep01(clamp01((u - 0.86) / 0.14));
-            streak = 0.25 + 0.9 * (1 - e);
-            rim = 0.2 + 0.8 * Math.sin(Math.PI * u);
-          }
+        if (t < WORM_OUT_RING_S) {
+          // Same rule on the way out: the curtain starts closing on the press, so
+          // the nebula dims while the ring fills instead of waiting for it.
+          const e = Math.pow(clamp01(t / WORM_OUT_RING_S), 0.72);
+          alpha = 0.45 * e;
+          streak = 0.16 * e;
+          rim = 0.12 * e;
+        } else if (t < WORM_OUT_VEIL_S) {
+          const e = smoothstep01(clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S)));
+          radius = frame.cover;
+          alpha = 0.45 + 0.55 * e;
+          streak = 0.16 + 0.19 * e;
+          rim = 0.12 + 0.13 * e;
+        } else {
+          const u = clamp01((t - WORM_OUT_VEIL_S) / (WORM_OUT_END_S - WORM_OUT_VEIL_S));
+          const e = smoothstep01(u);
+          // The edge sweeps inward until it lands on the shadow: the hole is
+          // uncovered from the outside in, and the last frame is the real one.
+          radius = frame.cover + (frame.shadow - frame.cover) * e;
+          alpha = 1 - smoothstep01(clamp01((u - 0.86) / 0.14));
+          streak = 0.25 + 0.9 * (1 - e);
+          rim = 0.2 + 0.8 * Math.sin(Math.PI * u);
         }
         vfx.setPhase({ center: frame.center, radius, alpha, streak, rim });
+        worm.phase = { radius, alpha, streak, rim };
         worm.alpha = alpha;
         vfx.update(0.016);
       }
@@ -2097,8 +2201,10 @@ export function mountStage(container, options) {
         // would be a shortcut around the wormhole.
         if (!wormholeEnabled) return;
         // While a hold owns the gesture, nothing else may start one. The only
-        // thing a second right press does is land a running exit.
-        if (worm.kind) {
+        // thing a second right press does is land a running exit. A recoil is
+        // not a hold — it is the last cancel fading out — so it does not block
+        // the next press.
+        if (worm.kind && worm.kind !== 'recoil') {
           if (skipWormhole()) event.preventDefault();
           return;
         }
@@ -2110,8 +2216,9 @@ export function mountStage(container, options) {
       }
       if (event.button !== 0) return;
       // A hold owns the gesture: a left press during one is not a selection, and
-      // it must not be able to cancel the hold that is already running.
-      if (worm.kind) return;
+      // it must not be able to cancel the hold that is already running. A recoil
+      // is the one exception: pressing again is how you take the fall back up.
+      if (worm.kind && worm.kind !== 'recoil') return;
       // One press slot. A second finger does not take it over, or the first
       // finger's release would no longer cancel the hold it started.
       if (press.active && press.id !== event.pointerId) return;
@@ -2126,7 +2233,7 @@ export function mountStage(container, options) {
       press.moved = false;
       // The centre is entered by holding it. A press and release there is a
       // press on the hole itself, which is not a button and does nothing.
-      if (canOpenCenter() && !worm.kind && centerAt(event.clientX, event.clientY).inside) {
+      if (canOpenCenter() && (!worm.kind || worm.kind === 'recoil') && centerAt(event.clientX, event.clientY).inside) {
         if (wormholeEnabled) {
           // The hold draws its own ring, so the press is consumed now: the
           // release must not also select something.
@@ -2687,11 +2794,23 @@ export function mountStage(container, options) {
           elapsed: worm.kind ? (performance.now() - worm.startedAt) / 1000 : 0,
           cover: machine.wormCover,
           nebulaSpeed,
+          // What is actually on screen, so a capture can be checked without
+          // reading pixels: radius in viewport heights, and the mask's own alpha.
+          mask: worm.phase
+            ? {
+                radius: Math.round(worm.phase.radius * 1000) / 1000,
+                alpha: Math.round(worm.phase.alpha * 1000) / 1000,
+                streak: Math.round(worm.phase.streak * 1000) / 1000,
+                rim: Math.round(worm.phase.rim * 1000) / 1000,
+              }
+            : null,
         };
       },
       /** Begin a hold without a pointer, at the hole's centre. */
       beginHold(kind) {
-        if (!wormholeEnabled || worm.kind) return false;
+        // `kind` reads 'recoil' while a cancel is retreating; that is not a hold
+        // and may be cut off, exactly like a real press may.
+        if (!wormholeEnabled || (worm.kind && worm.kind !== 'recoil')) return false;
         if (kind === 'enter' && !canOpenCenter()) return false;
         if (kind === 'exit' && !(machine.mode === 'nebula' || machine.nebula > 0.05)) return false;
         const rect = container.getBoundingClientRect();
