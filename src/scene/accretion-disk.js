@@ -148,7 +148,7 @@ export function createAccretionDisk(options = {}) {
     uStationGain: { value: 5 },
     uStationPlaying: { value: -1 },
     uStationOn: { value: 0 },
-    uStationSpin: { value: 1 },
+    uStationPhase: { value: 0 },
     uStationEmission: { value: 0.30 },
   };
 
@@ -228,15 +228,13 @@ export function createAccretionDisk(options = {}) {
     uniforms.uTime.value = time;
     uniforms.uOpacity.value = opacity;
 
-    // Ease the field's spin toward its target. The frame delta is not passed in,
-    // so the fixed rate is expressed per call: at 60 fps this settles in about
-    // a fifth of a second, which reads as a deliberate stop rather than a cut.
-    if (stationSpin !== stationSpinTarget) {
-      const step = Math.min(1, 0.22);
-      stationSpin += (stationSpinTarget - stationSpin) * step;
-      if (Math.abs(stationSpinTarget - stationSpin) < 0.002) stationSpin = stationSpinTarget;
-      uniforms.uStationSpin.value = stationSpin;
-    }
+    // Hold the disc clock back while the field is paused. The offset is derived
+    // from the same clock the shader reads (`uTime`), never accumulated from
+    // frame deltas: two time bases that only nearly agree drift apart, and a
+    // drift here reads as the disc spinning the wrong way.
+    const now = Number(time) || 0;
+    lastTime = now;
+    uniforms.uStationPhase.value = frozenAt === null ? phaseBase : phaseBase + Math.max(0, now - frozenAt);
 
     if (renderer) {
       renderer.getDrawingBufferSize(drawBuffer);
@@ -415,15 +413,34 @@ export function createAccretionDisk(options = {}) {
    * drifting out from under it; the uniform is eased in `update` rather than
    * set directly, because a hard cut makes the whole band jump.
    */
-  let stationSpin = 1;
-  let stationSpinTarget = 1;
+  let lastTime = 0;
+  /** `uTime` at which the running pause began, or null while the disc turns. */
+  let frozenAt = null;
+  /** Seconds of disc clock held back by pauses that already ended. */
+  let phaseBase = 0;
+  /**
+   * Freeze or resume the disc clock, 0 = paused, 1 = running.
+   *
+   * The pointer pins a station so the card stays under the cursor, so the pause
+   * has to be rigid: the offset is `lastTime - frozenAt`, measured against the
+   * very clock the shader reads. Easing it in would ramp the effective spin
+   * through fractional rates, which can read as the disc crawling backwards.
+   */
   function setStationSpin(value) {
     const next = Number(value);
-    stationSpinTarget = Number.isFinite(next) ? Math.min(1, Math.max(0, next)) : 1;
+    const want = Number.isFinite(next) ? Math.min(1, Math.max(0, next)) : 1;
+    if (want < 0.5) {
+      if (frozenAt === null) frozenAt = lastTime;
+      return;
+    }
+    if (frozenAt !== null) {
+      phaseBase += Math.max(0, lastTime - frozenAt);
+      frozenAt = null;
+    }
   }
-  /** False while the eased spin is still arriving, so the stage keeps drawing. */
+  /** The pause is a hard switch, so there is never an eased state to wait on. */
   function isStationSpinSettled() {
-    return stationSpin === stationSpinTarget;
+    return true;
   }
 
   function getInfo() {

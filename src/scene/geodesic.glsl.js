@@ -480,14 +480,15 @@ uniform int uStationOn;
  */
 uniform float uStationEmission;
 /**
- * 1 = the field turns with the gas, 0 = it is frozen in place.
+ * Seconds the disc clock has been held back, subtracted from the retarded time
+ * before any pattern is evaluated.
  *
- * A pointer landing on a station pins it: while the card is open the pattern
- * must stay under the cursor, or the record moves away and cannot be hit again.
- * Freezing the age also freezes the two-generation blend, which would otherwise
- * keep swapping the pattern inside a static frame.
+ * Pausing used to scale the age toward zero, which did freeze the pattern — but
+ * it freezes it at phase zero, so the disc snapped back to where it started.
+ * Holding back an accumulating offset instead leaves the current phase alone and
+ * lets the motion resume from exactly there.
  */
-uniform float uStationSpin;
+uniform float uStationPhase;
 
 /** Normalised raster coordinates for one advected disc point. */
 vec2 stationUvAt(float r, float phi, float age) {
@@ -514,11 +515,10 @@ vec4 stationSampleAt(float r, float phi, float age) {
  * phase would grow without bound, lose float precision after a few minutes, and
  * the raster would visibly crawl and snap.
  */
-vec4 stationFieldAt(float r, float phi, float retardedTime) {
+vec4 stationFieldAt(float r, float phi, float clock) {
   if (uStationOn == 0) return vec4(0.0);
   float halfLife = DETAIL_LIFE * 0.5;
-  float age = retardedTime - floor(retardedTime / halfLife) * halfLife;
-  age *= uStationSpin;
+  float age = clock - floor(clock / halfLife) * halfLife;
   float w0 = sin(PI * age / DETAIL_LIFE);
   w0 *= w0;
   vec4 young = stationSampleAt(r, phi, age);
@@ -530,11 +530,10 @@ vec4 stationFieldAt(float r, float phi, float retardedTime) {
 }
 
 /** Station index owning a disc point, or -1. Nearest texel, no filtering. */
-float stationIndexAt(float r, float phi, float retardedTime) {
+float stationIndexAt(float r, float phi, float clock) {
   if (uStationOn == 0) return -1.0;
   float halfLife = DETAIL_LIFE * 0.5;
-  float age = retardedTime - floor(retardedTime / halfLife) * halfLife;
-  age *= uStationSpin;
+  float age = clock - floor(clock / halfLife) * halfLife;
   float w0 = sin(PI * age / DETAIL_LIFE);
   w0 *= w0;
   vec2 uv = stationUvAt(r, phi, w0 >= 0.5 ? age : age + halfLife);
@@ -560,14 +559,19 @@ vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint,
   float profile = discTemperatureProfile(r);
   if (profile <= 0.0) return vec4(0.0);
 
+  // One clock for every pattern on the disc: the procedural turbulence and the
+  // catalogue's density field have to pause and resume together, or the stations
+  // would slide through the gas instead of riding it.
+  float clock = retardedTime - uStationPhase;
+
   float phi = atan(discPos.y, discPos.x);
-  float density = discDensity(r, phi, retardedTime, footprint, detailTrust);
+  float density = discDensity(r, phi, clock, footprint, detailTrust);
 
   // Stations ARE the disc. Their density drives the emission above the
   // procedural floor, so the visible structure of the disc is the catalogue's
   // own distribution rather than a texture laid over it.
-  vec4 field = stationFieldAt(r, phi, retardedTime);
-  stationId = stationIndexAt(r, phi, retardedTime);
+  vec4 field = stationFieldAt(r, phi, clock);
+  stationId = stationIndexAt(r, phi, clock);
   float load = clamp(field.r * uStationGain, 0.0, 1.0);
   float concentration = field.g;
   // Radial tapers: a zero-torque inner edge whose emission dies away, and a soft
