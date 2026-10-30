@@ -28,7 +28,9 @@
 import { Vector3 } from 'three';
 
 const MAX_STATION_LABELS = 14;
-const MAX_CLOUD_LABELS = 6;
+// One per berth. The field is the page now, so every category must be readable
+// without hovering it; a cap of six silently hid most of the thirteen.
+const MAX_CLOUD_LABELS = 16;
 const MAX_NEBULA_LABELS = 16;
 
 const COLOR_TEXT = 'rgba(234, 226, 216, 0.88)';
@@ -360,17 +362,31 @@ export function createLabelOverlay(container) {
         if (!p) continue;
         if (p.x < 30 || p.x > width - 30 || p.y < 22 || p.y > height - 12) continue;
         const text = cloud.count ? `${cloud.label}  ${cloud.count}` : cloud.label;
-        if (
-          drawLabel(text, p.x, p.y - 26, {
-            font: FONT_CLOUD,
-            color: COLOR_ACCENT,
-            alpha: cloudAlpha,
-            padX: 3,
-            align: 'center',
-          })
-        ) {
-          drawnClouds += 1;
+        // A berth's name is the page's vocabulary, so it gets more than one
+        // chance to land: above the knot, below it, then beside it. A single
+        // fixed offset lost names whenever two berths lined up or a station
+        // happened to be called out nearby.
+        const spots = [
+          { x: p.x, y: p.y - 26, align: 'center' },
+          { x: p.x, y: p.y + 34, align: 'center' },
+          { x: p.x + 24, y: p.y + 4, align: 'left' },
+        ];
+        let landed = false;
+        for (const spot of spots) {
+          if (
+            drawLabel(text, spot.x, spot.y, {
+              font: FONT_CLOUD,
+              color: COLOR_ACCENT,
+              alpha: cloudAlpha * (cloud.occluded ? 0.42 : 1),
+              padX: 3,
+              align: spot.align,
+            })
+          ) {
+            landed = true;
+            break;
+          }
         }
+        if (landed) drawnClouds += 1;
       }
     }
     // 4. the nebula space: every visible genre names itself. This runs last so

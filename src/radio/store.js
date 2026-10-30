@@ -195,7 +195,11 @@ export function createRadioStore(options) {
     if (target === null || target === undefined) return null;
     if (typeof target === 'object') return stationKey(target);
     const text = String(target);
-    if (keyById.has(text)) return text;
+    // A station id is not a key: live rows are keyed `rb:<uuid>` while their
+    // id is the bare uuid, so an id has to be translated, never returned as if
+    // it were the key. Returning it would look up a key that does not exist and
+    // report a station the store holds as missing.
+    if (keyById.has(text)) return keyById.get(text);
     if (byKey.has(text)) return text;
     return null;
   }

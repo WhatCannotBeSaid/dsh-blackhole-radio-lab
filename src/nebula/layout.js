@@ -57,6 +57,11 @@ function clamp(value, min, max) {
   return value < min ? min : value > max ? max : value;
 }
 
+function num(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function clamp01(value) {
   return clamp(Number.isFinite(value) ? value : 0, 0, 1);
 }
@@ -83,9 +88,11 @@ function populationScale(count, maxCount) {
  * station is still a readable nebula, and the exponent compresses the middle of
  * the distribution instead of letting the top two genres dominate.
  */
-export function nebulaRadiusForCount(count, maxCount) {
+export function nebulaRadiusForCount(count, maxCount, radiusMin, radiusMax) {
+  const lo = Number.isFinite(Number(radiusMin)) ? Number(radiusMin) : NEBULA_MIN_RADIUS;
+  const hi = Number.isFinite(Number(radiusMax)) ? Number(radiusMax) : NEBULA_MAX_RADIUS;
   const t = 0.18 + 0.82 * Math.pow(populationScale(count, maxCount), 1.25);
-  return NEBULA_MIN_RADIUS + (NEBULA_MAX_RADIUS - NEBULA_MIN_RADIUS) * t;
+  return lo + (hi - lo) * t;
 }
 
 /** Relative emission strength; part of the visual identity, still bounded. */
@@ -193,6 +200,16 @@ export function buildNebulaLayout(genres, options = {}) {
   const vocabulary = normalizeVocabulary(options.vocabulary, genres);
   const { entries, ids } = normalizeEntries(genres);
 
+  // The shell is authored per sky: the tag shelves inside one category are a
+  // much tighter arrangement than the catalogue-wide genre sky, and the radius
+  // band has to shrink with it or every volume would swallow the space round it.
+  const shellInner = num(options.shellInner, NEBULA_SHELL_INNER);
+  const shellOuter = num(options.shellOuter, NEBULA_SHELL_OUTER);
+  const radiusMin = num(options.radiusMin, NEBULA_MIN_RADIUS);
+  const radiusMax = num(options.radiusMax, NEBULA_MAX_RADIUS);
+  const minGap = num(options.minGap, NEBULA_MIN_GAP);
+  const extentFloor = num(options.extentFloor, MIN_EXTENT);
+
   // A genre with nothing in it earns no volume. The repository already filters
   // those, but the layout must not depend on its caller having done so: an
   // empty genre would otherwise render as a bare dust speck.
@@ -209,8 +226,8 @@ export function buildNebulaLayout(genres, options = {}) {
     const entry = entries.get(id);
     const rng = mulberry32(hash32(seed, 'nebula-slot', id));
     const direction = slotDirection(id, vocabulary, rng);
-    const shell = lerp(NEBULA_SHELL_INNER, NEBULA_SHELL_OUTER, rng());
-    const radius = nebulaRadiusForCount(entry.count, Math.max(1, maxCount));
+    const shell = lerp(shellInner, shellOuter, rng());
+    const radius = nebulaRadiusForCount(entry.count, Math.max(1, maxCount), radiusMin, radiusMax);
     return {
       id,
       index: 0,
@@ -227,7 +244,7 @@ export function buildNebulaLayout(genres, options = {}) {
     };
   });
 
-  const maxShift = separateVolumes(volumes);
+  const maxShift = separateVolumes(volumes, minGap);
 
   volumes.forEach((volume, index) => {
     volume.index = index;
@@ -236,12 +253,16 @@ export function buildNebulaLayout(genres, options = {}) {
   const extent = volumes.reduce(
     (top, volume) => Math.max(top, Math.hypot(volume.center.x, volume.center.y, volume.center.z) + volume.radius * 1.3),
     0,
-  ) || MIN_EXTENT;
+  ) || extentFloor;
 
   // A shallow elevation with a small azimuth offset: the shell reads as a
   // volume, not as a card, and no slot sits exactly on the view axis.
+  //
+  // Every distance here is a multiple of the extent, not a constant: the same
+  // code frames the wide genre sky and the tight tag shelves, and a constant
+  // tuned for one would put the camera inside the other.
   const camera = {
-    radius: clamp(extent * 1.9, 62, 186),
+    radius: Math.min(186, Math.max(extent * 1.5, extent * 1.9)),
     phi: 1.16,
     theta: 0.52,
     target: { x: 0, y: 0, z: 0 },
@@ -250,7 +271,7 @@ export function buildNebulaLayout(genres, options = {}) {
   // outermost volume with room to spare, which is what keeps the view from
   // ending up inside a dust cloud when the wheel is spun all the way in.
   const limits = {
-    minRadius: Math.max(24, extent * 1.05),
+    minRadius: Math.max(1.2, extent * 1.02),
     maxRadius: Math.min(300, extent * 3.0),
   };
 
@@ -270,7 +291,8 @@ export function buildNebulaLayout(genres, options = {}) {
  * deltas are applied on both sides and the result is symmetric, so reversing
  * the input order cannot change the sky.
  */
-function separateVolumes(volumes) {
+function separateVolumes(volumes, minGap) {
+  const gap = Number.isFinite(Number(minGap)) ? Number(minGap) : NEBULA_MIN_GAP;
   let maxShift = 0;
   if (volumes.length < 2) return maxShift;
 
@@ -284,7 +306,7 @@ function separateVolumes(volumes) {
       for (let j = i + 1; j < volumes.length; j += 1) {
         const a = volumes[i];
         const b = volumes[j];
-        const want = (a.radius + b.radius) * 0.82 + NEBULA_MIN_GAP;
+        const want = (a.radius + b.radius) * 0.82 + gap;
         let dx = b.center.x - a.center.x;
         let dy = b.center.y - a.center.y;
         let dz = b.center.z - a.center.z;

@@ -205,6 +205,7 @@ window.__ModuleLoader__.load({
         nebulaBack: '黑洞',
         nebulaTitle: '星云空间',
         nebulaGenres: '个流派',
+        shelfTags: '个标签',
         nebulaStationList: '流派电台',
         cardTags: '标签',
         cardOffline: '在线状态未知',
@@ -303,6 +304,7 @@ window.__ModuleLoader__.load({
         nebulaBack: 'Black hole',
         nebulaTitle: 'Nebula space',
         nebulaGenres: 'genres',
+        shelfTags: 'tags',
         nebulaStationList: 'Genre stations',
         cardTags: 'Tags',
         cardOffline: 'Online status unknown',
@@ -1513,9 +1515,11 @@ window.__ModuleLoader__.load({
      * `shared.playback` and nothing else.
      */
     function NebulaStationList(props) {
-      const { genreId, stations, genreLabelOf, genreColorOf, selectedKey, shared, t, onClose, onFocus } = props;
+      const { genreId, title, subtitle, color, stations, genreLabelOf, genreColorOf, selectedKey, shared, t, onClose, onFocus } = props;
       if (!genreId) return null;
       const groups = groupByTags(stations);
+      const heading = title || genreLabelOf(genreId);
+      const dot = color || genreColorOf(genreId);
       let budget = NEBULA_LIST_LIMIT;
       return h(
         'aside',
@@ -1529,8 +1533,9 @@ window.__ModuleLoader__.load({
         h(
           'header',
           { className: 'bhrl-nebula-list__head' },
-          h(CategoryDot, { color: genreColorOf(genreId) }),
-          h('strong', null, genreLabelOf(genreId)),
+          dot ? h(CategoryDot, { color: dot }) : null,
+          h('strong', null, heading),
+          subtitle && subtitle !== heading ? h('span', { className: 'bhrl-nebula-list__sub' }, subtitle) : null,
           h('span', { className: 'bhrl-nebula-list__n' }, `${stations.length} ${t('clusterStations')}`),
           h(
             'button',
@@ -1574,6 +1579,12 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /*
+     * FROZEN (2026-10-30): the left-column station card — this history, its
+     * buttons and its styles — changes only with the user's explicit second
+     * confirmation. See AGENTS.md.
+     */
+
     /**
      * What played before the current station.
      *
@@ -1583,13 +1594,24 @@ window.__ModuleLoader__.load({
      */
     const PLAY_HISTORY_MAX = 20;
     const playHistory = [];
+    // Where in `playHistory` the station on the card sits. Going back moves
+    // this cursor instead of appending, so "previous" walks the log the way a
+    // transport does: A → B → C, back is B, back again is A.
+    let playHistoryCursor = -1;
 
     function notePlayed(stationId) {
       const id = stationId === null || stationId === undefined ? '' : String(stationId);
       if (!id) return;
-      if (playHistory[playHistory.length - 1] === id) return;
+      // Starting the station the cursor already points at is not a new entry:
+      // a resume, or the history write that follows going back, must not fork
+      // the log.
+      if (playHistoryCursor >= 0 && playHistory[playHistoryCursor] === id) return;
+      // A station started from anywhere but "previous" begins a new branch:
+      // the entries ahead of the cursor belong to a future that never happened.
+      if (playHistoryCursor + 1 < playHistory.length) playHistory.length = playHistoryCursor + 1;
       playHistory.push(id);
       if (playHistory.length > PLAY_HISTORY_MAX) playHistory.shift();
+      playHistoryCursor = playHistory.length - 1;
     }
 
     /** Every record that can actually be played — the pool the random next draws from. */
@@ -1601,6 +1623,12 @@ window.__ModuleLoader__.load({
         return [];
       }
     }
+
+    /*
+     * FROZEN (2026-10-30): the left-column station card — this component, its
+     * buttons and its styles — changes only with the user's explicit second
+     * confirmation. See AGENTS.md.
+     */
 
     /**
      * The station, as a card.
@@ -1639,8 +1667,6 @@ window.__ModuleLoader__.load({
             : 0,
         [store],
       );
-      const lastPlayedRef = useRef(null);
-
       // What the station last said it was playing. Kept beside the station it
       // came from: a title only counts while its station is the one on the
       // card, so switching stations can never leave the last song behind.
@@ -1702,12 +1728,13 @@ window.__ModuleLoader__.load({
       }, [reveal]);
 
       // Keep a short log of what the audio element has actually played, so
-      // "previous" means the station heard before this one.
+      // "previous" means the station heard before this one. It follows the
+      // transport rather than one button: a station started from the panel or
+      // the stage must be able to become "previous" as well.
       useEffect(() => {
         const id = playState && playState.stationId ? String(playState.stationId) : null;
         if (!id || !playState || playState.status === 'idle') return;
-        if (lastPlayedRef.current && lastPlayedRef.current !== id) notePlayed(lastPlayedRef.current);
-        lastPlayedRef.current = id;
+        notePlayed(id);
       }, [playState && playState.stationId, playState && playState.status]);
 
       // The card *is* the radio, so it is always on screen: with nothing
@@ -1833,16 +1860,31 @@ window.__ModuleLoader__.load({
         else if (stream) startStation(station);
       };
 
+      /**
+       * Go back one station.
+       *
+       * The cursor walks the log backwards; the log itself is left intact, so
+       * pressing back twice after A → B → C lands on A rather than toggling.
+       * A station that no longer resolves to a playable stream is skipped, and
+       * the cursor only moves when there is really something to play.
+       */
       const playPrevious = () => {
+        if (!playback) return;
         const currentId = playState && playState.stationId ? String(playState.stationId) : '';
-        while (playHistory.length > 0) {
-          const id = playHistory.pop();
+        const from = playHistoryCursor >= 0 ? playHistoryCursor : playHistory.length - 1;
+        for (let index = from - 1; index >= 0; index -= 1) {
+          const id = playHistory[index];
           if (!id || id === currentId) continue;
           const next = store ? store.getStation(id) : null;
-          if (next && streamOf(next)) {
-            startStation(next);
-            return;
-          }
+          if (!next) continue;
+          const nextStream = streamOf(next);
+          if (!nextStream) continue;
+          // Move the cursor before playing: the transport write that follows
+          // must read as "still this entry", not as a new branch.
+          playHistoryCursor = index;
+          if (store && typeof store.select === 'function') store.select(next);
+          playback.play(next.id, nextStream);
+          return;
         }
       };
 
@@ -2280,6 +2322,12 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /*
+     * FROZEN (2026-10-30): the left-column station card — this registration,
+     * the rail form and the card it draws — changes only with the user's
+     * explicit second confirmation. See AGENTS.md.
+     */
+
     /**
      * The station, in the sidebar foot.
      *
@@ -2443,18 +2491,20 @@ window.__ModuleLoader__.load({
           },
           onMode(snapshot) {
             setModeState(snapshot);
-            // The scene owns which space is on screen; an open genre that the
-            // scene no longer shows is closed here rather than left to rot as
-            // an orphan list over a volume field.
-            if (snapshot.mode !== 'nebula' && !snapshot.transitioning) setNebulaGenreId(null);
+            // The scene owns which berth is open; a shelf that the scene has
+            // closed is closed here too rather than left to rot as an orphan
+            // list over the field.
+            if (!snapshot.expanded && !snapshot.transitioning) setNebulaGenreId(null);
           },
           /**
-           * The hole's centre is the way in: holding it enters the genre field
-           * — the thirteen-genre nebula — where each genre volume is one star
-           * cluster. The nebula is a navigation level, not a second app.
+           * The hole's centre is the way in: holding it crosses to the cluster
+           * field. The scene starts that crossing itself, so this is only the
+           * host's chance to drop a stale selection — it must not open a berth,
+           * or the crossing would land on shelves nobody asked for.
            */
           onCenterClick() {
-            if (actionsRef.current.enterNebula) actionsRef.current.enterNebula();
+            selectNone();
+            setNebulaGenreId(null);
           },
           /**
            * A click on a heat spot asks for transport. Routed through the ref so
@@ -2851,22 +2901,27 @@ window.__ModuleLoader__.load({
       const inCluster = modeState.mode === 'cluster' || modeState.state === 'transition-to-cluster';
 
       /**
-       * Escape belongs to the scene, not to the panel.
+       * Escape closes the station card, and only that.
        *
-       * It steps the nebula back to the hole and does nothing in the hole: the
-       * hole has no exit of its own — leaving it is the host's navigation, not
-       * a key this plugin owns.
+       * It used to step the scene back a level, which made the key mean one
+       * thing in the hole and another in the nebula. The way out is the hold —
+       * the way in, reversed — so Escape is free to mean the same thing at
+       * every depth: let go of the card the pointer opened.
        */
       useEffect(() => {
         const onKey = (event) => {
           if (event.key !== 'Escape') return;
-          const snapshot = modeRef.current;
-          const inNebula =
-            snapshot.mode === 'nebula' || snapshot.state === 'transition-to-nebula' || snapshot.transitioning;
-          if (!inNebula) return;
+          if (!hoverCardRef.current) return;
           event.preventDefault();
           event.stopPropagation();
-          if (actionsRef.current.exitNebula) actionsRef.current.exitNebula();
+          if (hoverCardTimer.current) {
+            clearTimeout(hoverCardTimer.current);
+            hoverCardTimer.current = 0;
+          }
+          hoverCardPending.current = null;
+          applyHoverCard(null);
+          const handle = stageRef.current;
+          if (handle && typeof handle.dismissHover === 'function') handle.dismissHover();
         };
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);
@@ -2944,21 +2999,46 @@ window.__ModuleLoader__.load({
       }, [repository, nebulaGenres]);
 
       /**
-       * The rows of the open volume.
+       * The stations of the berth that is open.
+       *
+       * There is no nebula page: opening a berth happens inside the cluster
+       * field, so the only thing the chrome needs to know is which berth. The
+       * scene reports it as `expanded`; this list is that berth's stations,
+       * before any shelf is picked.
+       */
+      const shelfStations = useMemo(() => {
+        const categoryId = modeState && modeState.expanded ? String(modeState.expanded) : null;
+        if (!repository || !categoryId) return [];
+        try {
+          const list = repository.listByGenre(categoryId);
+          return Array.isArray(list) ? list : [];
+        } catch {
+          return [];
+        }
+      }, [repository, modeState]);
+
+      /**
+       * The tag shelves of that berth.
+       *
+       * The scene builds its own shelves from the same stations, so the chips
+       * here name exactly what is drawn — one classification, two surfaces.
+       * The untagged bucket is not offered: a shelf with no name cannot be
+       * asked for by name.
+       */
+      const shelfTags = useMemo(() => groupByTags(shelfStations).filter(([tag]) => Boolean(tag)), [shelfStations]);
+
+      /**
+       * The rows of the open shelf, or of the whole berth when none is open.
        *
        * Read from the repository on every render rather than cached: the same
        * station objects come back, so the store keeps matching them by key and
        * a favourite set elsewhere is visible here on the next frame.
        */
       const nebulaStations = useMemo(() => {
-        if (!repository || !nebulaGenreId) return [];
-        try {
-          const list = repository.listByGenre(nebulaGenreId);
-          return Array.isArray(list) ? list : [];
-        } catch {
-          return [];
-        }
-      }, [repository, nebulaGenreId]);
+        if (!nebulaGenreId) return shelfStations;
+        const key = String(nebulaGenreId);
+        return shelfStations.filter((station) => stationInfoOf(station).tags.includes(key));
+      }, [nebulaGenreId, shelfStations]);
 
       /**
        * The card itself.
@@ -3092,59 +3172,52 @@ window.__ModuleLoader__.load({
            */
 
           /**
-           * The nebula's two surfaces: the volume field and, under it, the
-           * station list of whichever volume is open.
+           * The open berth's surfaces: its tag shelves and, under them, the
+           * stations of whichever shelf is open.
            *
-           * `modeState.mode === 'nebula'` is the scene's own answer to "where
-           * am I", so the chrome follows the scene rather than a second local
-           * idea of it. Opening a genre writes `nebulaGenreId` and asks the
-           * scene to highlight it; closing it writes null and asks the scene to
-           * highlight nothing. Neither touches the store or the transport.
+           * `modeState.expanded` is the scene's own answer to "is a berth
+           * open", so the chrome follows the scene rather than a second local
+           * idea of it. There is no third page — this all belongs to the
+           * cluster field, and the field is still behind it.
            */
           h(
             'div',
-            { className: 'bhrl-nebulabar', 'data-open': modeState.mode === 'nebula' ? 'true' : 'false' },
-            h(
-              'button',
-              { type: 'button', className: 'bhrl-backbtn', onClick: exitNebulaView, title: t('nebulaBack') },
-              h(ArrowLeft, { size: 13 }),
-              h('span', null, t('nebulaBack')),
-            ),
+            { className: 'bhrl-nebulabar', 'data-open': modeState && modeState.expanded ? 'true' : 'false' },
             h(
               'div',
               { className: 'bhrl-clusterbar__title' },
-              h('strong', null, t('nebulaTitle')),
-              h('span', null, `${nebulaGenres.length} ${t('nebulaGenres')}`),
+              h('strong', null, modeState && modeState.expanded ? genreLabelOf(modeState.expanded) : t('nebulaTitle')),
+              h('span', null, `${shelfTags.length} ${t('shelfTags')}`),
             ),
           ),
 
-          modeState.mode === 'nebula'
+          modeState && modeState.expanded
             ? h(
                 'div',
-                { className: 'bhrl-nebulacats', 'aria-label': t('nebulaGenres') },
-                nebulaGenres.map((genre) => {
-                  const count = genreStationCounts.get(genre.id) || 0;
-                  return h(
+                { className: 'bhrl-nebulacats', 'aria-label': t('shelfTags') },
+                shelfTags.map(([tag, members]) =>
+                  h(
                     'button',
                     {
                       type: 'button',
-                      key: genre.id,
+                      key: tag,
                       className: 'bhrl-cat bhrl-genrecat',
-                      'data-open': nebulaGenreId === genre.id ? 'true' : 'false',
-                      disabled: count === 0,
-                      onClick: () => (nebulaGenreId === genre.id ? closeNebulaGenre() : openNebulaGenre(genre.id)),
+                      'data-open': nebulaGenreId === tag ? 'true' : 'false',
+                      onClick: () => (nebulaGenreId === tag ? closeNebulaGenre() : openNebulaGenre(tag)),
                     },
-                    h(CategoryDot, { color: genreCssOf(genre.id) }),
-                    h('span', { className: 'bhrl-cat__name' }, genreLabelOf(genre.id)),
-                    h('span', { className: 'bhrl-cat__n' }, String(count)),
-                  );
-                }),
+                    h('span', { className: 'bhrl-cat__name' }, tag),
+                    h('span', { className: 'bhrl-cat__n' }, String(members.length)),
+                  ),
+                ),
               )
             : null,
 
-          modeState.mode === 'nebula'
+          modeState && modeState.expanded
             ? h(NebulaStationList, {
-                genreId: nebulaGenreId,
+                genreId: nebulaGenreId || modeState.expanded,
+                title: nebulaGenreId || genreLabelOf(modeState.expanded),
+                subtitle: genreLabelOf(modeState.expanded),
+                color: genreCssOf(modeState.expanded),
                 stations: nebulaStations,
                 genreLabelOf,
                 genreColorOf: genreCssOf,
@@ -3460,6 +3533,10 @@ window.__ModuleLoader__.load({
 .bhrl-nebula-list__head { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px; }
 .bhrl-nebula-list__head strong { font-size: 12px; font-weight: 550; letter-spacing: 0.04em; }
 .bhrl-nebula-list__n { font-size: 9.5px; letter-spacing: 0.08em; color: var(--bhrl-ink-faint); }
+.bhrl-nebula-list__sub {
+  font-size: 9.5px; letter-spacing: 0.08em; color: rgba(214, 224, 240, 0.42);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .bhrl-nebula-list__head .bhrl-act-close { margin-left: auto; }
 .bhrl-nebula-rows { list-style: none; margin: 0; padding: 0; overflow-y: auto; scrollbar-width: thin; }
 .bhrl-nebula-list__empty { margin: 6px 2px; font-size: 11px; color: var(--bhrl-ink-faint); }
@@ -3486,6 +3563,9 @@ window.__ModuleLoader__.load({
  *  separate subtree. It therefore declares its own tokens and its own copy
  *  of the surface/act rules the panel uses, at the same visual weight.
  * ------------------------------------------------------------------ */
+/* FROZEN (2026-10-30): every rule from here through the `.bhrl-fcard` block
+ * belongs to the left-column station card and changes only with the user's
+ * explicit second confirmation. See AGENTS.md. */
 .bhrl-foot {
   /* Everything below is derived from the inherited text colour, so the card
    * reads correctly on any theme — light, dark, or a custom palette — without

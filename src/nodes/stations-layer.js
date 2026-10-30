@@ -156,7 +156,7 @@ const VERTEX_SHADER = /* glsl */ `
     // otherwise the core becomes one clipped white disc. The core sprites are
     // deliberately not enlarged — size overlap is what turns a dense centre
     // into a featureless white blob.
-    float clusterSize = aBase * mix(0.58, 0.74, coreWeight) * mix(1.0, 2.4, aVeil) * (1.0 + aTier * 0.5)
+    float clusterSize = aBase * mix(0.95, 1.45, coreWeight) * mix(1.0, 2.4, aVeil) * (1.0 + aTier * 0.5)
       * uPixelRatio * uScale / dist;
     sizePx = mix(sizePx, clusterSize, cluster);
     gl_PointSize = clamp(sizePx, 1.0, ${MAX_POINT_PX.toFixed(1)});

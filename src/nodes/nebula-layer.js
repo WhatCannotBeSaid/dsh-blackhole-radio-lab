@@ -630,6 +630,38 @@ export function createNebulaLayer(layout, options = {}) {
     material.uniforms.uAmount.value = amount;
   }
 
+  /**
+   * Turn one volume's dust up or down.
+   *
+   * The buffer is generated once for the whole field, so a shelf that holds no
+   * stations cannot simply be left out of it: its sprites are already in the
+   * geometry. Scaling that volume's own alpha range to zero is what makes an
+   * empty shelf stop being a shape on the screen.
+   */
+  const alphaAttribute = geometry.getAttribute('aAlpha');
+  const baseAlphas = Float32Array.from(data.alphas);
+  const volumeStart = [];
+  {
+    let cursor = 0;
+    for (let i = 0; i < data.perNebula.length; i += 1) {
+      volumeStart.push(cursor);
+      cursor += data.perNebula[i] || 0;
+    }
+  }
+
+  function setVolumeAmount(index, value) {
+    const start = volumeStart[index];
+    const count = data.perNebula[index] || 0;
+    if (start === undefined || !count) return false;
+    const gain = clamp01(value);
+    const array = alphaAttribute.array;
+    for (let i = 0; i < count; i += 1) array[start + i] = baseAlphas[start + i] * gain;
+    // Uploading the whole attribute is cheap at this size (tens of thousands of
+    // floats) and happens when a shelf opens, not per frame.
+    alphaAttribute.needsUpdate = true;
+    return true;
+  }
+
   function setPixelRatio(value) {
     pixelRatio = Math.max(0.5, Number(value) || 1);
     material.uniforms.uPixelRatio.value = pixelRatio;
@@ -673,6 +705,7 @@ export function createNebulaLayer(layout, options = {}) {
     setHover,
     setSelected,
     setAmount,
+    setVolumeAmount,
     setPixelRatio,
     setViewport,
     update,
