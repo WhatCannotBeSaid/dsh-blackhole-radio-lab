@@ -33,12 +33,15 @@ const TAU = Math.PI * 2;
 /** Radius band actually used; a hair inside the visible disk so nodes sit on it. */
 const R_IN = DISK_INNER + 0.14;
 /**
- * Outer edge of the station field. Deliberately inside the visible disk's outer
- * glow: the stations must sit ON the bright matter band, and the last stretch
- * of the disk should stay plain matter without station texture. A field that
- * reaches the outer rim reads as a separate ring of dots.
+ * Outer edge of the station field. It reaches most of the way out but stops
+ * short of the rim: the last stretch of the disk should stay plain matter
+ * without station texture, or the field reads as a separate ring of dots
+ * floating outside the glow it is supposed to sit in.
+ *
+ * Was `DISK_OUTER - 0.95`; that band left the outer third of the disk bare
+ * and pushed almost every station into the inner rim.
  */
-const R_OUT = DISK_OUTER - 0.95;
+const R_OUT = DISK_OUTER - 0.55;
 /** Featured stations sit in the inner rim, just outside the photon ring. */
 const FEATURED_INNER = DISK_INNER + 0.1;
 const FEATURED_OUTER = DISK_INNER + 0.58;
@@ -53,6 +56,24 @@ const CLOUD_MAX_RADIUS = R_OUT - 0.35;
 export const STATION_RADIUS = Object.freeze({ inner: R_IN, outer: R_OUT });
 
 /**
+ * Area sampling for the band.
+ *
+ * Drawing r uniformly gives every radius the same station count, but an annulus
+ * at twice the radius has twice the area, so the inner ring comes out denser by
+ * exactly that factor. Sampling r^2 instead keeps the count per unit area
+ * constant, which is what the eye reads as an evenly filled disc. The offset by
+ * R_IN^2 is what keeps the innermost band from being starved: the formula is
+ * for area measured from the centre, and the field starts part-way out.
+ */
+const R_IN2 = R_IN * R_IN;
+const R_AREA_SPAN = R_OUT * R_OUT - R_IN2;
+
+function sampleRadius(rng, low, high) {
+  const u = low + (high - low) * rng();
+  return Math.sqrt(R_IN2 + u * R_AREA_SPAN);
+}
+
+/**
  * Seeded density knots: the disk's own large-scale structure.
  *
  * Their angular centres are spread evenly around the ring with a jitter, so
@@ -64,7 +85,9 @@ function buildDiskKnots(seed) {
   for (let k = 0; k < DISK_KNOTS; k += 1) {
     const rng = streamFor(seed, k, 'disk-knot');
     knots.push({
-      radius: R_IN + (R_OUT - R_IN) * (0.04 + 0.9 * Math.pow(rng(), 1.15)),
+      // Area-weighted for the same reason as the diffuse fill: equal density
+      // per unit area, not per unit radius.
+      radius: sampleRadius(rng, 0.03, 0.97),
       angle: (k / DISK_KNOTS) * TAU + centered(rng) * 0.34,
       tangSigma: 0.16 + rng() * 0.3,
       radSigma: 0.07 + rng() * 0.13,
@@ -106,9 +129,14 @@ function sampleDisk(rng, knots) {
       height: centered(rng) * thicknessAt(radius) * 1.45,
     };
   }
-  // Diffuse fill: a mild inner concentration, uniform angle, no category.
-  const t = Math.pow(rng(), 1.35);
-  const radius = R_IN + (R_OUT - R_IN) * t;
+  // Diffuse fill: spread across the whole band, uniform angle, no category.
+  //
+  // Sampled by AREA, not by radius. A uniform draw in r gives every radius the
+  // same number of stations, so the inner ring — which has far less area per
+  // unit radius — ends up many times denser than the outer one. Sampling r^2
+  // makes the count per unit area constant, which is what reads as "spread
+  // over the disc" instead of "piled near the hole".
+  const radius = sampleRadius(rng, 0, 1);
   return {
     radius,
     angle: rng() * TAU,

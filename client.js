@@ -183,6 +183,10 @@ window.__ModuleLoader__.load({
         pauseAction: '暂停',
         favouriteAction: '收藏',
         unfavouriteAction: '取消收藏',
+        hoverPlayHint: '左键播放 · 右键收藏',
+        hoverPauseHint: '左键暂停 · 右键收藏',
+        hoverTouchHint: '点按播放 · 长按查看',
+        hoverLiveBadge: '在播',
         likeAction: '喜欢',
         unlikeAction: '取消喜欢',
         favouriteListTitle: '收藏的电台',
@@ -277,6 +281,10 @@ window.__ModuleLoader__.load({
         pauseAction: 'Pause',
         favouriteAction: 'Favourite',
         unfavouriteAction: 'Remove from favourites',
+        hoverPlayHint: 'Click to play · right-click to favourite',
+        hoverPauseHint: 'Click to pause · right-click to favourite',
+        hoverTouchHint: 'Tap to play · hold for details',
+        hoverLiveBadge: 'LIVE',
         likeAction: 'Like',
         unlikeAction: 'Unlike',
         favouriteListTitle: 'Favourite stations',
@@ -2428,7 +2436,10 @@ window.__ModuleLoader__.load({
         () => ({
           onSelect(station) {
             // The stage names stations by record; the store owns the choice.
-            if (store) store.select(station || null);
+            // Routed through the ref for the same reason as onPlay: the store is
+            // injected after the first render, and a memo that captured the null
+            // it saw then would never hear another click.
+            if (actionsRef.current.selectStation) actionsRef.current.selectStation(station || null);
           },
           onMode(snapshot) {
             setModeState(snapshot);
@@ -2444,6 +2455,19 @@ window.__ModuleLoader__.load({
            */
           onCenterClick() {
             if (actionsRef.current.enterNebula) actionsRef.current.enterNebula();
+          },
+          /**
+           * A click on a heat spot asks for transport. Routed through the ref so
+           * this memo can stay empty: the panel that owns playing changes on
+           * every catalogue update, and a memo that captured it would fire a
+           * stage remount on every one of them.
+           */
+          onPlay(station) {
+            if (actionsRef.current.playFromDisk) actionsRef.current.playFromDisk(station);
+          },
+          /** The pointer settled on a station, or left one (null). */
+          onHover(payload) {
+            if (actionsRef.current.hoverCardIn) actionsRef.current.hoverCardIn(payload);
           },
         }),
         [],
@@ -2528,6 +2552,115 @@ window.__ModuleLoader__.load({
       /** Playback *state*, subscribed, so every transport button is in step. */
       const playState = useShared(shared, 'playback', (snapshot) => snapshot || IDLE_PLAYBACK, [shared, shared && shared.playback]);
 
+      // ---- the disk hover card ---------------------------------------------
+      //
+      // The stage reports which heat spot the pointer is over; this panel owns
+      // the card: when it appears, what it says, and the one action it offers.
+      // It is a DOM element so that a right click on it is a real contextmenu on
+      // a real node — a canvas label layer could never carry that.
+      const [hoverCard, setHoverCard] = useState(null);
+      const hoverCardRef = useRef(null);
+      const hoverCardTimer = useRef(0);
+      const hoverCardPending = useRef(null);
+      const stageElRef = useRef(null);
+
+      const applyHoverCard = (next) => {
+        hoverCardRef.current = next;
+        setHoverCard(next);
+      };
+
+      const hoverCardIn = useCallback((payload) => {
+        if (hoverCardTimer.current) {
+          clearTimeout(hoverCardTimer.current);
+          hoverCardTimer.current = 0;
+        }
+        if (!payload) {
+          // Leaving is slower than arriving, so a pointer crossing a gap between
+          // two heat spots does not make the card blink.
+          hoverCardTimer.current = setTimeout(() => {
+            hoverCardTimer.current = 0;
+            applyHoverCard(null);
+          }, 200);
+          return;
+        }
+        // The stage reports viewport coordinates because that is what it reads
+        // off the pointer event; the card is positioned inside the stage, so it
+        // has to be brought into the stage's own frame here, once.
+        const stageEl = stageElRef.current;
+        const rect = stageEl ? stageEl.getBoundingClientRect() : null;
+        const localX = rect ? payload.x - rect.left : payload.x;
+        const localY = rect ? payload.y - rect.top : payload.y;
+        // The card hangs to the right of the spot until that would push it off
+        // the stage, then flips. Measured here, not in render, so the layout is
+        // read once per hover instead of once per paint.
+        const placed = {
+          ...payload,
+          x: localX,
+          y: localY,
+          flip: Boolean(rect) && rect.width > 0 && localX > rect.width - 280,
+        };
+        hoverCardPending.current = placed;
+        // Already showing one: move it to the new station rather than dropping it
+        // and waiting out the arrival delay a second time.
+        if (hoverCardRef.current) {
+          applyHoverCard(placed);
+          return;
+        }
+        hoverCardTimer.current = setTimeout(() => {
+          hoverCardTimer.current = 0;
+          const current = hoverCardPending.current;
+          if (current) applyHoverCard(current);
+        }, 120);
+      }, []);
+
+      const hoverCardKeep = useCallback(() => {
+        // The pointer crossed from the heat spot into the card itself. That is
+        // still the same hover, so the dismissal must not fire.
+        if (hoverCardTimer.current) {
+          clearTimeout(hoverCardTimer.current);
+          hoverCardTimer.current = 0;
+        }
+      }, []);
+
+      /**
+       * Transport for a click on the disk.
+       *
+       * `playback.toggle` is the one owner of the pause/resume rule: it holds
+       * the current station id and state, so the disk, the card and the side
+       * panel cannot disagree about what a second click on the same spot means.
+       */
+      const playFromDisk = useCallback(
+        (station) => {
+          const pb = shared ? shared.playback : null;
+          if (!pb || !station) return;
+          const stream = streamOf(station);
+          if (!stream) return;
+          pb.toggle(station.id, stream);
+        },
+        [shared],
+      );
+
+      /** The card's one action, on the same rule as the context menu. */
+      const favouriteFromCard = useCallback(() => {
+        const current = hoverCardRef.current;
+        if (!store || !current) return;
+        store.toggleFavorite(current.station);
+      }, [store]);
+
+      // The card reads its favourite state from the store, like every other
+      // surface: a right click on the card and the side panel must agree.
+      const hoverCardFavourite = useShared(
+        shared,
+        'radio',
+        () => (store && hoverCard && hoverCard.station ? store.isFavorite(hoverCard.station) : false),
+        [store, hoverCard && hoverCard.station],
+      );
+
+      // The disk's ring belongs to playback, so the panel must say when the
+      // transport changed for a reason the stage cannot see.
+      const playId = playState && playState.stationId ? String(playState.stationId) : null;
+      const playStatus = playState ? playState.status : 'idle';
+
       /**
        * The selected record, read from the store instead of held locally.
        *
@@ -2566,10 +2699,43 @@ window.__ModuleLoader__.load({
           onSelect: stageCallbacks.onSelect,
           onMode: stageCallbacks.onMode,
           onCenterClick: stageCallbacks.onCenterClick,
+          onPlay: stageCallbacks.onPlay,
+          onHover: stageCallbacks.onHover,
         };
       }, [cfg, repository, anchors, stageCallbacks]);
 
       const stage = useStage(requireAsync, canvasNode, stageSettings, stageRef, attempt);
+
+      // The disk's ring belongs to playback, so the panel tells the stage which
+      // station is live whenever the transport changes for a reason the stage
+      // cannot see: a side-panel click, a track ending, a host command.
+      useEffect(() => {
+        const handle = stageRef.current;
+        if (!handle || typeof handle.setPlaying !== 'function') return;
+        handle.setPlaying(playId, playStatus !== 'playing');
+      }, [playId, playStatus, stage && stage.status]);
+
+      // Favourites recolour the heat spots; they never relayout the disk. Keyed
+      // on the favourites themselves, not the store version: every selection
+      // also bumps that version, and re-walking 24k stations for an unrelated
+      // change costs a full attribute upload.
+      const favouriteSignature = useShared(
+        shared,
+        'radio',
+        () => (store ? store.favoriteKeys().join('|') : ''),
+        [store],
+      );
+      useEffect(() => {
+        const handle = stageRef.current;
+        if (!handle || typeof handle.setFavourites !== 'function' || !store) return;
+        handle.setFavourites((station) => store.isFavorite(station));
+      }, [favouriteSignature, store, stage && stage.status]);
+
+      // A card belongs to the disk. Leaving that space takes it with it, so a
+      // cluster that happens to sit under the pointer never inherits one.
+      useEffect(() => {
+        if (modeState.mode && modeState.mode !== 'black-hole') hoverCardIn(null);
+      }, [modeState.mode, hoverCardIn]);
 
       // ---- mode transitions ----------------------------------------------
 
@@ -2706,7 +2872,21 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey, true);
       }, []);
 
-      actionsRef.current = { enterNebula: enterNebulaView, exitNebula: exitNebulaView, backToHole };
+      actionsRef.current = {
+        enterNebula: enterNebulaView,
+        exitNebula: exitNebulaView,
+        backToHole,
+        playFromDisk,
+        hoverCardIn,
+        /**
+         * The disk click selects before it plays, and the store that records the
+         * choice arrives a render later than the memo that asks for it. Reading
+         * it here keeps the click honest without remounting the stage.
+         */
+        selectStation: (station) => {
+          if (store) store.select(station || null);
+        },
+      };
 
       // ---- nebula station surfaces ---------------------------------------
 
@@ -2780,6 +2960,98 @@ window.__ModuleLoader__.load({
         }
       }, [repository, nebulaGenreId]);
 
+      /**
+       * The card itself.
+       *
+       * It names the station under the pointer and offers exactly one action. It
+       * is deliberately not a second copy of the side panel: no artwork, no
+       * transport row, no navigation — anything more would compete with the disk
+       * it floats over.
+       */
+      const hoverCardStation = hoverCard ? hoverCard.station : null;
+      const hoverCardLive = Boolean(hoverCardStation && playId && String(hoverCardStation.id) === playId);
+      const hoverCardPlaying = hoverCardLive && playStatus === 'playing';
+      const hoverCardCountry =
+        hoverCardStation && hoverCardStation.country
+          ? lang === 'en'
+            ? hoverCardStation.country.en || hoverCardStation.country.zh
+            : hoverCardStation.country.zh || hoverCardStation.country.en
+          : '';
+      const hoverCardLanguage =
+        hoverCardStation && hoverCardStation.language
+          ? lang === 'en'
+            ? hoverCardStation.language.en || hoverCardStation.language.zh
+            : hoverCardStation.language.zh || hoverCardStation.language.en
+          : '';
+
+      const hoverCardNode = hoverCardStation
+        ? h(
+            'div',
+            {
+              className: 'bhrl-hovercard',
+              'data-live': hoverCardLive ? 'true' : 'false',
+              'data-fav': hoverCardFavourite ? 'true' : 'false',
+              'data-touch': hoverCard.touch ? 'true' : 'false',
+              style: {
+                left: `${hoverCard.x}px`,
+                top: `${hoverCard.y}px`,
+                transform: hoverCard.flip
+                  ? 'translate(calc(-100% - 14px), -50%)'
+                  : 'translate(14px, -50%)',
+              },
+              // The card is part of the hover, not a new target: entering it keeps
+              // the hover alive, leaving it is what ends it.
+              onMouseEnter: hoverCardKeep,
+              onMouseLeave: () => hoverCardIn(null),
+              onPointerDown: (event) => event.stopPropagation(),
+              onContextMenu: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                favouriteFromCard();
+              },
+            },
+            h('span', { className: 'bhrl-hovercard__name' }, hoverCardStation.name),
+            hoverCardCountry || hoverCardLanguage
+              ? h(
+                  'span',
+                  { className: 'bhrl-hovercard__meta' },
+                  [hoverCardCountry, hoverCardLanguage].filter(Boolean).join(' · '),
+                )
+              : null,
+            h(
+              'span',
+              { className: 'bhrl-hovercard__genre' },
+              h(CategoryDot, { color: genreCssOf(hoverCardStation.genre || 'other') }),
+              h('span', null, genreLabelOf(hoverCardStation.genre || 'other')),
+            ),
+            hoverCardLive ? h('span', { className: 'bhrl-hovercard__live' }, t('hoverLiveBadge')) : null,
+            h(
+              'span',
+              { className: 'bhrl-hovercard__hint' },
+              hoverCard.touch
+                ? t('hoverTouchHint')
+                : hoverCardPlaying
+                  ? t('hoverPauseHint')
+                  : t('hoverPlayHint'),
+            ),
+            // Touch has no context menu, so the action is a real button too.
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'bhrl-hovercard__fav',
+                'data-active': hoverCardFavourite ? 'true' : 'false',
+                'aria-pressed': hoverCardFavourite ? 'true' : 'false',
+                onClick: (event) => {
+                  event.stopPropagation();
+                  favouriteFromCard();
+                },
+              },
+              hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
+            ),
+          )
+        : null;
+
       return h(
         'div',
         {
@@ -2791,8 +3063,9 @@ window.__ModuleLoader__.load({
         },
         h(
           'section',
-          { className: 'bhrl-stage', 'aria-label': t('stageLabel') },
+          { className: 'bhrl-stage', 'aria-label': t('stageLabel'), ref: stageElRef },
           h('div', { className: 'bhrl-stage__canvas', ref: setCanvasNode, 'data-bhrl-canvas': true }),
+          hoverCardNode,
 
           stage.status === 'loading'
             ? h(
@@ -2942,6 +3215,40 @@ window.__ModuleLoader__.load({
 .bhrl-stage__canvas { position: absolute; inset: 0; }
 .bhrl-stage__canvas canvas { display: block; }
 .bhrl-stage__canvas canvas:focus-visible { outline: 1px solid rgba(255, 190, 140, 0.55); outline-offset: -1px; }
+
+/* The disk hover card: a floating label, not a panel. It sits above the canvas
+   and above the scene chrome, because it is the answer to where the pointer is,
+   and it must never be the thing the pointer is over instead of the station. */
+.bhrl-hovercard {
+  position: absolute; z-index: 6; width: 232px; padding: 9px 11px 10px;
+  display: flex; flex-direction: column; gap: 3px;
+  border-radius: 10px; border: 1px solid rgba(255, 168, 110, 0.24);
+  background: rgba(9, 7, 6, 0.88); color: var(--bhrl-ink);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  font-size: 11.5px; line-height: 1.5; text-align: left;
+  pointer-events: auto; user-select: none;
+  animation: bhrl-card-in 120ms ease-out;
+}
+@keyframes bhrl-card-in { from { opacity: 0; } to { opacity: 1; } }
+.bhrl-hovercard[data-touch='true'] { animation: none; }
+.bhrl-hovercard__name { font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; }
+.bhrl-hovercard__meta { font-size: 10.5px; color: var(--bhrl-ink-dim); }
+.bhrl-hovercard__genre { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--bhrl-ink-dim); }
+.bhrl-hovercard__live {
+  align-self: flex-start; margin-top: 1px; padding: 1px 5px; border-radius: 4px;
+  background: rgba(255, 150, 86, 0.16); color: #ffb884;
+  font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.bhrl-hovercard__hint { margin-top: 5px; font-size: 10px; color: var(--bhrl-ink-faint); }
+.bhrl-hovercard__fav {
+  margin-top: 7px; align-self: flex-start; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--bhrl-line-soft); background: rgba(255, 255, 255, 0.04);
+  color: var(--bhrl-ink); font: inherit; font-size: 10.5px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.bhrl-hovercard__fav:hover { border-color: var(--bhrl-line); background: rgba(255, 255, 255, 0.09); }
+.bhrl-hovercard__fav[data-active='true'] { color: #ffc08a; border-color: rgba(255, 150, 86, 0.42); }
 
 .bhrl-backbtn, .bhrl-iconbtn {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 7px;

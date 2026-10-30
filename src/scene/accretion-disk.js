@@ -38,6 +38,8 @@ import {
   NoBlending,
   PlaneGeometry,
   RawShaderMaterial,
+  RedFormat,
+  RepeatWrapping,
   RGFormat,
   FloatType,
   ClampToEdgeWrapping,
@@ -62,6 +64,18 @@ import { RADIO_GAIN } from './radio-fixtures.js';
 export const RADIO_SLOTS = 4;
 
 const FRAGMENT_SHADER = buildFragmentShader();
+
+/**
+ * Scene world radius -> imaging shader radius.
+ *
+ * The shader measures the disc in gravitational radii: `DISC_INNER` is 3 and
+ * `DISC_OUTER` is 12 (see `IMAGING_CONSTANTS`). The scene keeps its own world
+ * units, where the same annulus runs from `ISCO_RADIUS` to `DISK_OUTER`. Every
+ * value handed to a `uStation*` uniform crosses that boundary, so it is
+ * converted here once. Skipping the conversion maps the field onto the shader's
+ * radius 3..4.6 and leaves the rest of the disc bare.
+ */
+const stationRadiusScale = IMAGING_CONSTANTS.ISCO / ISCO_RADIUS;
 
 /** Exposed for the validation harness and the report; no longer used to draw. */
 export const DISK_IMAGING = Object.freeze({
@@ -113,6 +127,29 @@ export function createAccretionDisk(options = {}) {
     uRadioGeom: { value: Array.from({ length: RADIO_SLOTS }, () => new Vector4(0, 0, 0, 0)) },
     uRadioColor: { value: Array.from({ length: RADIO_SLOTS }, () => new Vector3(0, 0, 0)) },
     uRadioGain: { value: RADIO_GAIN },
+    // The station density field. When `uStationOn` is 0 the sampled raster is
+    // ignored entirely and the disc shades exactly as it did before the field
+    // existed, so a missing or failed upload degrades to the old image.
+    uStationField: { value: null },
+    uStationIds: { value: null },
+    uStationSize: { value: new Vector2(1, 1) },
+    // Radii here are in the SHADER's units, not the scene's. The imaging pass
+    // measures the disc in gravitational radii (ISCO 3, outer 12), while the
+    // scene keeps its own world coordinates (ISCO 1.1547, outer 4.619). Feeding
+    // scene radii to a shader that expects 3..12 confined the whole field to the
+    // inner twelfth of the disc — a ring of stations at the hole's edge instead
+    // of a disc made of stations. `stationRadiusScale` converts on the way in.
+    uStationInner: { value: IMAGING_CONSTANTS.ISCO },
+    uStationOuter: { value: IMAGING_CONSTANTS.DISK_OUTER },
+    // A texel's density is an average over the gaps between stations, so most
+    // of the raster sits far below 1 (the sparse bands average 0.01–0.06). At a
+    // gain of 1 the modulation was invisible; 5 puts ordinary bands near a third
+    // and crowded ones at saturation.
+    uStationGain: { value: 5 },
+    uStationPlaying: { value: -1 },
+    uStationOn: { value: 0 },
+    uStationSpin: { value: 1 },
+    uStationEmission: { value: 0.30 },
   };
 
   const material = new RawShaderMaterial({
@@ -146,6 +183,12 @@ export function createAccretionDisk(options = {}) {
   /** Radio fixtures currently uploaded, and which slots are enabled. */
   let radioCount = 0;
   let radioMask = 0;
+
+  /** The station density raster, and the identity raster beside it. */
+  let stationTexture = null;
+  /** The field object the rasters were built from, so a rewrite can reuse them. */
+  let stationFieldSource = null;
+  let stationIdTexture = null;
 
   // Probe-only scaffolding. The quad writes clip space directly, so any camera
   // produces the same full-screen result and none of its state matters.
@@ -184,6 +227,16 @@ export function createAccretionDisk(options = {}) {
     uniforms.uTanHalfFov.value = Math.tan((camera.fov * Math.PI) / 360);
     uniforms.uTime.value = time;
     uniforms.uOpacity.value = opacity;
+
+    // Ease the field's spin toward its target. The frame delta is not passed in,
+    // so the fixed rate is expressed per call: at 60 fps this settles in about
+    // a fifth of a second, which reads as a deliberate stop rather than a cut.
+    if (stationSpin !== stationSpinTarget) {
+      const step = Math.min(1, 0.22);
+      stationSpin += (stationSpinTarget - stationSpin) * step;
+      if (Math.abs(stationSpinTarget - stationSpin) < 0.002) stationSpin = stationSpinTarget;
+      uniforms.uStationSpin.value = stationSpin;
+    }
 
     if (renderer) {
       renderer.getDrawingBufferSize(drawBuffer);
@@ -263,6 +316,116 @@ export function createAccretionDisk(options = {}) {
     };
   }
 
+  /**
+   * Upload the station density raster.
+   *
+   * `field` is what `buildStationField` returns: an RGBA8 density raster plus
+   * the parallel R32F raster of station indices. Passing null clears the field
+   * and returns the disc to its procedural-only shading.
+   */
+  function setStationField(field) {
+    // The raster is usually the same object with a rewritten state bits channel.
+    // Re-uploading it in place avoids disposing and reallocating eight megabytes
+    // of GPU memory every time a station is favourited.
+    if (field && field === stationFieldSource && stationTexture && stationIdTexture) {
+      stationTexture.needsUpdate = true;
+      return { width: stationTexture.image.width, height: stationTexture.image.height };
+    }
+    stationFieldSource = field || null;
+
+    if (stationTexture) {
+      stationTexture.dispose();
+      stationTexture = null;
+    }
+    if (stationIdTexture) {
+      stationIdTexture.dispose();
+      stationIdTexture = null;
+    }
+    if (!field || !field.pixels || !field.ids) {
+      uniforms.uStationField.value = null;
+      uniforms.uStationIds.value = null;
+      uniforms.uStationOn.value = 0;
+      return null;
+    }
+
+    const { width, height, pixels, ids } = field;
+    const raster = new DataTexture(pixels, width, height, RGBAFormat, UnsignedByteType);
+    raster.minFilter = LinearFilter;
+    raster.magFilter = LinearFilter;
+    // Azimuth wraps around the disc; the radial axis does not.
+    raster.wrapS = RepeatWrapping;
+    raster.wrapT = ClampToEdgeWrapping;
+    raster.generateMipmaps = false;
+    raster.needsUpdate = true;
+
+    const identity = new DataTexture(ids, width, height, RedFormat, FloatType);
+    identity.minFilter = NearestFilter;
+    identity.magFilter = NearestFilter;
+    identity.wrapS = RepeatWrapping;
+    identity.wrapT = ClampToEdgeWrapping;
+    identity.generateMipmaps = false;
+    identity.needsUpdate = true;
+
+    stationTexture = raster;
+    stationIdTexture = identity;
+    uniforms.uStationField.value = raster;
+    uniforms.uStationIds.value = identity;
+    uniforms.uStationSize.value.set(width, height);
+    // The annulus the raster actually covers, which the field builder may have
+    // narrowed to the band the catalogue occupies.
+    const fieldInner = Number(field.inner);
+    const fieldOuter = Number(field.outer);
+    uniforms.uStationInner.value = Number.isFinite(fieldInner)
+      ? fieldInner * stationRadiusScale
+      : IMAGING_CONSTANTS.ISCO;
+    uniforms.uStationOuter.value = Number.isFinite(fieldOuter)
+      ? fieldOuter * stationRadiusScale
+      : IMAGING_CONSTANTS.DISK_OUTER;
+    uniforms.uStationOn.value = 1;
+    return { width, height };
+  }
+
+  /** Which station is playing, for the field's live highlight. */
+  function setStationPlaying(index) {
+    uniforms.uStationPlaying.value = Number.isFinite(index) && index >= 0 ? index : -1;
+  }
+
+  /** How strongly the station field modulates disc emission, 0..2. */
+  function setStationGain(gain) {
+    const next = Number(gain);
+    uniforms.uStationGain.value = Number.isFinite(next) ? Math.min(12, Math.max(0, next)) : 5;
+  }
+
+  /**
+   * Radiance the catalogue adds on its own, 0..1.
+   *
+   * Kept separate from the gain: the gain scales how much the field darkness
+   * the *disc*, this is the light the field emits itself, and the outer disc is
+   * too dim for the former to be visible at all.
+   */
+  function setStationEmission(emission) {
+    const next = Number(emission);
+    uniforms.uStationEmission.value = Number.isFinite(next) ? Math.min(1, Math.max(0, next)) : 0.30;
+  }
+
+  /**
+   * Freeze or resume the field's rotation, 0..1.
+   *
+   * The pointer pins a station so the card can stay open without the record
+   * drifting out from under it; the uniform is eased in `update` rather than
+   * set directly, because a hard cut makes the whole band jump.
+   */
+  let stationSpin = 1;
+  let stationSpinTarget = 1;
+  function setStationSpin(value) {
+    const next = Number(value);
+    stationSpinTarget = Number.isFinite(next) ? Math.min(1, Math.max(0, next)) : 1;
+  }
+  /** False while the eased spin is still arriving, so the stage keeps drawing. */
+  function isStationSpinSettled() {
+    return stationSpin === stationSpinTarget;
+  }
+
   function getInfo() {
     return {
       ...tables.info,
@@ -272,6 +435,9 @@ export function createAccretionDisk(options = {}) {
       probeMode: uniforms.uProbeMode.value,
       radio: getRadio(),
       radioGain: uniforms.uRadioGain.value,
+      stationField: uniforms.uStationOn.value > 0
+        ? { width: uniforms.uStationSize.value.x, height: uniforms.uStationSize.value.y }
+        : null,
     };
   }
 
@@ -456,6 +622,14 @@ export function createAccretionDisk(options = {}) {
     geometry.dispose();
     material.dispose();
     tables.dispose();
+    if (stationTexture) {
+      stationTexture.dispose();
+      stationTexture = null;
+    }
+    if (stationIdTexture) {
+      stationIdTexture.dispose();
+      stationIdTexture = null;
+    }
   }
 
   return {
@@ -467,6 +641,12 @@ export function createAccretionDisk(options = {}) {
     setProbeMode,
     setRadio,
     getRadio,
+    setStationField,
+    setStationPlaying,
+    setStationGain,
+    setStationEmission,
+    setStationSpin,
+    isStationSpinSettled,
     getInfo,
     probe,
     dispose,

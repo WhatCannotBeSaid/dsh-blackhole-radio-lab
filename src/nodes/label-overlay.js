@@ -245,6 +245,9 @@ export function createLabelOverlay(container) {
     const lod = Math.min(1, Math.max(0, frame.lod || 0));
     const stations = frame.stations || [];
     const selectedIndex = typeof frame.selectedIndex === 'number' ? frame.selectedIndex : -1;
+    // The station under the pointer keeps its name off the canvas: the panel's
+    // card already names it, and two copies of one label read as a glitch.
+    const suppressedIndex = typeof frame.suppressedIndex === 'number' ? frame.suppressedIndex : -1;
     const visibilityAt = typeof frame.visibilityAt === 'function' ? frame.visibilityAt : () => 1;
     // Live animated positions: during a cloud morph a label must travel with its
     // node instead of pointing at the authored slot it left behind.
@@ -255,7 +258,7 @@ export function createLabelOverlay(container) {
     const cameraPos = camera.position;
 
     // 1. the selected station always gets a name, plus a hairline to its node
-    if (selectedIndex >= 0 && stations[selectedIndex]) {
+    if (selectedIndex >= 0 && stations[selectedIndex] && selectedIndex !== suppressedIndex) {
       const station = stations[selectedIndex];
       const p = project(positionAt(selectedIndex) || station.position, camera);
       if (p) {
@@ -306,7 +309,7 @@ export function createLabelOverlay(container) {
     if (lod < 0.58) {
       const candidates = [];
       for (let i = 0; i < stations.length && candidates.length < 60; i += 1) {
-        if (i === selectedIndex) continue;
+        if (i === selectedIndex || i === suppressedIndex) continue;
         const station = stations[i];
         if (!station || !station.isFeatured) continue;
         const position = positionAt(i);
@@ -320,7 +323,7 @@ export function createLabelOverlay(container) {
       // this is what makes the close range read as individual stations.
       for (let i = 0; i < stations.length; i += 1) {
         if (candidates.length >= MAX_STATION_LABELS + 8) break;
-        if (i === selectedIndex) continue;
+        if (i === selectedIndex || i === suppressedIndex) continue;
         const station = stations[i];
         if (!station || station.isFeatured) continue;
         const position = positionAt(i);

@@ -50,6 +50,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { createAccretionDisk } from './scene/accretion-disk.js';
+import { buildStationField, rewriteStationBits } from './scene/station-field.js';
 import { createCameraRig } from './scene/camera-rig.js';
 import { createStarfield } from './scene/starfield.js';
 import { createWormhole } from './scene/wormhole.js';
@@ -84,6 +85,8 @@ const CLICK_SLOP = 6;
 const HOVER_INTERVAL_MS = 90;
 /** Holding the hole's centre this long enters the genre field. */
 const LONG_PRESS_MS = 560;
+/** Touch has no hover, so holding a station this long asks for its card. */
+const TOUCH_CARD_MS = 480;
 /** A press held longer than this is not a click, whatever else it did. */
 const PRESS_CLICK_MS = 800;
 /** Progress units per second; the full transition takes ~1.05 s. */
@@ -125,7 +128,7 @@ const WORM_CALM_RATE = 1 / 0.2;
 const HOLE_STATION_DIM = 0.55;
 
 /** The black-hole camera framing, restored on exit. */
-const HOLE_MIN_RADIUS = 6.0;
+const HOLE_MIN_RADIUS = 3.6;
 /**
  * Absolute far stop for the hole view, before the viewport fit.
  *
@@ -154,6 +157,13 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  * @param options.onSelect - fired with (station|null) for selections.
  * @param options.onMode - fired with the machine snapshot on every change.
  * @param options.onCenterClick - the hole centre was held (enter the genre field).
+ * @param options.onPlay - fired with (station, index) when a click asked for
+ *   transport on the disk. The stage does not play anything itself: it reports
+ *   the intent and the panel decides what "play" means there.
+ * @param options.onHover - fired with ({index, station, x, y, touch}) when the
+ *   pointer settles on a station, and with null when it leaves one. The panel
+ *   owns the timing of any card; the stage only reports what is under the
+ *   pointer. `touch` says the report came from a long press, not a hover.
  * @returns a handle with selection, mode, camera and measurement helpers.
  */
 export function mountStage(container, options) {
@@ -248,6 +258,27 @@ export function mountStage(container, options) {
       // still there, but it reads as matter in the disk, not as the subject.
       layer.setDim(HOLE_STATION_DIM);
     }
+
+    // Bake the catalogue into the disc's density field. This is what makes the
+    // stations the disc rather than a layer over it: every station contributes
+    // mass at its own radius and azimuth, and the imaging shader samples that
+    // distribution wherever a pixel's ray crosses the disc plane.
+    let isFavouriteStation = null;
+    let builtStationField = null;
+    const rebuildStationField = () => {
+      if (!stations.length) return false;
+      // Favouriting touches two bits of one channel. Rewriting those bits costs
+      // a few milliseconds; rebuilding the whole raster would drop a frame.
+      if (builtStationField) {
+        rewriteStationBits(builtStationField, stations, { isFavourite: isFavouriteStation });
+        return Boolean(disk.setStationField(builtStationField));
+      }
+      const field = buildStationField(stations, { isFavourite: isFavouriteStation });
+      if (!field || !field.count) return false;
+      builtStationField = field;
+      return Boolean(disk.setStationField(field));
+    };
+    rebuildStationField();
 
     const nebula =
       nebulaLayout.genres.length > 0
@@ -692,9 +723,10 @@ export function mountStage(container, options) {
       starfield.setDim(Math.max(rise, nebulaRise * 0.55, cover * 0.55));
       if (layer) {
         layer.setClusterAmount(rise);
-        // Per frame this is overwritten in the loop with the live progress; the
-        // value here only has to be right for the call itself.
-        layer.setHoleOnly(1 - machine.progress);
+        // The station sprites belong to the cluster space. In the black hole
+        // view the stations are the disc itself, carried by the density field
+        // the imaging shader samples, so no sprite may be drawn on top of it.
+        layer.setHoleOnly(clamp01(1 - machine.progress));
       }
       if (nebula) {
         nebula.object.visible = nebulaRise > 0.001;
@@ -817,6 +849,7 @@ export function mountStage(container, options) {
             clouds: revealedClouds(),
             cloudStrength: info.strength,
             cluster: machine.progress,
+            suppressedIndex: hoverIndex,
           });
         } else {
           labels.clear();
@@ -898,15 +931,30 @@ export function mountStage(container, options) {
         layer.setLod(currentLod);
         const hole = silhouette();
         layer.setHole(hole.x, hole.y, hole.r * 1.02);
-        // Phase 5 accepts the hole on its own. In black-hole mode the catalogue
-        // sprites and the selection marker are hidden so nothing competes with
-        // the imaging result; cluster mode restores them untouched. Positions,
-        // ids, search and layout all keep running underneath.
-        layer.setHoleOnly(1 - machine.progress);
+        // The station sprites exist only in the cluster space. The black hole
+        // disc carries the stations in its own density field, so piling sprites
+        // on top of it would be a second layer competing with the disc.
+        layer.setHoleOnly(clamp01(1 - machine.progress));
         if (layer.update(dt, camera, viewport.h)) dirty = true;
+        // The grid lives on the render loop, not on the pointer: a camera move
+        // has to refresh it even when the pointer never moves again.
+        refreshPickable();
       }
 
       disk.update(elapsed, camera);
+
+      // Adaptive density: the pickable budget drops before the frame rate does,
+      // which keeps the disk clickable instead of turning laggy. One decision
+      // per second, with a dead band between 45 and 55 fps so a merely noisy
+      // frame cannot make the target set oscillate.
+      if (now - pickLevelAt > 1000 && frameDeltas.length >= 30) {
+        pickLevelAt = now;
+        let total = 0;
+        for (let n = 0; n < frameDeltas.length; n += 1) total += frameDeltas[n];
+        const fps = 1000 / (total / frameDeltas.length);
+        if (fps < 45 && pickableLevel < PICKABLE_BUDGETS.length - 1) pickableLevel += 1;
+        else if (fps > 55 && pickableLevel > 0) pickableLevel -= 1;
+      }
 
       if (nebula && (nebula.amount > 0.001 || nebula.isEmphasised)) {
         nebula.update(dt, { paused: reducedMotion });
@@ -917,6 +965,14 @@ export function mountStage(container, options) {
       // frame, and on its way to the end it may hand the transition to the
       // nebula, which then integrates from the following frame on.
       advanceWormhole(now);
+
+      // The eased field spin only moves when frames are drawn, and hovering is
+      // the one interaction that happens with a still camera: keep drawing
+      // until it has settled, or resuming after the card closes would only be
+      // visible the next time something else asked for a frame.
+      if (disk && typeof disk.isStationSpinSettled === 'function' && !disk.isStationSpinSettled()) {
+        dirty = true;
+      }
 
       if (dirty) draw();
       const morphing = layer ? layer.isAnimating : false;
@@ -961,6 +1017,180 @@ export function mountStage(container, options) {
       };
     };
 
+    /**
+     * The same projection, into a caller-owned slot.
+     *
+     * `projectStation` allocates its result; the pickable rebuild runs over the
+     * whole catalogue, so using it there would allocate tens of thousands of
+     * short-lived objects every refresh.
+     */
+    const projectScreenInto = (index, out) => {
+      const station = stations[index];
+      if (!station) return false;
+      if (layer) layer.positionInto(index, projected);
+      else if (station.position) projected.set(station.position.x, station.position.y, station.position.z);
+      else return false;
+      projected.project(camera);
+      if (projected.z < -1 || projected.z > 1) return false;
+      out.x = (projected.x * 0.5 + 0.5) * viewport.w;
+      out.y = (0.5 - projected.y * 0.5) * viewport.h;
+      return true;
+    };
+
+    // ---- The pickable set ---------------------------------------------------
+    //
+    // The disk holds tens of thousands of stations and a pointer can only tell
+    // neighbours apart when their centres are far enough apart on screen. The
+    // disk is therefore picked against a small subset: on screen, the biggest
+    // in their 18 px cell, capped by a budget that falls when frames get slow.
+    // Everything outside it still glows; it is simply not a target.
+    //
+    // The cluster is NOT narrowed. There every star is a deliberate target and
+    // a click selects rather than plays, so that path keeps the full scan.
+    const PICKABLE_CELL = 18;
+    const PICKABLE_BUDGETS = [320, 240, 180, 120];
+    const PICKABLE_REFRESH_MS = 100;
+    const PICKABLE_MIN_RADIUS = 10;
+    let pickableLevel = 0;
+    let pickableAt = -Infinity;
+    let pickableKey = NaN;
+    let pickableBuilt = false;
+    let pickLevelAt = 0;
+    const pickableIndexes = [];
+    const pickableCells = new Set();
+    const pickableTiers = [[], [], [], []];
+    const screenX = new Float32Array(stations.length);
+    const screenY = new Float32Array(stations.length);
+    const screenPoint = { x: 0, y: 0 };
+
+    const rebuildPickable = () => {
+      pickableIndexes.length = 0;
+      pickableCells.clear();
+      for (let tier = 0; tier < 4; tier += 1) pickableTiers[tier].length = 0;
+      pickableAt = performance.now();
+      pickableBuilt = true;
+      if (!layer) return;
+      const budget = PICKABLE_BUDGETS[pickableLevel];
+      const w = viewport.w;
+      const h = viewport.h;
+      // One projection pass, bucketed by on-screen size, so that in the greedy
+      // pass below the biggest target wins its cell rather than whichever one
+      // happened to be visited first.
+      for (let index = 0; index < stations.length; index += 1) {
+        if (!layer.interactive(index)) continue;
+        if (!projectScreenInto(index, screenPoint)) continue;
+        const x = screenPoint.x;
+        const y = screenPoint.y;
+        if (x < -24 || y < -24 || x > w + 24 || y > h + 24) continue;
+        screenX[index] = x;
+        screenY[index] = y;
+        const size = layer.screenSizeAt(index, camera, h);
+        const tier = size >= 24 ? 3 : size >= 16 ? 2 : size >= 10 ? 1 : 0;
+        pickableTiers[tier].push(index);
+      }
+      for (let tier = 3; tier >= 0; tier -= 1) {
+        const bucket = pickableTiers[tier];
+        for (let n = 0; n < bucket.length; n += 1) {
+          const index = bucket[n];
+          const cx = Math.floor(screenX[index] / PICKABLE_CELL);
+          const cy = Math.floor(screenY[index] / PICKABLE_CELL);
+          const key = cy * 8192 + cx;
+          if (pickableCells.has(key)) continue;
+          pickableCells.add(key);
+          pickableIndexes.push(index);
+          if (pickableIndexes.length >= budget) return;
+        }
+      }
+    };
+
+    /**
+     * A cheap pose signature. Screen coordinates only stay valid while the
+     * camera, the viewport and the anchors do, so a change in any of them has
+     * to rebuild even inside the throttle window. A category reveal moves the
+     * whole layer without touching the camera, which is why the layer hands out
+     * its own layout generation.
+     */
+    const cameraSignature = () => {
+      const p = camera.position;
+      const q = camera.quaternion;
+      const layout = layer && typeof layer.layoutVersion === 'function' ? layer.layoutVersion() : 0;
+      return p.x * 3 + p.y * 7 + p.z * 11
+        + q.x * 13 + q.y * 17 + q.z * 19 + q.w * 23
+        + viewport.w * 29 + viewport.h * 31 + layout * 37;
+    };
+
+    const refreshPickable = () => {
+      // The disc no longer projects stations: it reads the answer back from the
+      // raster that drew the pixel. So the projected grid is only ever built
+      // for a space that still picks by projection.
+      if (machine.progress < 0.5) return;
+      if (machine.nebula > 0.5) return;
+      const now = performance.now();
+      if (now - pickableAt < PICKABLE_REFRESH_MS) return;
+      const signature = cameraSignature();
+      // An empty set is a valid result, so the flag -- not the length -- says
+      // whether there is anything to keep.
+      if (pickableBuilt && signature === pickableKey) return;
+      pickableKey = signature;
+      rebuildPickable();
+    };
+
+    const pickCluster = (px, py) => {
+      let best = -1;
+      let bestDistance = Infinity;
+      for (let index = 0; index < stations.length; index += 1) {
+        if (!layer.interactive(index)) continue;
+        const p = projectStation(index);
+        if (!p) continue;
+        const size = layer.screenSizeAt(index, camera, viewport.h);
+        // In the cluster a click has to resolve one star among a dense core, so
+        // the radius grows a little; it still cannot reach a neighbour's centre.
+        const threshold = Math.max(9, Math.min(34, size * 1.15 + 8));
+        const distance = Math.hypot(p.x - px, p.y - py);
+        if (distance <= threshold && distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+      return best;
+    };
+
+    /**
+     * Resolve a screen point to the station whose matter lit that pixel.
+     *
+     * The imaging pass already knows the answer: it samples the station raster
+     * at every crossing, so the same render that drew the pixel carries the
+     * index of the station that produced it. Reading that back makes the hit
+     * test and the picture the same object — they cannot drift apart, and no
+     * projected geometry has to agree with the lensing.
+     *
+     * @returns {number} station index, or -1 when the pixel is background
+     */
+    const stationIndexAt = (px, py) => {
+      if (drawingBuffer.x <= 0 || drawingBuffer.y <= 0) return -1;
+      const frameX = (px / Math.max(1, viewport.w)) * drawingBuffer.x;
+      // The frame's origin is bottom-left; the pointer's is top-left.
+      const frameY = ((viewport.h - py) / Math.max(1, viewport.h)) * drawingBuffer.y;
+      const x = Math.min(drawingBuffer.x - 1, Math.max(0, Math.floor(frameX)));
+      const y = Math.min(drawingBuffer.y - 1, Math.max(0, Math.floor(frameY)));
+      const read = disk.probe({
+        mode: 65,
+        region: { x, y, width: 1, height: 1 },
+        unpack: 'fast',
+      });
+      if (!read) return -1;
+      const value = Math.round(Number(read.data[0]));
+      if (!Number.isFinite(value) || value < 0) return -1;
+      return value < stations.length ? value : -1;
+    };
+
+    /**
+     * Resolve a screen point to a station.
+     *
+     * The disc answers from its own density raster. A cluster keeps the full
+     * scan, because there every star is meant to be reachable and nothing is
+     * occluded by a disc.
+     */
     const pick = (clientX, clientY) => {
       if (!layer) return -1;
       const rect = canvas.getBoundingClientRect();
@@ -973,24 +1203,95 @@ export function mountStage(container, options) {
         const hole = silhouette();
         if (Math.hypot(px - hole.x, py - hole.y) < hole.r * 0.98) return -1;
       }
+      if (machine.progress > 0.5) return pickCluster(px, py);
+      return stationIndexAt(px, py);
+    };
 
-      let best = -1;
-      let bestDistance = Infinity;
-      for (let index = 0; index < stations.length; index += 1) {
-        if (!layer.interactive(index)) continue;
-        const p = projectStation(index);
-        if (!p) continue;
-        const size = layer.screenSizeAt(index, camera, viewport.h);
-        // In the cluster a click has to resolve one star among a dense core, so
-        // the radius grows a little; it still cannot reach a neighbour's centre.
-        const threshold = Math.max(machine.progress > 0.5 ? 9 : 10, Math.min(34, size * 1.15 + 8));
-        const distance = Math.hypot(p.x - px, p.y - py);
-        if (distance <= threshold && distance < bestDistance) {
-          bestDistance = distance;
-          best = index;
+    // ---- The hovered station ------------------------------------------------
+    //
+    // The stage reports what the pointer is over; it does not decide when a card
+    // appears. The panel owns that timing, so the same report can drive a card,
+    // a label suppression and a touch long-press without a second source.
+    let hoverIndex = -1;
+    // A card opened by a touch press has no pointer hovering it: the finger is
+    // gone before the card is read. Such a card survives a pointerleave and is
+    // dismissed by the next press instead.
+    let hoverSticky = false;
+    /**
+     * Resuming is delayed past the card's own 200 ms dismissal, so moving the
+     * pointer from a station onto its card does not start the disc turning
+     * again underneath the reader while the card is still on screen.
+     */
+    let spinTimer = 0;
+
+    const emitHover = (index, clientX, clientY) => {
+      if (index === hoverIndex) return;
+      hoverIndex = index;
+      const station = index >= 0 ? stations[index] : null;
+      hoverSticky = Boolean(station) && lastPointerType === 'touch';
+      // Pin the field while a station is under the pointer. The card is a
+      // separate surface, so without this the record turns away from the cursor
+      // and the same spot stops being a station before the pointer gets there.
+      if (disk && typeof disk.setStationSpin === 'function') {
+        if (spinTimer) {
+          clearTimeout(spinTimer);
+          spinTimer = 0;
         }
+        if (station) {
+          disk.setStationSpin(0);
+        } else {
+          spinTimer = setTimeout(() => {
+            spinTimer = 0;
+            disk.setStationSpin(1);
+            dirty = true;
+          }, 240);
+        }
+        // The spin is eased across frames, so ask for them explicitly: under
+        // reduced motion nothing else would schedule a redraw while the pointer
+        // sits still on a station.
+        dirty = true;
+        requestFrame();
       }
-      return best;
+      if (typeof settings.onHover !== 'function') return;
+      try {
+        settings.onHover(
+          station
+            ? {
+                index,
+                station,
+                x: clientX,
+                y: clientY,
+                touch: lastPointerType === 'touch',
+              }
+            : null,
+        );
+      } catch {
+        /* a panel bug must not break the render loop */
+      }
+    };
+
+    const clearHover = () => {
+      if (hoverIndex < 0) return;
+      emitHover(-1, 0, 0);
+    };
+
+    /**
+     * Play (or pause) the station under a click.
+     *
+     * Selecting alongside keeps the side panel and the marker honest, but the
+     * camera is never moved: a click on the disk is transport, not navigation.
+     */
+    const playStation = (index) => {
+      const station = stations[index];
+      if (!station) return;
+      clearRadioSelection();
+      select(index, { focus: false, notify: true });
+      if (typeof settings.onPlay !== 'function') return;
+      try {
+        settings.onPlay(station, index);
+      } catch {
+        /* ignore */
+      }
     };
 
     // ---- Fixture imaging probes --------------------------------------------
@@ -2138,6 +2439,11 @@ export function mountStage(container, options) {
     let lastPointerType = 'mouse';
     let lastHover = 0;
     let longTimer = 0;
+    // The touch long-press slot. Separate from `longTimer`, which belongs to the
+    // hole's centre: one gesture can only be doing one of those things.
+    let cardTimer = 0;
+    let cardIndex = -1;
+    let cardShown = false;
 
     const centerAt = (clientX, clientY) => {
       const region = centerRegion();
@@ -2195,6 +2501,9 @@ export function mountStage(container, options) {
 
     const onPointerDown = (event) => {
       lastPointerType = event.pointerType || 'mouse';
+      // A fresh press ends the previous card's sticky life; the release decides
+      // whether that card goes away.
+      hoverSticky = false;
       if (event.button === 2) {
         // Right is the way back out, and only by holding it. A short right click
         // does nothing at all: the exit used to be instant, and an instant exit
@@ -2248,9 +2557,34 @@ export function mountStage(container, options) {
           centerClick();
         }, LONG_PRESS_MS);
       }
+      // Touch has no hover, so holding a station is how its card is asked for.
+      // Anything shorter is a play, and the two gestures never compete for one
+      // tap: once the card timer fires, the release is already consumed.
+      if (lastPointerType === 'touch') {
+        const index = pick(event.clientX, event.clientY);
+        if (index >= 0) {
+          cardIndex = index;
+          cardShown = false;
+          cardTimer = setTimeout(() => {
+            cardTimer = 0;
+            if (!press.active || press.moved) return;
+            cardShown = true;
+            press.consumed = true;
+            emitHover(index, press.x, press.y);
+            // emitHover returns early when the same station is already the
+            // hovered one, so the flag is set here rather than inside it: a
+            // second long press on the same station must reopen its card.
+            hoverSticky = true;
+          }, TOUCH_CARD_MS);
+        }
+      }
     };
 
     const onPointerMove = (event) => {
+      // Hover can start long after the last press, so the pointer type here is
+      // the live one: a mouse moving over a touch-opened card must be treated as
+      // a mouse, not as the finger that opened it.
+      lastPointerType = event.pointerType || 'mouse';
       // A hold is a hold only while the pointer stays put. Eight pixels of slop
       // covers the hand shaking on a trackpad; past that it is a drag and the
       // camera is what the gesture belongs to.
@@ -2266,6 +2600,13 @@ export function mountStage(container, options) {
           if (longTimer) {
             clearTimeout(longTimer);
             longTimer = 0;
+          }
+          // A drag is a camera gesture: it must not leave a card timer armed or
+          // the card would appear under a thumb that has already moved on.
+          if (cardTimer) {
+            clearTimeout(cardTimer);
+            cardTimer = 0;
+            cardIndex = -1;
           }
         }
         return;
@@ -2291,8 +2632,24 @@ export function mountStage(container, options) {
       // A pointer over a fixture image gets a pointer cursor from the same id
       // read a press would use.
       const overRadio = radio ? pickRadio(event.clientX, event.clientY) : null;
-      canvas.style.cursor =
-        overRadio || hit.inside ? 'pointer' : pick(event.clientX, event.clientY) >= 0 ? 'pointer' : 'grab';
+      if (overRadio || hit.inside) {
+        // The fixture image and the hole centre are controls of their own; they
+        // are not stations, so nothing on the disk stays hovered through them.
+        canvas.style.cursor = 'pointer';
+        clearHover();
+        return;
+      }
+      const index = pick(event.clientX, event.clientY);
+      canvas.style.cursor = index >= 0 ? 'pointer' : 'grab';
+      // Hover belongs to the disk alone. The cluster and the nebula are browsing
+      // spaces whose click selects, so a card there would promise playback that
+      // the click does not deliver.
+      if (machine.progress > 0.5 || machine.nebula > 0.5) {
+        clearHover();
+        return;
+      }
+      if (index >= 0) emitHover(index, event.clientX, event.clientY);
+      else clearHover();
     };
 
     const onPointerUp = (event) => {
@@ -2311,6 +2668,10 @@ export function mountStage(container, options) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
+      if (cardTimer) {
+        clearTimeout(cardTimer);
+        cardTimer = 0;
+      }
       // Releasing before the ring fills is the cancel. This must come before the
       // consumed check: the press was consumed at pointer down precisely so the
       // release would not select anything, and the hold still has to end.
@@ -2319,6 +2680,8 @@ export function mountStage(container, options) {
       }
       if (press.consumed) {
         press.consumed = false;
+        cardIndex = -1;
+        cardShown = false;
         return;
       }
       const moved = Math.hypot(event.clientX - press.downX, event.clientY - press.downY);
@@ -2344,13 +2707,24 @@ export function mountStage(container, options) {
         // as it was instead of selecting or clearing anything.
         return;
       }
-      const index = pick(event.clientX, event.clientY);
+      // A touch press already resolved its target at pointer down; re-picking on
+      // release would let a millimetre of thumb drift change the station.
+      const index = cardIndex >= 0 ? cardIndex : pick(event.clientX, event.clientY);
+      cardIndex = -1;
+      cardShown = false;
       if (index >= 0) {
-        clearRadioSelection();
-        select(index, { focus: true, notify: true });
+        if (machine.progress > 0.5) {
+          // The cluster is a browse space: a click there still means "show me
+          // this one", and it still brings the camera to it.
+          clearRadioSelection();
+          select(index, { focus: true, notify: true });
+        } else {
+          playStation(index);
+        }
       } else {
         clearSelection(true);
         clearRadioSelection();
+        clearHover();
       }
     };
 
@@ -2361,6 +2735,14 @@ export function mountStage(container, options) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
+      // A cancelled touch never resolved its target: without this the next
+      // unrelated click would play the station the cancelled press sat on.
+      if (cardTimer) {
+        clearTimeout(cardTimer);
+        cardTimer = 0;
+      }
+      cardIndex = -1;
+      cardShown = false;
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
     };
 
@@ -2368,6 +2750,11 @@ export function mountStage(container, options) {
       canvas.style.cursor = 'grab';
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
       if (machine.mode === 'nebula' && hoverNebulaIndex >= 0) setNebulaHover(-1);
+      // Leaving the canvas is the end of a hover: the card must not outlive the
+      // pointer that asked for it. A card a touch press opened is the exception:
+      // the finger has to leave the canvas before it can reach a button on it,
+      // so that card is dismissed by the next tap instead.
+      if (!hoverSticky) clearHover();
     };
 
     const onKeyDown = (event) => {
@@ -2566,6 +2953,34 @@ export function mountStage(container, options) {
 
       clearSelection,
       locateStation: focusOrSelect,
+
+      /**
+       * Panel → stage: which station is live, and whether it is paused.
+       *
+       * The disk draws one ring and that ring belongs to playback, so the panel
+       * has to say when transport changed for a reason the stage cannot see — a
+       * click in the side panel, the media element ending, a host command.
+       */
+      setPlaying(stationId, paused) {
+        const found = stationId == null ? undefined : idToIndex.get(String(stationId));
+        const index = found === undefined ? -1 : found;
+        if (layer) layer.setPlayingIndex(index, paused === true);
+        // The disc reads the same index, so the playing knot breathes in place.
+        disk.setStationPlaying(index);
+        dirty = true;
+        requestFrame();
+      },
+
+      /** Panel → stage: the favourite set changed. Recolour only; no relayout. */
+      setFavourites(isFavourite) {
+        if (layer) layer.setFavourites(isFavourite);
+        // The disc's raster carries the favourite bit, so the field has to be
+        // rebaked. This runs on a click, never on a frame.
+        isFavouriteStation = typeof isFavourite === 'function' ? isFavourite : null;
+        rebuildStationField();
+        dirty = true;
+        requestFrame();
+      },
 
       /**
        * Panel → stage notification of the overlay state. The stage owns the

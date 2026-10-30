@@ -457,13 +457,103 @@ float discDensity(float r, float phi, float retardedTime, float footprint, float
 }
 
 /**
+ * Station density raster.
+ *
+ * x is azimuth (0..2pi, wrapping) and y is radius (DISC_INNER..DISC_OUTER),
+ * both normalised. The raster is built on the CPU from the catalogue, so the
+ * disc's surface brightness is literally the station distribution: where many
+ * stations sit the gas radiates harder, and where none do the disc falls back
+ * to its procedural turbulence.
+ */
+uniform sampler2D uStationField;
+uniform sampler2D uStationIds;
+uniform vec2 uStationSize;
+uniform float uStationInner;
+uniform float uStationOuter;
+uniform float uStationGain;
+uniform float uStationPlaying;
+uniform int uStationOn;
+/**
+ * Radiance the catalogue emits on its own, independent of the disc's own
+ * surface brightness. Without it the outer field is invisible: the disc falls
+ * off as r^-3, so density modulation has nothing to modulate out there.
+ */
+uniform float uStationEmission;
+/**
+ * 1 = the field turns with the gas, 0 = it is frozen in place.
+ *
+ * A pointer landing on a station pins it: while the card is open the pattern
+ * must stay under the cursor, or the record moves away and cannot be hit again.
+ * Freezing the age also freezes the two-generation blend, which would otherwise
+ * keep swapping the pattern inside a static frame.
+ */
+uniform float uStationSpin;
+
+/** Normalised raster coordinates for one advected disc point. */
+vec2 stationUvAt(float r, float phi, float age) {
+  // The raster lives in the disc's co-rotating frame: rewind the azimuth by
+  // the local Keplerian advance, so a station stays with its parcel of gas
+  // instead of sliding through the pattern.
+  float spun = phi - keplerOmega(r) * age;
+  float u = fract(spun * 0.15915494309189535); // 1 / (2 pi)
+  float v = (r - uStationInner) / max(1e-6, uStationOuter - uStationInner);
+  return vec2(u, v);
+}
+
+vec4 stationSampleAt(float r, float phi, float age) {
+  vec2 uv = stationUvAt(r, phi, age);
+  if (uv.y < -0.02 || uv.y > 1.02) return vec4(0.0);
+  return texture(uStationField, vec2(uv.x, clamp(uv.y, 0.0, 1.0)));
+}
+
+/**
+ * (density, concentration, state bits, coverage) at one disc point.
+ *
+ * The advection is clamped exactly the way the procedural detail clamps it:
+ * two generations half a life apart, blended by sin^2 weights. Without that the
+ * phase would grow without bound, lose float precision after a few minutes, and
+ * the raster would visibly crawl and snap.
+ */
+vec4 stationFieldAt(float r, float phi, float retardedTime) {
+  if (uStationOn == 0) return vec4(0.0);
+  float halfLife = DETAIL_LIFE * 0.5;
+  float age = retardedTime - floor(retardedTime / halfLife) * halfLife;
+  age *= uStationSpin;
+  float w0 = sin(PI * age / DETAIL_LIFE);
+  w0 *= w0;
+  vec4 young = stationSampleAt(r, phi, age);
+  vec4 old = stationSampleAt(r, phi, age + halfLife);
+  // State bits are categorical: they come from whichever generation dominates,
+  // never from a blend of the two.
+  float bits = w0 >= 0.5 ? young.b : old.b;
+  return vec4(mix(old.r, young.r, w0), mix(old.g, young.g, w0), bits, max(young.a, old.a));
+}
+
+/** Station index owning a disc point, or -1. Nearest texel, no filtering. */
+float stationIndexAt(float r, float phi, float retardedTime) {
+  if (uStationOn == 0) return -1.0;
+  float halfLife = DETAIL_LIFE * 0.5;
+  float age = retardedTime - floor(retardedTime / halfLife) * halfLife;
+  age *= uStationSpin;
+  float w0 = sin(PI * age / DETAIL_LIFE);
+  w0 *= w0;
+  vec2 uv = stationUvAt(r, phi, w0 >= 0.5 ? age : age + halfLife);
+  if (uv.y < 0.0 || uv.y > 1.0) return -1.0;
+  ivec2 size = ivec2(uStationSize);
+  ivec2 texel = clamp(ivec2(floor(uv * uStationSize)), ivec2(0), size - 1);
+  return texelFetch(uStationIds, texel, 0).r;
+}
+
+/**
  * The disc's contribution at one crossing.
  *
  * @param discPos      point on the disc, Rs units, shader frame (z ~ 0)
  * @param retardedTime camera time minus the light travel time
  * @param doppler      g = nu_obs / nu_emit
+ * @param stationId    out: index of the station under this point, or -1
  */
-vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint, float detailTrust) {
+vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint, float detailTrust, out float stationId) {
+  stationId = -1.0;
   float r = length(discPos);
   if (r < DISC_INNER || r > DISC_OUTER) return vec4(0.0);
 
@@ -473,21 +563,59 @@ vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint,
   float phi = atan(discPos.y, discPos.x);
   float density = discDensity(r, phi, retardedTime, footprint, detailTrust);
 
+  // Stations ARE the disc. Their density drives the emission above the
+  // procedural floor, so the visible structure of the disc is the catalogue's
+  // own distribution rather than a texture laid over it.
+  vec4 field = stationFieldAt(r, phi, retardedTime);
+  stationId = stationIndexAt(r, phi, retardedTime);
+  float load = clamp(field.r * uStationGain, 0.0, 1.0);
+  float concentration = field.g;
   // Radial tapers: a zero-torque inner edge whose emission dies away, and a soft
   // outer rim so the disc does not end on a hard circle.
   float innerRamp = smoothstep(DISC_INNER, DISC_INNER * 1.05, r);
   float outerFade = 1.0 - smoothstep(DISC_OUTER * 0.70, DISC_OUTER, r);
+  // The catalogue reaches further out than the procedural disc's own taper, so
+  // the stations get a later rim of their own. Held to the disc's taper they
+  // vanish at 0.7 of the radius, which reads as a ring of stations sitting in
+  // the middle of an empty disc instead of a disc made of stations.
+  float stationFade = 1.0 - smoothstep(uStationOuter * 0.92, uStationOuter * 1.10, r);
+
+  // Faded out with the field's own rim: past it the procedural disc is all that
+  // is left, so the modulation has to hand the texels back at full brightness
+  // instead of leaving a step where the field stops.
+  density *= mix(1.0, 0.38 + 1.22 * load, stationFade);
+  // A lone station in an empty stretch reads as a distinct knot instead of
+  // dissolving into the ambient glow; a crowded band stays smooth.
+  density *= mix(1.0, 1.0 + 0.55 * (1.0 - concentration), load * stationFade);
 
   float temperature = profile * T_PEAK;
-  float temperatureObserved = temperature * max(doppler, 1e-3);
+  // Crowded texels average over many sources and run a little cooler; isolated
+  // knots run hotter, and a favourite is warmer still (state bit 1).
+  float warmer = (1.0 - concentration) * load * 0.16;
+  float favourite = mod(floor(field.b * 255.0 + 0.5), 2.0);
+  float temperatureObserved = temperature * (1.0 + warmer + 0.07 * favourite) * max(doppler, 1e-3);
 
   vec3 chroma = blackBodyChromaticity(temperatureObserved);
   float g = max(doppler, 1e-3);
   // Bolometric g^4 times Stefan-Boltzmann T^4, both linear light.
   float brightness = g * g * g * g * profile * profile * profile * profile;
 
-  float alpha = clamp(innerRamp * outerFade * density, 0.0, 1.0);
+  // The playing station breathes: a slow, shallow pulse at its own position.
+  // The retarded time drives it, so the pulse travels with the light.
+  if (stationId >= 0.0 && abs(stationId - uStationPlaying) < 0.5) {
+    brightness *= 1.30 + 0.18 * sin(retardedTime * 2.4);
+  }
+
+  float alpha = clamp(innerRamp * max(outerFade, stationFade) * density, 0.0, 1.0);
   vec3 rgb = chroma * brightness * DISC_GAIN;
+  // The field carries its own light.
+  //
+  // The disc's surface brightness falls as r^-3, so a field that only modulates
+  // alpha is unreadable past the inner third: the density, the id and the click
+  // are all still there, but there is no light left to see them against. This
+  // term is the catalogue glowing in its own right, held to the same radial
+  // tapers so it still ends where the disc ends.
+  rgb += chroma * load * load * uStationEmission * innerRamp * stationFade;
   return vec4(rgb * alpha, alpha);
 }
 `;
@@ -1193,6 +1321,8 @@ void main() {
   vec4 disc1 = vec4(0.0);
   float brightness0 = 0.0;
   float brightness1 = 0.0;
+  float stationId0 = -1.0;
+  float stationId1 = -1.0;
 
   // Radio fixture accumulators. They are filled at the same two crossings the
   // disc uses, so a patch can never appear where the ray did not actually go.
@@ -1241,7 +1371,7 @@ void main() {
                   - u1 * sqrt(u1 / (2.0 - 3.0 * u1)) * dot(eZ, eZPrime);
     doppler1 = gReceiver / gSource;
     vec3 i1 = crossDir1 / u1;
-    disc1 = shadeDisc(i1.xy, uTime - t1, doppler1, footprint1, detailTrust1);
+    disc1 = shadeDisc(i1.xy, uTime - t1, doppler1, footprint1, detailTrust1, stationId1);
     brightness1 = dot(disc1.rgb, vec3(0.2126, 0.7152, 0.0722));
     radioAtCrossing(i1.xy, u1, a1, fwp1, dxp1, dyp1, sqrtF, 2, (u0 >= 0.0 ? 2 : 1),
                     radioPrem1, radioCover1, radioLum1, radioId1, radioSlot1,
@@ -1252,7 +1382,7 @@ void main() {
                   - u0 * sqrt(u0 / (2.0 - 3.0 * u0)) * dot(eZ, eZPrime);
     doppler0 = gReceiver / gSource;
     vec3 i0 = crossDir0 / u0;
-    disc0 = shadeDisc(i0.xy, uTime - t0, doppler0, footprint0, detailTrust0);
+    disc0 = shadeDisc(i0.xy, uTime - t0, doppler0, footprint0, detailTrust0, stationId0);
     brightness0 = dot(disc0.rgb, vec3(0.2126, 0.7152, 0.0722));
     radioAtCrossing(i0.xy, u0, a0, fwp0, dxp0, dyp0, sqrtF, 1, 1,
                     radioPrem0, radioCover0, radioLum0, radioId0, radioSlot0,
@@ -1400,6 +1530,19 @@ void main() {
   }
 
   if (uProbeMode > 0) {
+    // A click asks one question: which station does this pixel belong to? The
+    // brighter crossing wins, because that is the one that dominates the image.
+    // A crossing that does not exist must not contribute to the comparison.
+    bool has0 = u0 >= 0.0;
+    bool has1 = u1 >= 0.0;
+    float pickedStation = -1.0;
+    if (has0 && has1) {
+      pickedStation = brightness0 * a0 >= brightness1 * a1 ? stationId0 : stationId1;
+    } else if (has0) {
+      pickedStation = stationId0;
+    } else if (has1) {
+      pickedStation = stationId1;
+    }
     float value = 0.0;
     if (uProbeMode == 1) value = deflection;
     else if (uProbeMode == 2) value = eSquare;
@@ -1422,6 +1565,9 @@ void main() {
     else if (uProbeMode == 19) value = disc0.a;
     else if (uProbeMode == 20) value = disc1.a;
     else if (uProbeMode == 21) value = backgroundColor.r;
+    // 65: the station index under this pixel, or -1. Appended after the whole
+    // existing range so no fixture probe number moves.
+    else if (uProbeMode == 65) value = pickedStation;
     else if (uProbeMode == 22) value = disc0.rgb.r;
     else if (uProbeMode == 23) value = disc1.rgb.r;
     else if (uProbeMode == 24) value = footprint0;

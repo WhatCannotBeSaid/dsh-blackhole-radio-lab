@@ -61,6 +61,9 @@ const VERTEX_SHADER = /* glsl */ `
   attribute float aCluster;
   attribute float aMember;
   attribute float aVeil;
+  // Favourite is a property of the station, not of the scene: it survives every
+  // transition and drives colour temperature only (never size or a second ring).
+  attribute float aFav;
 
   uniform float uPixelRatio;
   uniform float uScale;
@@ -77,6 +80,9 @@ const VERTEX_SHADER = /* glsl */ `
   // 1 while the black-hole panel owns the frame: phase 5 hides the station
   // sprites so only the traced image is visible. The data model is untouched.
   uniform float uHoleOnly;
+  // The station whose stream is live, or -1. One knob, read by the vertex pass
+  // only: the heat source is the full brightening, the ring lives on the marker.
+  uniform float uPlaying;
 
   varying vec3 vColor;
   varying float vAlpha;
@@ -85,6 +91,10 @@ const VERTEX_SHADER = /* glsl */ `
   varying float vSeed;
   varying float vAngle;
   varying float vCluster;
+  // Heat 0 (outer, dark red) .. 1 (inner, white hot); favourite is a whisper of
+  // both colour and stability, never an extra shape.
+  varying float vHeat;
+  varying float vFav;
 
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -93,6 +103,22 @@ const VERTEX_SHADER = /* glsl */ `
     float r = max(length(position.xz), 0.001);
     float ang = atan(position.z, position.x);
     float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);
+
+    // The disk's own physics, reused for the heat spots. Temperature falls
+    // steeply outward, so the inner rim is white hot and the outer bands are a
+    // dull red — the same gradient the traced image shows underneath.
+    float heat = pow(1.0 - t, 2.4);
+
+    // Relativistic beaming. The matter orbits with the disk, so the side moving
+    // toward the camera is brighter and the receding side is darker and redder.
+    // This is a lighting term, not a second colour: it multiplies the heat.
+    vec3 radial = vec3(position.x, 0.0, position.z) / r;
+    vec3 tangent = vec3(-radial.z, 0.0, radial.x);
+    vec3 toEye = normalize(cameraPosition - position);
+    float beta = 0.62 * clamp(uInner / r, 0.0, 1.0);
+    float doppler = clamp(1.0 + beta * dot(tangent, toEye), 0.25, 1.85);
+    vHeat = heat;
+    vFav = aFav;
 
     // The accretion disk's shear field, reused verbatim. Sampling it here means
     // a node is invisible where the disk is dark and bright where it is hot.
@@ -114,7 +140,6 @@ const VERTEX_SHADER = /* glsl */ `
     // the whole thing one shader and one draw call.
     float matter = mix(mix(0.40, 1.0, dens), 1.0, cluster);
 
-    float inner = 1.0 - smoothstep(0.0, 0.62, t);
     float near = 1.0 - smoothstep(5.5, 13.5, dist);
     float lodSize = mix(1.22, 0.60, clamp(uLod, 0.0, 1.0));
     float cloudGrow = 1.0 + 1.6 * aMatch * uFilterActive;
@@ -178,25 +203,46 @@ const VERTEX_SHADER = /* glsl */ `
     // Cluster sprites are small, so their per-pixel coverage is low; a modest
     // gain keeps single stars readable without turning the core into a disc.
     float clusterGain = mix(1.0, 2.1, cluster);
+    // Heat spots are lit by the disk they sit in: the doppler gain and the
+    // radial heat both scale the energy, so a spot on the approaching side
+    // outshines one on the receding side instead of every node glowing alike.
+    float diskLight = mix(doppler * (0.70 + 0.64 * heat), 1.0, cluster);
+    float live = step(abs(aStation - uPlaying), 0.5);
+    float liveGain = mix(1.0, 1.42, live);
     vAlpha = aPresence * matter * dim * boost * lodAlpha * diskFade
-      * sizeFade * energy * memberFade * clusterGain
+      * sizeFade * energy * memberFade * clusterGain * diskLight * liveGain
       * (1.0 - uHoleOnly);
 
-    vec3 warmOuter = vec3(1.0, 0.58, 0.24);
-    vec3 warmInner = vec3(1.0, 0.94, 0.84);
-    vec3 base = mix(warmOuter, warmInner, inner);
-    // Category colour is a whisper by default and only slightly louder while
-    // its cloud is revealed: the disk stays one material.
-    vec3 tinted = mix(base, aTint, mix(0.05, 0.55, uFilterActive * aMatch));
+    // Black-body ladder: dull red at the outer edge, amber in the body, white
+    // hot at the rim. A featured station does NOT grow — it shifts one step up
+    // the temperature ladder, which is what tells it apart without breaking the
+    // one-material read of the field.
+    vec3 coldRed = vec3(1.0, 0.26, 0.06);
+    vec3 ember = vec3(1.0, 0.55, 0.20);
+    vec3 amber = vec3(1.0, 0.84, 0.60);
+    vec3 whiteHot = vec3(1.0, 0.97, 0.92);
+    vec3 hot = mix(coldRed, ember, smoothstep(0.0, 0.45, heat));
+    hot = mix(hot, amber, smoothstep(0.30, 0.75, heat));
+    hot = mix(hot, whiteHot, smoothstep(0.60, 1.0, heat));
+    hot = mix(hot, whiteHot, aTier * 0.30);
+    // A favourite runs warmer and steadier. The shift is small on purpose: a
+    // shelf of favourites must still read as one band.
+    hot = mix(hot, vec3(1.0, 0.78, 0.44), aFav * 0.42);
+    // The receding side is redshifted; the approaching side keeps its heat
+    // colour and takes the extra energy from diskLight above.
+    hot = mix(hot, coldRed, clamp((1.0 - doppler) * 0.55, 0.0, 0.45));
+    // Category colour stays a whisper, exactly as before: it speaks only while
+    // its cloud is revealed.
+    vec3 tinted = mix(hot, aTint, mix(0.04, 0.52, uFilterActive * aMatch));
     // Cluster: a nearly white star, a shade warm at the core and cool at the
     // rim. Category colour stays a whisper: a rainbow cluster would turn the
     // density gradient into a legend.
     vec3 clusterColor = mix(vec3(1.0, 0.72, 0.50), vec3(0.86, 0.92, 1.0), clusterRad);
     vec3 mixedColor = mix(tinted, mix(clusterColor, aTint, 0.08), cluster);
-    vColor = mix(mixedColor, vec3(1.0, 0.97, 0.92), selected * 0.5);
+    vColor = mix(mixedColor, vec3(1.0, 0.97, 0.92), selected * 0.45);
 
-    vec3 radial = vec3(position.x, 0.0, position.z) / r;
-    vec3 tangent = vec3(-radial.z, 0.0, radial.x);
+    // The sprite's projected tangent, taken a hair off-centre so the elongation
+    // follows the disk's shear direction.
     vec4 mvT = modelViewMatrix * vec4(position + tangent * 0.05, 1.0);
     vec4 clipT = projectionMatrix * mvT;
     vec2 s0 = gl_Position.xy / max(gl_Position.w, 1e-4);
@@ -220,6 +266,8 @@ const FRAGMENT_SHADER = /* glsl */ `
   varying float vSeed;
   varying float vAngle;
   varying float vCluster;
+  varying float vHeat;
+  varying float vFav;
 
   void main() {
     if (vAlpha <= 0.004) discard;
@@ -357,6 +405,9 @@ export function createStationsLayer(stations, options) {
   const clusterMix = new Float32Array(particleTotal);
   const memberFlags = new Float32Array(particleTotal);
   const veilFlags = new Float32Array(particleTotal);
+  // Favourite, per sprite: one buffer so a store change is one upload, not a
+  // material rebuild.
+  const favouriteFlags = new Float32Array(particleTotal);
   /** Local offset per particle: tangent, radial, vertical. */
   const offsets = new Float32Array(particleTotal * 3);
 
@@ -438,6 +489,7 @@ export function createStationsLayer(stations, options) {
   geometry.setAttribute('aCluster', new BufferAttribute(clusterMix, 1));
   geometry.setAttribute('aMember', new BufferAttribute(memberFlags, 1));
   geometry.setAttribute('aVeil', new BufferAttribute(veilFlags, 1));
+  geometry.setAttribute('aFav', new BufferAttribute(favouriteFlags, 1));
   // The field is animated within a known band; culling per frame would only
   // cost a bounding-sphere recompute for one draw call.
   geometry.boundingSphere = null;
@@ -462,6 +514,7 @@ export function createStationsLayer(stations, options) {
     // Phase 5: 1 hides every catalogue sprite. The data behind them is untouched;
     // this is a visibility gate, not a data change.
     uHoleOnly: { value: 0 },
+    uPlaying: { value: -1 },
   };
 
   const material = new ShaderMaterial({
@@ -501,12 +554,24 @@ export function createStationsLayer(stations, options) {
   marker.frustumCulled = false;
 
   let selectedIndex = -1;
+  // Playback is a second, independent fact: a station can be selected without
+  // being live (a search jump) and live without being selected (a click on the
+  // disk selects it as well, but the panel may clear the selection later).
+  let playingIndex = -1;
+  let playingPaused = false;
+  let lastMarkerOwner = -1;
+  let lastMarkerLive = null;
+  let markerClock = 0;
   let filterSet = null;
   let animating = false;
   let lod = 0;
   let time = 0;
   let disposed = false;
   let dirtyBuffers = false;
+  // Bumped by flush(): anchors move on a filter reveal and during a transition
+  // without the camera moving at all, so a screen-space cache cannot key on the
+  // camera alone.
+  let layoutVersion = 0;
   let clusterAmount = 0;
   const markerColor = [1.0, 0.72, 0.46];
   let holeOnly = 0;
@@ -625,11 +690,65 @@ export function createStationsLayer(stations, options) {
     geometry.attributes.aMember.needsUpdate = true;
     writeStationAnchors(0, count);
     dirtyBuffers = false;
-    if (selectedIndex >= 0) placeMarker(selectedIndex);
+    layoutVersion += 1;
+    syncMarker();
   }
 
   function placeMarker(index) {
     marker.position.set(worldX[index], worldY[index], worldZ[index]);
+  }
+
+  /**
+   * Which station the ring belongs to.
+   *
+   * In the disk the ring is the transport indicator and nothing else: it marks
+   * the station that is actually playing, so "selected but silent" never draws
+   * one. A cluster is a browse space where a click means "show me this one", so
+   * there the ring keeps following the selection, exactly as it always has.
+   */
+  function markerOwner() {
+    if (clusterAmount > 0.55) return selectedIndex;
+    return playingIndex;
+  }
+
+  /** Reposition, recolour and show/hide the one marker mesh. */
+  function syncMarker() {
+    const owner = markerOwner();
+    if (owner < 0 || owner >= count || !stations[owner] || holeOnly > 0.5) {
+      marker.visible = false;
+      markerMaterial.uniforms.uAlpha.value = 0;
+      lastMarkerOwner = -1;
+      lastMarkerLive = null;
+      return;
+    }
+    // The owner already answers "whose ring is this" per space, so live is just
+    // "is that owner also playing". Asking clusterAmount here as well made the
+    // ring disagree with update(), which breathes for the owner unconditionally.
+    const live = owner === playingIndex;
+    // Colour is recomputed only when the ring changes hands: `setClusterAmount`
+    // runs every transition frame and must stay allocation free.
+    if (owner !== lastMarkerOwner || live !== lastMarkerLive) {
+      if (live) {
+        // White hot: the live station is the hottest thing on the disk.
+        markerColor[0] = 1.0;
+        markerColor[1] = 0.88;
+        markerColor[2] = 0.70;
+      } else {
+        // A selected-but-silent station keeps the category tint it always had.
+        const rgb = categoryRgb(stations[owner].categories[0]);
+        markerColor[0] = 1.0;
+        markerColor[1] = Math.min(1, 0.58 + rgb[1] * 0.35);
+        markerColor[2] = Math.min(1, 0.38 + rgb[2] * 0.4);
+      }
+      markerMaterial.uniforms.uColor.value = markerColor;
+      lastMarkerOwner = owner;
+      lastMarkerLive = live;
+    }
+    placeMarker(owner);
+    marker.visible = true;
+    // The breathing alpha is written every frame by update(); this is only the
+    // still value a paused or non-live ring settles at.
+    markerMaterial.uniforms.uAlpha.value = live && !playingPaused ? 0.86 : live ? 0.34 : 0.9;
   }
 
   /** Recompute the cloud centroids a label layer can name. */
@@ -709,20 +828,41 @@ export function createStationsLayer(stations, options) {
     setSelectedIndex(index) {
       selectedIndex = typeof index === 'number' ? index : -1;
       uniforms.uSelected.value = selectedIndex;
-      if (selectedIndex < 0 || !stations[selectedIndex]) {
-        marker.visible = false;
-        markerMaterial.uniforms.uAlpha.value = 0;
-        return;
+      syncMarker();
+    },
+
+    /**
+     * Bind the transport to the field.
+     *
+     * The ring is the one ring on the disk, and it belongs to playback: a
+     * station that is selected but silent draws no ring at all. Pausing keeps
+     * the ring and stops the breathing, so "the one I paused" stays findable.
+     */
+    setPlayingIndex(index, paused) {
+      const next = Number.isInteger(index) && index >= 0 && index < count ? index : -1;
+      const nextPaused = paused === true;
+      if (next === playingIndex && nextPaused === playingPaused) return;
+      playingIndex = next;
+      playingPaused = nextPaused;
+      uniforms.uPlaying.value = playingIndex;
+      syncMarker();
+    },
+
+    /**
+     * Recolour the favourites. `isFavourite` is asked once per station and the
+     * answer is widened to that station's sprites: one upload per change, no
+     * material rebuild, no second geometry.
+     */
+    setFavourites(isFavourite) {
+      if (typeof isFavourite !== 'function') return;
+      let p = 0;
+      for (let i = 0; i < count; i += 1) {
+        const flag = isFavourite(stations[i]) ? 1 : 0;
+        const n = perStation[i];
+        for (let k = 0; k < n; k += 1) favouriteFlags[p + k] = flag;
+        p += n;
       }
-      const station = stations[selectedIndex];
-      const rgb = categoryRgb(station.categories[0]);
-      markerColor[0] = 1.0;
-      markerColor[1] = Math.min(1, 0.58 + rgb[1] * 0.35);
-      markerColor[2] = Math.min(1, 0.38 + rgb[2] * 0.4);
-      markerMaterial.uniforms.uColor.value = markerColor;
-      placeMarker(selectedIndex);
-      marker.visible = holeOnly < 0.5;
-      markerMaterial.uniforms.uAlpha.value = 0.92;
+      geometry.attributes.aFav.needsUpdate = true;
     },
 
     /**
@@ -803,14 +943,16 @@ export function createStationsLayer(stations, options) {
     setHoleOnly(value) {
       holeOnly = clamp01(Number(value) || 0);
       uniforms.uHoleOnly.value = holeOnly;
-      if (holeOnly > 0.5) marker.visible = false;
-      else if (selectedIndex >= 0) marker.visible = true;
+      syncMarker();
     },
 
     /** Global transition amount 0..1: hole mask, non-member fade, star shape. */
     setClusterAmount(value) {
       clusterAmount = clamp01(value);
       uniforms.uClusterAmount.value = clusterAmount;
+      // The ring changes owner between the disk and a cluster, so a transition
+      // has to hand it over. syncMarker() is allocation free on a no-op.
+      syncMarker();
     },
 
     get clusterProgress() {
@@ -906,7 +1048,7 @@ export function createStationsLayer(stations, options) {
         if (dirtyBuffers) flush();
       }
 
-      if (selectedIndex >= 0 && marker.visible) {
+      if (marker.visible) {
         const dist = Math.max(0.1, camera.position.distanceTo(marker.position));
         const fov = ((camera.fov || 42) * Math.PI) / 180;
         const worldPerPx = (2 * dist * Math.tan(fov / 2)) / Math.max(1, heightCss);
@@ -915,6 +1057,14 @@ export function createStationsLayer(stations, options) {
         const sizePx = 34 - 8 * clusterAmount;
         marker.scale.set(worldPerPx * sizePx, worldPerPx * sizePx, 1);
         marker.quaternion.copy(camera.quaternion);
+        // The live ring breathes. Pausing freezes it at a dim, steady alpha so
+        // "the one I paused" is still findable without pulsing at the eye.
+        if (playingIndex >= 0 && markerOwner() === playingIndex) {
+          markerClock += dt;
+          markerMaterial.uniforms.uAlpha.value = playingPaused
+            ? 0.34
+            : 0.50 + 0.34 * (0.5 + 0.5 * Math.sin(markerClock * 2.4));
+        }
       }
       return animating;
     },
@@ -954,6 +1104,11 @@ export function createStationsLayer(stations, options) {
     positionAt(index) {
       if (index < 0 || index >= count) return null;
       return { x: worldX[index], y: worldY[index], z: worldZ[index] };
+    },
+
+    /** Bumped whenever the anchors move; a screen-space cache keys on it. */
+    layoutVersion() {
+      return layoutVersion;
     },
 
     /** Point diameter in CSS pixels, mirroring the vertex shader. */
