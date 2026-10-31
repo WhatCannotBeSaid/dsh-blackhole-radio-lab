@@ -419,16 +419,16 @@ export function mountStage(container, options) {
     const berthCameras = new Map();
 
     /**
-     * Hover a berth: the members of that group brighten and the rest recede.
-     * This rides on the station layer's category filter rather than a second
-     * highlight path, so hover and search narrowing cannot fight over the same
-     * attribute.
+     * Hover a berth: the berth is named and counts its stations, and that is the
+     * whole of it. It used to ride on the station layer's category filter to
+     * brighten the members and recede every other berth, which read as the rest of
+     * the field switching off for nothing more than a pointer crossing it — and it
+     * fought with search narrowing over the same attribute.
      */
     const setGroupHover = (id) => {
       const next = typeof id === 'string' && id ? id : null;
       if (next === hoverGroupId) return;
       hoverGroupId = next;
-      if (layer) layer.setFilter(next ? [next] : []);
       canvas.style.cursor = next ? 'pointer' : 'grab';
       dirty = true;
       requestFrame();
