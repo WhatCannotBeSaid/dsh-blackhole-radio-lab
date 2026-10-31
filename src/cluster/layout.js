@@ -22,6 +22,7 @@
  */
 
 import { hash32 } from '../radio/random.js';
+import { formOf, sampleForm } from './forms.js';
 
 /** Radial power: >1 concentrates matter toward a knot's centre. */
 const RADIAL_POWER = 1.9;
@@ -48,6 +49,31 @@ const SHELL_CLEARANCE = 0.82;
 const SHELL_GAP = 0.36;
 /** Angular spacing of a Fibonacci shell of this many slots, in radians. */
 const SHELL_SPACING = 0.94;
+
+/**
+ * The genre a station is filed under in the sky.
+ *
+ * This is the only rule the constellation page uses, and it reads the genre the
+ * classification layer already stamped rather than re-deriving one: `genre`
+ * first, then the `genres` list, then the legacy metadata fields. A record with
+ * nothing at all belongs to Other, which is a real body in the sky and not a
+ * dumping ground.
+ */
+export function primaryGenreOf(station) {
+  if (!station) return 'other';
+  if (typeof station.genre === 'string' && station.genre) return station.genre;
+  const genres = station.genres;
+  if (Array.isArray(genres) && genres.length) {
+    if (typeof genres[0] === 'string') return genres[0];
+    if (genres[0] && typeof genres[0].id === 'string') return genres[0].id;
+  }
+  const meta = station.metadata;
+  if (meta) {
+    if (typeof meta.genreId === 'string' && meta.genreId) return meta.genreId;
+    if (typeof meta.genre === 'string' && meta.genre) return meta.genre;
+  }
+  return 'other';
+}
 
 /**
  * The category a station is filed under in the cluster field.
@@ -86,12 +112,15 @@ export function buildClusterLayout(stations, options) {
   const slotOf = new Map();
   vocabulary.forEach((id, index) => slotOf.set(id, index));
 
-  // Pass 1: partition the catalogue by primary category.
+  // Pass 1: partition the catalogue by its primary key. `byGenre` switches the
+  // key from the legacy eight categories to the thirteen genres, which is what
+  // the constellation page groups by.
+  const ownerOf = opts.byGenre ? primaryGenreOf : primaryCategoryOf;
   const memberIndex = new Map();
   const buckets = vocabulary.map(() => []);
   const members = new Uint8Array(count);
   for (let i = 0; i < count; i += 1) {
-    const id = primaryCategoryOf(list[i]);
+    const id = ownerOf(list[i]);
     const slot = slotOf.get(id);
     if (slot === undefined) continue;
     memberIndex.set(i, slot);
@@ -112,6 +141,9 @@ export function buildClusterLayout(stations, options) {
       direction,
       center: { x: 0, y: 0, z: 0 },
       stations: membersOf,
+      // A real object's shape for the constellation page; null keeps the old
+      // generic knot for every other consumer of this layout.
+      form: opts.forms ? formOf(id) : null,
     };
   });
 
@@ -181,42 +213,65 @@ export function scatterStations(count, groups, seed) {
       axes.push({ x: Math.cos(a) * s, y, z: Math.sin(a) * s });
     }
 
+    const form = group.form || null;
     for (const index of stationsOf) {
-      const u = (hash32(seed, group.id, 'r', index) % 1000000) / 1000000;
-      const v = (hash32(seed, group.id, 'v', index) % 1000000) / 1000000;
-      const w = (hash32(seed, group.id, 'w', index) % 1000000) / 1000000;
+      let ox = 0;
+      let oy = 0;
+      let oz = 0;
+      let weight = 0;
 
-      const r = radius * Math.pow(Math.max(u, 0.0001), RADIAL_POWER);
-      const phi = Math.acos(2 * v - 1);
-      const theta = w * Math.PI * 2;
-      let dx = Math.sin(phi) * Math.cos(theta);
-      let dy = Math.cos(phi);
-      let dz = Math.sin(phi) * Math.sin(theta);
+      if (form) {
+        // A real object's own shape. The form already carries its own flattening
+        // (a disk is thin, an elliptical is squashed) and its own brightness
+        // ladder, so the generic knot's clamp below is not applied twice.
+        const rand = (k) => (hash32(seed, group.id, 'form', index, k) % 1000000) / 1000000;
+        const point = sampleForm(form, rand);
+        ox = point.x * radius;
+        oy = point.y * radius;
+        oz = point.z * radius;
+        weight = Math.max(0.3, Math.min(1.45, Number(point.w) || 0.7));
+      } else {
+        const u = (hash32(seed, group.id, 'r', index) % 1000000) / 1000000;
+        const v = (hash32(seed, group.id, 'v', index) % 1000000) / 1000000;
+        const w = (hash32(seed, group.id, 'w', index) % 1000000) / 1000000;
 
-      if ((hash32(seed, group.id, 'clump', index) % 1000) / 1000 < CLUMP_SHARE) {
-        const axis = axes[hash32(seed, group.id, 'which', index) % FILAMENTS];
-        dx += axis.x * CLUMP_PULL;
-        dy += axis.y * CLUMP_PULL;
-        dz += axis.z * CLUMP_PULL;
-        const len = Math.max(1e-4, Math.hypot(dx, dy, dz));
-        dx /= len;
-        dy /= len;
-        dz /= len;
+        const r = radius * Math.pow(Math.max(u, 0.0001), RADIAL_POWER);
+        const phi = Math.acos(2 * v - 1);
+        const theta = w * Math.PI * 2;
+        let dx = Math.sin(phi) * Math.cos(theta);
+        let dy = Math.cos(phi);
+        let dz = Math.sin(phi) * Math.sin(theta);
+
+        if ((hash32(seed, group.id, 'clump', index) % 1000) / 1000 < CLUMP_SHARE) {
+          const axis = axes[hash32(seed, group.id, 'which', index) % FILAMENTS];
+          dx += axis.x * CLUMP_PULL;
+          dy += axis.y * CLUMP_PULL;
+          dz += axis.z * CLUMP_PULL;
+          const len = Math.max(1e-4, Math.hypot(dx, dy, dz));
+          dx /= len;
+          dy /= len;
+          dz /= len;
+        }
+
+        const rr = Math.max(CORE_FLOOR * radius, r);
+        ox = dx * rr;
+        oy = dy * rr * FLATTEN;
+        oz = dz * rr;
+        // 1 at the core, ~0.4 at the rim: drives point size and brightness.
+        weight = 0.42 + 0.58 * Math.pow(1 - Math.min(1, rr / radius), 1.15);
       }
 
-      // Per-station jitter, kept below the knot's own structure so it reads as
+      // Per-station jitter, kept below the object's own structure so it reads as
       // natural scatter rather than noise.
-      const jitter = radius * 0.045;
+      const jitter = radius * 0.038;
       const jx = ((hash32(seed, group.id, 'jx', index) % 2000) / 1000 - 1) * jitter;
       const jy = ((hash32(seed, group.id, 'jy', index) % 2000) / 1000 - 1) * jitter;
       const jz = ((hash32(seed, group.id, 'jz', index) % 2000) / 1000 - 1) * jitter;
 
-      const rr = Math.max(CORE_FLOOR * radius, r);
-      positions[index * 3] = centers.x + dx * rr + jx;
-      positions[index * 3 + 1] = centers.y + dy * rr * FLATTEN + jy;
-      positions[index * 3 + 2] = centers.z + dz * rr + jz;
-      // 1 at the core, ~0.4 at the rim: drives point size and brightness.
-      weights[index] = 0.42 + 0.58 * Math.pow(1 - Math.min(1, rr / radius), 1.15);
+      positions[index * 3] = centers.x + ox + jx;
+      positions[index * 3 + 1] = centers.y + oy + jy;
+      positions[index * 3 + 2] = centers.z + oz + jz;
+      weights[index] = weight;
     }
   }
 

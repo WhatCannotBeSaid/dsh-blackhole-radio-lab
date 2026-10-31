@@ -161,13 +161,10 @@ window.__ModuleLoader__.load({
         openSearch: '打开搜索',
         searchLabel: '搜索',
         searchPlaceholder: '搜索电台、国家、语言或分类',
-        searchClear: '清除',
         searchHint: '回车定位 · Esc 关闭',
         noResults: '这里还没有电台',
         categories: '分类',
         clusterStations: '个电台',
-        nebulaGroupAll: '全部',
-        nebulaGroupBy: '按标签分组',
         country: '国家/地区',
         language: '语言',
         category: '分类',
@@ -202,11 +199,6 @@ window.__ModuleLoader__.load({
         playbackError: '播放失败',
         nowPlaying: '正在播放',
         miniPlayerEmpty: '未在播放',
-        nebulaBack: '黑洞',
-        nebulaTitle: '星云空间',
-        nebulaGenres: '个流派',
-        shelfTags: '个标签',
-        nebulaStationList: '流派电台',
         cardTags: '标签',
         cardOffline: '在线状态未知',
         cardPlayable: '可以收听',
@@ -260,13 +252,10 @@ window.__ModuleLoader__.load({
         openSearch: 'Open search',
         searchLabel: 'Search',
         searchPlaceholder: 'Search stations, countries, languages or categories',
-        searchClear: 'Clear',
         searchHint: 'Enter to locate · Esc to close',
         noResults: 'No stations here yet',
         categories: 'Categories',
         clusterStations: 'stations',
-        nebulaGroupAll: 'All',
-        nebulaGroupBy: 'Grouped by tag',
         country: 'Country / region',
         language: 'Language',
         category: 'Categories',
@@ -301,11 +290,6 @@ window.__ModuleLoader__.load({
         playbackError: 'Playback failed',
         nowPlaying: 'Now playing',
         miniPlayerEmpty: 'Nothing playing',
-        nebulaBack: 'Black hole',
-        nebulaTitle: 'Nebula space',
-        nebulaGenres: 'genres',
-        shelfTags: 'tags',
-        nebulaStationList: 'Genre stations',
         cardTags: 'Tags',
         cardOffline: 'Online status unknown',
         cardPlayable: 'Listenable',
@@ -462,7 +446,7 @@ window.__ModuleLoader__.load({
      *  happen strictly below it. Nothing in here knows what is on screen.
      *
      *    radio     the station index + business state (selection, favourites,
-     *              likes). Same object for the black hole and the nebula.
+     *              likes). Same object for the black hole and the cluster.
      *    playback  the one audio owner. Two facts with two owners: `selected`
      *              lives in the store, `playing` lives here, and they are
      *              deliberately not mirrored into each other.
@@ -982,7 +966,7 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------------ *
      *  StationCard — the one place a station's business actions live.
      *
-     *  Every surface (black-hole overlay, nebula list, search results, mini
+     *  Every surface (black-hole overlay, cluster list, search results, mini
      *  player) renders this component, and every one of them calls the same
      *  two owners through it:
      *
@@ -1298,7 +1282,7 @@ window.__ModuleLoader__.load({
      *   t          translator
      *   variant    'card' (default) | 'row' (compact list row) | 'chip'
      *   active     whether this is the station the stage has selected
-     *   onFocus    optional: bring it into view / widen a nebula
+     *   onFocus    optional: bring it into view / widen a cluster
      *   onClose    optional: dismiss the surface this card sits on
      */
     function StationCard(props) {
@@ -1441,142 +1425,6 @@ window.__ModuleLoader__.load({
       // itself is drawn by `StationFootCard`, in the one place the station
       // exists as a card.
       return null;
-    }
-
-    function CategoryDot({ color }) {
-      return h('i', { className: 'bhrl-catdot', style: { background: color }, 'aria-hidden': 'true' });
-    }
-
-    /**
-     * Group the catalogue by the genre the nebula space shows.
-     *
-     * A genre that folded into Other must appear inside Other's volume, not as
-     * a fourteenth nebula nobody can click, so the grouping is resolved through
-     * `display` exactly as `repository.listByGenre(id)` does by default. The
-     * repository is the only classifier; nothing here re-derives a genre.
-     */
-    function groupByNebula(stations, nebulaIds) {
-      const allowed = new Set(Array.isArray(nebulaIds) ? nebulaIds : []);
-      const groups = new Map();
-      for (const station of Array.isArray(stations) ? stations : []) {
-        const raw = (station && station.genre) || 'other';
-        const id = allowed.has(raw) ? raw : allowed.has('other') ? 'other' : null;
-        if (!id) continue;
-        if (!groups.has(id)) groups.set(id, []);
-        groups.get(id).push(station);
-      }
-      return groups;
-    }
-
-    /** How many stations one genre panel renders before it stops. */
-    const NEBULA_LIST_LIMIT = 24;
-
-    /** How many tag groups one genre panel opens at once. */
-    const NEBULA_GROUP_LIMIT = 8;
-
-    /**
-     * Group one genre's stations by the tags they actually carry.
-     *
-     * The tags are the source's own strings, read from `metadata.tags`; a
-     * station with no tag at all goes to the untagged bucket rather than being
-     * given one. A station that carries several tags appears under each of
-     * them — the same record, in several groups, never a second entity, and
-     * every appearance still points at the same `station.id`.
-     */
-    function groupByTags(stations) {
-      const groups = new Map();
-      const untagged = [];
-      for (const station of Array.isArray(stations) ? stations : []) {
-        const info = stationInfoOf(station);
-        if (info.tags.length === 0) {
-          untagged.push(station);
-          continue;
-        }
-        for (const tag of info.tags) {
-          if (!groups.has(tag)) groups.set(tag, []);
-          groups.get(tag).push(station);
-        }
-      }
-      const ordered = [...groups.entries()].sort((a, b) => (b[1].length === a[1].length ? (a[0] < b[0] ? -1 : 1) : b[1].length - a[1].length));
-      const shown = ordered.slice(0, NEBULA_GROUP_LIMIT);
-      if (untagged.length > 0) shown.push(['', untagged]);
-      return shown;
-    }
-
-    /**
-     * The station list of one nebula volume.
-     *
-     * This is the nebula's station card surface: the volume is a genus, the rows
-     * are its stations, and every row carries the same `StationCard` the bullet
-     * information layer uses. The rows are grouped by the tags the stations
-     * really have, so one genre opens as a small set of tag groups rather than
-     * one undifferentiated list. A row is never a second owner of play,
-     * favourite or like state — it renders `shared.radio` and calls
-     * `shared.playback` and nothing else.
-     */
-    function NebulaStationList(props) {
-      const { genreId, title, subtitle, color, stations, genreLabelOf, genreColorOf, selectedKey, shared, t, onClose, onFocus } = props;
-      if (!genreId) return null;
-      const groups = groupByTags(stations);
-      const heading = title || genreLabelOf(genreId);
-      const dot = color || genreColorOf(genreId);
-      let budget = NEBULA_LIST_LIMIT;
-      return h(
-        'aside',
-        {
-          className: 'bhrl-nebula-list',
-          'data-genre': genreId,
-          'aria-live': 'polite',
-          'aria-label': t('nebulaStationList'),
-          onPointerDown: (event) => event.stopPropagation(),
-        },
-        h(
-          'header',
-          { className: 'bhrl-nebula-list__head' },
-          dot ? h(CategoryDot, { color: dot }) : null,
-          h('strong', null, heading),
-          subtitle && subtitle !== heading ? h('span', { className: 'bhrl-nebula-list__sub' }, subtitle) : null,
-          h('span', { className: 'bhrl-nebula-list__n' }, `${stations.length} ${t('clusterStations')}`),
-          h(
-            'button',
-            { type: 'button', className: 'bhrl-act bhrl-act-close', onClick: onClose, title: t('closeDetail'), 'aria-label': t('closeDetail') },
-            h(Cross, { size: 11 }),
-          ),
-        ),
-        stations.length === 0
-          ? h('p', { className: 'bhrl-nebula-list__empty' }, t('noResults'))
-          : groups.map(([tag, members]) => {
-              if (budget <= 0) return null;
-              const shown = members.slice(0, budget);
-              budget -= shown.length;
-              const label = tag || t('nebulaGroupAll');
-              return h(
-                'section',
-                { className: 'bhrl-nebula-group', key: tag || '__untagged', 'data-tag': tag || '' },
-                h(
-                  'header',
-                  { className: 'bhrl-nebula-group__head' },
-                  h('span', { className: 'bhrl-nebula-group__name' }, label),
-                  h('span', { className: 'bhrl-nebula-group__n' }, String(members.length)),
-                ),
-                h(
-                  'ul',
-                  { className: 'bhrl-nebula-rows' },
-                  shown.map((station) =>
-                    h(StationCard, {
-                      key: `${tag || 'untagged'}:${station.id}`,
-                      station,
-                      shared,
-                      t,
-                      variant: 'row',
-                      active: selectedKey !== null && station.id === selectedKey,
-                      onFocus,
-                    }),
-                  ),
-                ),
-              );
-            }),
-      );
     }
 
     /*
@@ -2435,14 +2283,6 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Cross({ size }) {
-      return h(
-        'svg',
-        { width: size || 13, height: size || 13, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true' },
-        h('path', { d: 'M3 3l8 8M11 3l-8 8', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' }),
-      );
-    }
-
     function Panel({ localeSvc, requireAsync, shared, layoutSvc }) {
       const t = useT(localeSvc);
       const lang = activeLanguage(localeSvc).startsWith('zh') ? 'zh' : 'en';
@@ -2456,14 +2296,14 @@ window.__ModuleLoader__.load({
       const retryStage = useCallback(() => setAttempt((n) => n + 1), []);
 
       /**
-       * The nebula's open genre, or null for the volume field.
+       * The search box, and the only chrome this page has.
        *
-       * View state, not station state: it says which genus the user opened, so
-       * it lives here and dies with the panel. The stations inside it keep
-       * their identity, their favourites and their playback because those are
-       * owned one level up in `shared`.
+       * The hole is its handle: a tap opens it, Escape or a result closes it.
+       * It is view state, so it dies with the panel; the query itself is not
+       * remembered anywhere, because a stale search is not a selection.
        */
-      const [nebulaGenreId, setNebulaGenreId] = useState(null);
+      const [searchOpen, setSearchOpen] = useState(false);
+      const [searchText, setSearchText] = useState('');
       const [modeState, setModeState] = useState({
         state: 'black-hole',
         mode: 'black-hole',
@@ -2473,9 +2313,7 @@ window.__ModuleLoader__.load({
       });
 
       const modeRef = useRef(modeState);
-      const nebulaGenreRef = useRef(nebulaGenreId);
       modeRef.current = modeState;
-      nebulaGenreRef.current = nebulaGenreId;
 
       /** Stable stage callbacks route through these closures. */
       const actionsRef = useRef({});
@@ -2491,10 +2329,6 @@ window.__ModuleLoader__.load({
           },
           onMode(snapshot) {
             setModeState(snapshot);
-            // The scene owns which berth is open; a shelf that the scene has
-            // closed is closed here too rather than left to rot as an orphan
-            // list over the field.
-            if (!snapshot.expanded && !snapshot.transitioning) setNebulaGenreId(null);
           },
           /**
            * The hole's centre is the way in: holding it crosses to the cluster
@@ -2507,7 +2341,18 @@ window.__ModuleLoader__.load({
             // exists, so calling `selectNone` directly would capture its first,
             // empty closure and never clear a later selection.
             if (actionsRef.current.selectStation) actionsRef.current.selectStation(null);
-            setNebulaGenreId(null);
+            // A hold that lands on the cluster has no search box over it: the
+            // box belongs to the hole, and leaving it open would put a text
+            // field on a field of stars.
+            setSearchOpen(false);
+          },
+          /**
+           * A tap on the hole is not a hold: it opens the search box. The two
+           * gestures never overlap, because a completed hold consumed the press
+           * at pointer down and never reaches this path.
+           */
+          onHoleTap() {
+            setSearchOpen(true);
           },
           /**
            * A click on a heat spot asks for transport. Routed through the ref so
@@ -2545,10 +2390,6 @@ window.__ModuleLoader__.load({
             // a gpu id. Absent means the page renders the phase-1 baseline.
             const radioParam = new URLSearchParams(window.location.search).get('bhrlRadio');
             if (radioParam !== null) body.radio = radioParam;
-            // Phase-3 development preview: `?bhrlNebula=1` mounts the stage
-            // straight into the nebula space. Absent means the normal hole.
-            const nebulaParam = new URLSearchParams(window.location.search).get('bhrlNebula');
-            if (nebulaParam !== null) body.nebulaPreview = nebulaParam !== '0';
             // `?bhrlWormhole=0` turns the transition off for an A/B against the
             // old instant handover. Absent means the shipped behaviour.
             const wormParam = new URLSearchParams(window.location.search).get('bhrlWormhole');
@@ -2752,10 +2593,10 @@ window.__ModuleLoader__.load({
           // Phase-2 fixture switch, carried through from the URL. `null` in the
           // default case, so the stage never even creates the overlay.
           radio: cfg.radio === undefined ? null : cfg.radio,
-          nebulaPreview: cfg.nebulaPreview === true,
           onSelect: stageCallbacks.onSelect,
           onMode: stageCallbacks.onMode,
           onCenterClick: stageCallbacks.onCenterClick,
+          onHoleTap: stageCallbacks.onHoleTap,
           onPlay: stageCallbacks.onPlay,
           onHover: stageCallbacks.onHover,
         };
@@ -2801,51 +2642,7 @@ window.__ModuleLoader__.load({
         if (store) store.select(null);
       }, [store]);
 
-      /**
-       * Every space change goes through the store-owned selection rather than
-       * the scene's private index, so switching views never resurrects an old
-       * pick and never invents a new one. Playback is untouched by design: it
-       * is not a property of the view that happens to be mounted.
-       */
-      const enterNebulaView = useCallback(() => {
-        selectNone();
-        setNebulaGenreId(null);
-        const handle = stageRef.current;
-        if (handle && typeof handle.enterNebula === 'function') handle.enterNebula();
-      }, [selectNone]);
-
-      const exitNebulaView = useCallback(() => {
-        selectNone();
-        setNebulaGenreId(null);
-        const handle = stageRef.current;
-        if (handle && typeof handle.exitNebula === 'function') handle.exitNebula();
-        else if (handle && typeof handle.backToHole === 'function') handle.backToHole();
-      }, [selectNone]);
-
-      /**
-       * Fold the volume field away, or reopen it. Closing a genre is not a
-       * scene change: the nebula stays, only its station list leaves.
-       */
-      const closeNebulaGenre = useCallback(() => {
-        setNebulaGenreId(null);
-        const handle = stageRef.current;
-        if (handle && typeof handle.setGenre === 'function') handle.setGenre(null);
-      }, []);
-
-      /**
-       * Open one volume. The station list is a view of the catalogue, so this
-       * may be called before the scene is ready; the scene is told afterwards
-       * and its highlight is a hint, not the source of truth.
-       */
-      const openNebulaGenre = useCallback((id) => {
-        const next = id ? String(id) : null;
-        setNebulaGenreId(next);
-        const handle = stageRef.current;
-        if (handle && typeof handle.setGenre === 'function') handle.setGenre(next);
-      }, []);
-
       const backToHole = useCallback(() => {
-        setNebulaGenreId(null);
         selectNone();
         const handle = stageRef.current;
         if (!handle) return;
@@ -2866,6 +2663,54 @@ window.__ModuleLoader__.load({
         if (typeof handle.locateStation === 'function') handle.locateStation(station.id);
         else if (typeof handle.selectById === 'function') handle.selectById(station.id, { focus: true, notify: false });
       }, [store]);
+
+      /**
+       * The search box's own results.
+       *
+       * The repository already ranks by name and features, so the panel only
+       * asks and draws. Eight rows is a glance, not a list: a search that
+       * returns more is a query that wants another word.
+       */
+      const searchResults = useMemo(() => {
+        const query = searchText.trim();
+        if (!query || !repository || typeof repository.search !== 'function') return [];
+        try {
+          const list = repository.search(query, 8);
+          return Array.isArray(list) ? list : [];
+        } catch {
+          return [];
+        }
+      }, [searchText, repository]);
+
+      /** The one-line place a result belongs to, in the current language. */
+      const stationPlace = useCallback(
+        (station) => {
+          const country = station && station.country;
+          if (!country) return '';
+          return lang === 'en' ? country.en || country.zh || '' : country.zh || country.en || '';
+        },
+        [lang],
+      );
+
+      // Escape and a press anywhere outside both close the box. The press still
+      // belongs to the scene: closing is the only thing this adds to it.
+      useEffect(() => {
+        if (!searchOpen) return undefined;
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setSearchOpen(false);
+        };
+        const onPointerDown = (event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest('.bhrl-search')) return;
+          setSearchOpen(false);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('pointerdown', onPointerDown, true);
+        return () => {
+          window.removeEventListener('keydown', onKeyDown);
+          window.removeEventListener('pointerdown', onPointerDown, true);
+        };
+      }, [searchOpen]);
 
       const clearSelection = useCallback(() => {
         selectNone();
@@ -2941,8 +2786,6 @@ window.__ModuleLoader__.load({
       }, [layoutSvc]);
 
       actionsRef.current = {
-        enterNebula: enterNebulaView,
-        exitNebula: exitNebulaView,
         backToHole,
         playFromDisk,
         hoverCardIn,
@@ -2956,14 +2799,14 @@ window.__ModuleLoader__.load({
         },
       };
 
-      // ---- nebula station surfaces ---------------------------------------
+      // ---- genre labels ---------------------------------------------------
 
       /**
        * The genre definitions the scene received. `radio.genres` is the
        * repository's own summary, so the chrome names and colours exactly what
-       * the nebulae are drawn from — no second table, no second classifier.
+       * the cluster draws — no second table, no second classifier.
        */
-      const nebulaGenres = useMemo(() => {
+      const genreTable = useMemo(() => {
         // Read the sample's own display groups straight from the repository.
         // `useRadio` only carries the status records, so there is no `genres`
         // field on it to read — asking it for one left the rail permanently
@@ -2973,13 +2816,13 @@ window.__ModuleLoader__.load({
         return (Array.isArray(visible) ? visible : []).filter((genre) => genre && genre.count > 0);
       }, [repository]);
 
-      const nebulaGenresRef = useRef(nebulaGenres);
-      nebulaGenresRef.current = nebulaGenres;
+      const genreTableRef = useRef(genreTable);
+      genreTableRef.current = genreTable;
 
       const genreLabelOf = useCallback(
         (id) => {
           if (shared && shared.env) return shared.env.genreLabel(id, lang);
-          const genre = nebulaGenresRef.current.find((item) => item.id === String(id));
+          const genre = genreTableRef.current.find((item) => item.id === String(id));
           return genre ? (lang === 'en' ? genre.en : genre.zh) : String(id);
         },
         [shared, lang],
@@ -2988,70 +2831,11 @@ window.__ModuleLoader__.load({
       const genreCssOf = useCallback(
         (id) => {
           if (shared && shared.env) return shared.env.genreCss(id);
-          const genre = nebulaGenresRef.current.find((item) => item.id === String(id));
+          const genre = genreTableRef.current.find((item) => item.id === String(id));
           return genre ? `#${Number(genre.color).toString(16).padStart(6, '0')}` : '#9a9a9a';
         },
         [shared],
       );
-
-      /**
-       * Stations per volume, resolved through the repository so a genre folded
-       * into Other is counted and listed inside Other — the same rule
-       * `repository.listByGenre(id)` applies by default.
-       */
-      const genreStationCounts = useMemo(() => {
-        const map = new Map();
-        if (!repository) return map;
-        for (const station of repository.list()) {
-          const raw = (station && station.genre) || 'other';
-          const id = nebulaGenres.some((genre) => genre.id === raw) ? raw : nebulaGenres.some((genre) => genre.id === 'other') ? 'other' : null;
-          if (!id) continue;
-          map.set(id, (map.get(id) || 0) + 1);
-        }
-        return map;
-      }, [repository, nebulaGenres]);
-
-      /**
-       * The stations of the berth that is open.
-       *
-       * There is no nebula page: opening a berth happens inside the cluster
-       * field, so the only thing the chrome needs to know is which berth. The
-       * scene reports it as `expanded`; this list is that berth's stations,
-       * before any shelf is picked.
-       */
-      const shelfStations = useMemo(() => {
-        const categoryId = modeState && modeState.expanded ? String(modeState.expanded) : null;
-        if (!repository || !categoryId) return [];
-        try {
-          const list = repository.listByGenre(categoryId);
-          return Array.isArray(list) ? list : [];
-        } catch {
-          return [];
-        }
-      }, [repository, modeState]);
-
-      /**
-       * The tag shelves of that berth.
-       *
-       * The scene builds its own shelves from the same stations, so the chips
-       * here name exactly what is drawn — one classification, two surfaces.
-       * The untagged bucket is not offered: a shelf with no name cannot be
-       * asked for by name.
-       */
-      const shelfTags = useMemo(() => groupByTags(shelfStations).filter(([tag]) => Boolean(tag)), [shelfStations]);
-
-      /**
-       * The rows of the open shelf, or of the whole berth when none is open.
-       *
-       * Read from the repository on every render rather than cached: the same
-       * station objects come back, so the store keeps matching them by key and
-       * a favourite set elsewhere is visible here on the next frame.
-       */
-      const nebulaStations = useMemo(() => {
-        if (!nebulaGenreId) return shelfStations;
-        const key = String(nebulaGenreId);
-        return shelfStations.filter((station) => stationInfoOf(station).tags.includes(key));
-      }, [nebulaGenreId, shelfStations]);
 
       /**
        * The card itself.
@@ -3097,6 +2881,71 @@ window.__ModuleLoader__.load({
           h('div', { className: 'bhrl-stage__canvas', ref: setCanvasNode, 'data-bhrl-canvas': true }),
           hoverCardNode,
 
+          /*
+           * The search box. It is the page's only chrome, and the hole is its
+           * only handle: a tap opens it, Escape or a chosen result closes it.
+           * Nothing else is drawn over the scene.
+           */
+          searchOpen
+            ? h(
+                'div',
+                { className: 'bhrl-search', role: 'search' },
+                h(
+                  'div',
+                  { className: 'bhrl-search__field' },
+                  h('input', {
+                    className: 'bhrl-search__input',
+                    type: 'search',
+                    value: searchText,
+                    placeholder: t('searchPlaceholder'),
+                    'aria-label': t('searchLabel'),
+                    autoFocus: true,
+                    onChange: (event) => setSearchText(event.target.value),
+                    onKeyDown: (event) => {
+                      if (event.key !== 'Enter') return;
+                      const first = searchResults[0];
+                      if (!first) return;
+                      setSearchText('');
+                      setSearchOpen(false);
+                      chooseStation(first);
+                    },
+                  }),
+                ),
+                searchResults.length
+                  ? h(
+                      'ul',
+                      { className: 'bhrl-search__list' },
+                      searchResults.map((station) =>
+                        h(
+                          'li',
+                          { key: String(station.id), className: 'bhrl-search__row' },
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'bhrl-search__hit',
+                              onClick: () => {
+                                setSearchText('');
+                                setSearchOpen(false);
+                                chooseStation(station);
+                              },
+                            },
+                            h('span', { className: 'bhrl-search__name' }, station.name),
+                            h(
+                              'span',
+                              { className: 'bhrl-search__meta' },
+                              [stationPlace(station), genreLabelOf(station.genre)].filter(Boolean).join(' · '),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : searchText.trim()
+                    ? h('p', { className: 'bhrl-search__empty' }, t('searchHint'))
+                    : null,
+              )
+            : null,
+
           stage.status === 'loading'
             ? h(
                 'div',
@@ -3117,8 +2966,8 @@ window.__ModuleLoader__.load({
           /**
            * The hole has no chrome at all: no wordmark, no close button, no
            * way-in button, no hint line and no category list. It is a place,
-           * not a control panel — holding its centre enters the nebula.
-           * Everything drawn over the scene belongs to the nebula space.
+           * not a control panel — holding its centre enters the cluster.
+           * Everything drawn over the scene belongs to the cluster.
            */
 
           /**
@@ -3188,6 +3037,68 @@ window.__ModuleLoader__.load({
 .bhrl-stage__canvas canvas { display: block; }
 .bhrl-stage__canvas canvas:focus-visible { outline: 1px solid rgba(255, 190, 140, 0.55); outline-offset: -1px; }
 
+/* The search box: the page's only chrome. It hangs over the hole's centre, on
+   the axis the tap came from, and it is a field with one row per match — never
+   a panel, never a second page. */
+.bhrl-search {
+  position: absolute; z-index: 7; top: 50%; left: 50%;
+  width: min(420px, calc(100% - 48px));
+  transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; gap: 6px;
+  animation: bhrl-search-in 160ms ease-out both;
+}
+@keyframes bhrl-search-in {
+  from { opacity: 0; transform: translate(-50%, -46%); }
+  to { opacity: 1; transform: translate(-50%, -50%); }
+}
+.bhrl-search__field {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 10px 9px 13px;
+  border-radius: 999px; border: 1px solid rgba(255, 176, 118, 0.30);
+  background: rgba(8, 7, 9, 0.90); backdrop-filter: blur(10px) saturate(120%);
+  box-shadow: 0 18px 44px -18px rgba(0, 0, 0, 0.82), 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+.bhrl-search__field:focus-within { border-color: rgba(255, 196, 146, 0.62); }
+.bhrl-search__input {
+  flex: 1 1 auto; min-width: 0;
+  border: 0; outline: 0; background: transparent;
+  color: var(--bhrl-ink); font: inherit; font-size: 13px; letter-spacing: 0.01em;
+}
+.bhrl-search__input::placeholder { color: var(--bhrl-ink-faint); }
+.bhrl-search__input::-webkit-search-decoration,
+.bhrl-search__input::-webkit-search-cancel-button { appearance: none; }
+.bhrl-search__list {
+  margin: 0; padding: 4px; list-style: none;
+  display: flex; flex-direction: column; gap: 1px;
+  border-radius: 13px; border: 1px solid rgba(255, 168, 110, 0.16);
+  background: rgba(8, 7, 9, 0.90); backdrop-filter: blur(10px) saturate(120%);
+  box-shadow: 0 22px 48px -20px rgba(0, 0, 0, 0.86);
+  max-height: min(300px, 46vh); overflow-y: auto;
+}
+.bhrl-search__hit {
+  width: 100%; padding: 7px 9px;
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  border: 0; border-radius: 9px; background: transparent; color: inherit;
+  font: inherit; cursor: pointer;
+}
+.bhrl-search__hit:hover, .bhrl-search__hit:focus-visible {
+  background: rgba(255, 255, 255, 0.07); outline: 0;
+}
+.bhrl-search__name {
+  font-size: 12.5px; font-weight: 560; color: var(--bhrl-ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bhrl-search__meta {
+  font-size: 10.5px; color: var(--bhrl-ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bhrl-search__empty {
+  margin: 0; padding: 10px 12px;
+  border-radius: 11px; border: 1px solid rgba(255, 168, 110, 0.14);
+  background: rgba(8, 7, 9, 0.86);
+  font-size: 11px; color: var(--bhrl-ink-faint);
+}
+
 /* The disk hover card: a floating label, not a panel. It sits above the canvas
    and above the scene chrome, because it is the answer to where the pointer is,
    and it must never be the thing the pointer is over instead of the station. */
@@ -3241,7 +3152,6 @@ window.__ModuleLoader__.load({
 .bhrl-cat:hover, .bhrl-cat:focus-visible { background: rgba(255, 255, 255, 0.055); outline: none; }
 .bhrl-cat__name { color: rgba(232, 238, 250, 0.82); }
 .bhrl-cat__n { margin-left: auto; font-size: 9.5px; font-variant-numeric: tabular-nums; color: rgba(206, 218, 238, 0.36); }
-.bhrl-catdot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
 
 .bhrl-btn {
   padding: 5px 10px; border-radius: 6px; border: 1px solid var(--bhrl-line); background: rgba(255, 255, 255, 0.04);
@@ -3337,7 +3247,7 @@ window.__ModuleLoader__.load({
 }
 .bhrl-chip.is-mine .bhrl-chip-name { color: #9fe6c4; }
 
-/* Row: the nebula's station list. */
+/* Row: a station list row. */
 .bhrl-row { display: flex; align-items: center; gap: 6px; }
 .bhrl-row-main {
   flex: 1 1 auto;
@@ -3378,81 +3288,6 @@ window.__ModuleLoader__.load({
 .bhrl-state.is-playing { color: #9fe6c4; }
 .bhrl-state.is-paused { color: rgba(214, 224, 240, 0.6); }
 .bhrl-act-close { font-size: 15px; line-height: 1; }
-
-/* ---- nebula space: genre field, station list -------------------------- */
-
-.bhrl-nebulabar {
-  position: absolute; left: 16px; top: 12px; z-index: 7; display: flex; align-items: center; gap: 12px;
-  padding: 6px 8px 6px 4px; border-radius: 10px; opacity: 0; visibility: hidden;
-  transform: translateY(-4px); pointer-events: none;
-  transition: opacity 240ms ease, transform 240ms ease;
-}
-.bhrl-nebulabar[data-open="true"] { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
-
-/*
- * The genre field. A single scrollable rail rather than thirteen floating
- * chips: the volumes are a set, and a set reads better in one line than
- * scattered around the canvas. It never overlaps the station list, which
- * starts under it.
- */
-.bhrl-nebulacats {
-  position: absolute; left: 16px; right: 16px; top: 52px; z-index: 7;
-  display: flex; align-items: center; gap: 4px; padding: 4px;
-  max-width: 100%; overflow-x: auto; overflow-y: hidden;
-  border-radius: 10px; border: 1px solid var(--bhrl-line-soft);
-  background: rgba(6, 9, 16, 0.62); backdrop-filter: blur(8px);
-  pointer-events: auto; scrollbar-width: thin;
-}
-.bhrl-genrecat {
-  width: auto; flex: 0 0 auto; padding: 5px 9px; border-radius: 999px; gap: 7px;
-  border: 1px solid transparent; white-space: nowrap;
-}
-.bhrl-genrecat[data-open="true"] {
-  background: rgba(255, 255, 255, 0.09); border-color: var(--bhrl-line);
-}
-.bhrl-genrecat[disabled] { opacity: 0.36; cursor: default; }
-.bhrl-genrecat[disabled]:hover { background: transparent; }
-.bhrl-genrecat .bhrl-cat__n { margin-left: 0; }
-
-/*
- * The station list of one volume. It sits over the canvas, so every row is a
- * StationCard in its row variant: the same play/pause and favourite controls
- * the hole's information layer and the search results carry. The heart is not
- * among them — a row is a station, not a song, so the mark that belongs to a
- * song lives on the foot card where the song does.
- */
-.bhrl-nebula-list {
-  position: absolute; left: 16px; top: 100px; bottom: 76px; z-index: 7;
-  width: min(340px, calc(100% - 32px)); display: flex; flex-direction: column;
-  padding: 10px 11px; border-radius: 12px;
-  border: 1px solid var(--bhrl-line-soft); background: rgba(5, 8, 14, 0.78);
-  backdrop-filter: blur(12px); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-  pointer-events: auto; overflow: hidden;
-}
-.bhrl-nebula-list__head { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px; }
-.bhrl-nebula-list__head strong { font-size: 12px; font-weight: 550; letter-spacing: 0.04em; }
-.bhrl-nebula-list__n { font-size: 9.5px; letter-spacing: 0.08em; color: var(--bhrl-ink-faint); }
-.bhrl-nebula-list__sub {
-  font-size: 9.5px; letter-spacing: 0.08em; color: rgba(214, 224, 240, 0.42);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.bhrl-nebula-list__head .bhrl-act-close { margin-left: auto; }
-.bhrl-nebula-rows { list-style: none; margin: 0; padding: 0; overflow-y: auto; scrollbar-width: thin; }
-.bhrl-nebula-list__empty { margin: 6px 2px; font-size: 11px; color: var(--bhrl-ink-faint); }
-.bhrl-nebula-group { display: flex; flex-direction: column; gap: 1px; padding-top: 4px; }
-.bhrl-nebula-group + .bhrl-nebula-group { margin-top: 2px; border-top: 1px solid var(--bhrl-line-soft); }
-.bhrl-nebula-group__head { display: flex; align-items: baseline; gap: 6px; padding: 2px 4px 3px; }
-.bhrl-nebula-group__name {
-  font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
-  color: rgba(214, 224, 240, 0.48);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.bhrl-nebula-group__n { font-size: 9px; color: rgba(214, 224, 240, 0.3); font-variant-numeric: tabular-nums; }
-
-@media (max-width: 720px) {
-  .bhrl-nebula-list { left: 10px; right: 10px; width: auto; top: 96px; bottom: 70px; }
-  .bhrl-nebulacats { left: 10px; right: 10px; }
-}
 
 /* ------------------------------------------------------------------ *
  *  The station card in the sidebar foot.

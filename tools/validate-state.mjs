@@ -531,43 +531,19 @@ function createInstrumentedPlayback(clock) {
   });
 }
 
-/* ------------------------------------------------- 7. nebula station lists */
+/* --------------------------------------- 7. genre volumes and station lists */
 
 {
-  const check = section('nebula lists');
+  const check = section('genre volumes');
 
-  /**
-   * The grouping the nebula's gender rail and its station list both use.
-   *
-   * It is reproduced here from `repository.visibleGenres()` and the same
-   * `display` rule `listByGenre` applies by default, so the check fails if a
-   * future change makes the rail and the list disagree about which volume a
-   * station belongs to.
-   */
-  const groupByNebula = (stations, visible) => {
-    const allowed = new Set(visible.map((genre) => genre.id));
-    const groups = new Map();
-    for (const station of stations) {
-      const raw = (station && station.genre) || 'other';
-      const id = allowed.has(raw) ? raw : allowed.has('other') ? 'other' : null;
-      if (!id) continue;
-      if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push(station);
-    }
-    return groups;
-  };
-
-  check('the genre rail and listByGenre count the same stations', () => {
+  check('the summary count and listByGenre count the same stations', () => {
     const repository = createMockRadioRepository({ count: 400, seed: 20261022 });
     const visible = repository.visibleGenres();
-    const groups = groupByNebula(repository.list(), visible);
     let railTotal = 0;
     for (const genre of visible) {
-      const fromRail = (groups.get(genre.id) || []).length;
       const fromRepo = repository.listByGenre(genre.id).length;
-      eq(fromRail, fromRepo, `${genre.id}: rail and repository disagree`);
-      eq(fromRail, genre.count, `${genre.id}: rail and the summary agree`);
-      railTotal += fromRail;
+      eq(fromRepo, genre.count, `${genre.id}: the summary and the list agree`);
+      railTotal += fromRepo;
     }
     eq(railTotal, repository.list().length, 'every station lands in exactly one volume');
   });
@@ -580,8 +556,7 @@ function createInstrumentedPlayback(clock) {
     const folded = merged[0];
     const visible = repository.visibleGenres();
     ok(!visible.some((genre) => genre.id === folded), 'a merged genre gets no volume of its own');
-    const groups = groupByNebula(repository.list(), visible);
-    const inOther = groups.get('other') || [];
+    const inOther = repository.listByGenre('other');
     const rawOfFolded = repository.listByGenre(folded, { display: false });
     for (const station of rawOfFolded) {
       ok(inOther.includes(station), `${station.id} sits in Other's list`);

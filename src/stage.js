@@ -14,27 +14,21 @@
  *
  *   black-hole  the hole, the photon ring and the accretion disk, with the whole
  *               catalogue embedded in the disk's matter field;
- *   cluster     the same stations gathered into one star cluster per category,
- *               the hole's structures faded out;
- *   nebula      one category's stations gathered into one ball of stars per tag,
- *               the balls spread across the same space.
+ *   cluster     the same stations gathered into one star cluster per genre,
+ *               the hole's structures faded out.
  *
  * The gestures follow the depths. A depth is not a page: there is no cut, no
  * second scene and no chrome of its own.
  *
  *   black-hole ──left-hold the hole──▶ cluster
  *   cluster    ──click a station──▶ play it
- *   cluster    ──click a berth's space, not its stars──▶ nebula
- *   nebula     ──click a station──▶ play it
- *   nebula     ──click a tag group's space──▶ dolly onto it
  *   any depth  ──right-hold──▶ one level back (touch: hold the blank)
  *   any depth  ──Esc──▶ leave the radio page
  *
- * Everything between depths is one continuous state value (`progress` for the
- * hole↔cluster leg, `nebula` for the tag shelves) plus the station layer's
- * per-station blend. Nothing is ever rebuilt, so enter and exit animate the same
- * numbers in opposite directions, and an interrupted gesture keeps moving from
- * where it is instead of snapping.
+ * Everything between depths is one continuous state value (`progress`) plus the
+ * station layer's per-station blend. Nothing is ever rebuilt, so enter and exit
+ * animate the same numbers in opposite directions, and an interrupted gesture
+ * keeps moving from where it is instead of snapping.
  *
  * The sky is one sky. `starfield` is never dimmed by a depth change — only the
  * wormhole cover, mid-passage, may pull it down — because a depth change is a
@@ -79,9 +73,6 @@ import {
   shaderFixtures,
 } from './scene/radio-fixtures.js';
 import { buildClusterLayout, pickGroup, projectedDiameter, scatterStations } from './cluster/layout.js';
-import { buildNebulaLayout, nebulaFramingRadius } from './nebula/layout.js';
-import { MAX_TAG_SHELVES, SHELF, buildTagNebula } from './nebula/tags.js';
-import { createNebulaLayer } from './nodes/nebula-layer.js';
 import { GENRE_IDS, genreLabel } from './radio/genres.js';
 
 /** Surface this module's phase honestly, in one place. */
@@ -93,7 +84,7 @@ const CLICK_SLOP = 6;
  * run 2,000 projections per pointer event. */
 const HOVER_INTERVAL_MS = 90;
 /** Holding the hole's centre this long enters the genre field. */
-const LONG_PRESS_MS = 560;
+const LONG_PRESS_MS = 500;
 /** Touch has no hover, so holding a station this long asks for its card. */
 const TOUCH_CARD_MS = 480;
 /** Touch has no right button either, so holding empty space this long goes back. */
@@ -131,8 +122,6 @@ const WORM_OUT_VEIL_S = 1.15;
 const WORM_OUT_END_S = 1.75;
 /** Movement beyond this many CSS px turns a hold into a camera drag. */
 const WORM_DEADZONE_PX = 8;
-/** Nebula fade speed while the wormhole drives the reveal (0.5 s). */
-const WORM_REVEAL_RATE = 1 / (WORM_END_S - WORM_COVER_S);
 /** How long an abandoned hold takes to retreat to where the frame was (ms/s). */
 const WORM_RECOIL_S = 0.22;
 /** Reduced motion: no wormhole, one 200 ms cross-fade. */
@@ -170,6 +159,8 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  * @param options.onSelect - fired with (station|null) for selections.
  * @param options.onMode - fired with the machine snapshot on every change.
  * @param options.onCenterClick - the hole centre was held (enter the genre field).
+ * @param options.onHoleTap - the hole centre was tapped, not held: the search
+ *   box's opening gesture. Holding still belongs to onCenterClick.
  * @param options.onPlay - fired with (station, index) when a click asked for
  *   transport on the disk. The stage does not play anything itself: it reports
  *   the intent and the panel decides what "play" means there.
@@ -185,8 +176,8 @@ export function mountStage(container, options) {
   const pixelRatioCap = clampRatio(settings.pixelRatioCap);
   const reducedMotion = settings.reducedMotion === true;
   // The wormhole is the transition. The switch restores the old behaviour —
-  // a 560 ms hold that cuts straight to the nebula fade — for A/B comparison
-  // and for a rollback that needs no code change.
+  // a plain cross-fade — for A/B comparison and for a rollback that needs no
+  // code change.
   const wormholeEnabled = settings.wormhole !== false;
   const language = settings.language === 'en' ? 'en' : 'zh';
 
@@ -197,29 +188,7 @@ export function mountStage(container, options) {
   // hands over the already-counted visible genres from the repository, and the
   // layout only decides where they sit.
   const genres = catalog.genres;
-  // The nebula page is a shelf field, not a genre field: one fixed berth per
-  // tag, so the same tag always sits in the same place and the shelves can be
-  // re-labelled per category without rebuilding the dust. The ids below are
-  // placeholders; `applyNebulaShelves` rewrites them on entry.
-  const shelfSlots = Array.from({ length: MAX_TAG_SHELVES }, (_, index) => ({
-    id: `shelf-${index}`,
-    count: 1,
-  }));
-  const shelfIds = shelfSlots.map((slot) => slot.id);
-  const nebulaLayout = buildNebulaLayout(shelfSlots, {
-    seed: catalog.seed,
-    vocabulary: shelfIds,
-    shellInner: SHELF.shellInner,
-    shellOuter: SHELF.shellOuter,
-    radiusMin: SHELF.radiusMin,
-    radiusMax: SHELF.radiusMax,
-    minGap: SHELF.minGap,
-    extentFloor: SHELF.extentFloor,
-  });
-  // The shelf field is turned to face the berth that opened it, so the push
-  // lands on the shelf the pointer aimed at instead of beside it. Every entry
-  // spins the same base arrangement, so a tag keeps its berth-relative place.
-  const nebulaBaseCenters = nebulaLayout.genres.map((volume) => ({ ...volume.center }));
+  // The cluster field is the page: one gob per genre, arranged by layout.
   const featuredCount = stations.reduce((sum, station) => sum + (station.isFeatured ? 1 : 0), 0);
 
   const scene = new Scene();
@@ -322,30 +291,6 @@ export function mountStage(container, options) {
     };
     rebuildStationField();
 
-    const nebula =
-      nebulaLayout.genres.length > 0
-        ? add(createNebulaLayer(nebulaLayout, {
-          seed: catalog.seed,
-          pixelRatio: ratio,
-          amount: 0,
-          // The shelf field packs every volume into a much smaller shell than the
-          // old genre nebula did, so the same particle budget covers far more
-          // screen: half the sprites read as denser, not emptier, and the fill
-          // cost halves with them.
-          particleBudget: 16000,
-        }))
-        : null;
-    if (nebula) {
-      // Hidden until the transition moves: a mount without the preview entry
-      // must render exactly the black hole it rendered before phase 5.
-      nebula.object.visible = false;
-      nebula.setViewport(
-        Math.max(1, container.clientWidth),
-        Math.max(1, container.clientHeight),
-        camera.fov,
-      );
-    }
-
     const labels = createLabelOverlay(container);
     disposers.push(() => labels.dispose());
 
@@ -405,8 +350,8 @@ export function mountStage(container, options) {
 
     /**
      * The one interaction machine. `mode` and `ui` are deliberately separate:
-     * search and the category panel are overlays on the hole state, while mode
-     * describes which space the camera and scene are in.
+     * search is an overlay on the hole state, while mode describes which space
+     * the camera and scene are in.
      */
     const machine = {
       mode: 'black-hole',
@@ -417,26 +362,11 @@ export function mountStage(container, options) {
       layout: null,
       pendingFocus: null,
       savedCamera: null,
-      /** Selected genre in the nebula space; null means no volume selected. */
-      genreId: null,
       /**
-       * The berth that has been opened, or null.
-       *
-       * There is no nebula *page*. The cluster field is the page; opening a
-       * berth happens inside it, so `mode` stays 'cluster' and the rest of the
-       * field leaves the frame while the shelves take it over. Everything that
-       * used to ask "are we in the nebula" now asks whether this is set.
-       */
-      expanded: null,
-      /** Nebula fade, 0..1. `nebulaTarget` is where it is heading. */
-      nebula: 0,
-      nebulaTarget: 0,
-      nebulaSavedCamera: null,
-      /**
-       * The hole is gone from the frame even though the nebula is still faint.
-       * The hold needs those two states to be separate for its last stretch:
-       * the matter has already left the disc while the arriving space is still
-       * coming up, so the disc must not reappear underneath it.
+       * The hole is gone from the frame even though the arriving space is still
+       * faint. The hold needs those two states to be separate for its last
+       * stretch: the matter has already left the disc while the arriving space
+       * is still coming up, so the disc must not reappear underneath it.
        */
       wormCover: 0,
       /**
@@ -450,148 +380,6 @@ export function mountStage(container, options) {
     const layoutCache = new Map();
     let lastModeKey = '';
     let transitioning = false;
-    let nebulaMoving = false;
-    /**
-     * How fast the nebula scalar climbs. Its own number because the wormhole
-     * reveals the nebula in 500 ms while the old cross-fade took 1.28 s, and the
-     * integrator should not have to know which gesture started it.
-     */
-    let nebulaSpeed = TRANSITION_RATE * 0.82;
-    // Last fit distance authored for the nebula shell, so a resize can preserve
-    // the user's zoom level instead of snapping back to the default framing.
-    let nebulaFit = 0;
-    let hoverNebulaIndex = -1;
-    const nebulaPoint = new Vector3();
-
-    /** Index of the selected genre inside the layout, or -1. */
-    const nebulaIndex = () => {
-      if (!nebula || !machine.genreId) return -1;
-      return nebulaLayout.genres.findIndex((volume) => volume.id === machine.genreId);
-    };
-
-    /**
-     * Re-label the shelf field for one category.
-     *
-     * The dust geometry is fixed at boot; what changes per category is which
-     * tag each berth stands for and which stations belong on which shelf.
-     * Membership goes through the station layer's cluster gate, so a shelf
-     * shows only its own category's stations — no second buffer, no rebuild.
-     */
-    /**
-     * The shortest arc that turns the authored arrangement onto a berth.
-     *
-     * The shelf field is authored once; every entry spins that same copy so a
-     * tag keeps its berth-relative place and the field always faces the berth
-     * that opened it.
-     */
-    const shelfSpin = (berth) => {
-      const base = nebulaBaseCenters[0];
-      const from = new Vector3(base.x, base.y, base.z).normalize();
-      const to = berth
-        ? new Vector3(berth.center.x, berth.center.y, berth.center.z).normalize()
-        : from.clone();
-      return new Quaternion().setFromUnitVectors(from, to);
-    };
-
-    const applyNebulaShelves = (categoryId) => {
-      const id = typeof categoryId === 'string' && categoryId ? categoryId : null;
-      const shelf = id ? buildTagNebula(stations, id, { seed: catalog.seed }) : null;
-      // Aim the field at the berth the pointer actually hit. A shelf rendered
-      // where the camera is not looking is the same bug as no shelf at all.
-      const berth =
-        id && machine.layout && machine.layout.groups
-          ? machine.layout.groups.find((group) => group.id === id && group.count > 0) || null
-          : null;
-      const spin = berth ? shelfSpin(berth) : null;
-      for (let i = 0; i < nebulaLayout.genres.length; i += 1) {
-        const volume = nebulaLayout.genres[i];
-        const tag = shelf && shelf.tags[i] ? shelf.tags[i] : null;
-        volume.id = tag ? tag.id : `shelf-${i}`;
-        volume.count = tag ? tag.count : 0;
-        const base = nebulaBaseCenters[i];
-        const turned = spin
-          ? new Vector3(base.x, base.y, base.z).applyQuaternion(spin)
-          : new Vector3(base.x, base.y, base.z);
-        volume.center.x = turned.x;
-        volume.center.y = turned.y;
-        volume.center.z = turned.z;
-        // A shelf with no stations is not a small shelf, it is no shelf: its
-        // dust is switched off rather than left standing as an empty shape.
-        if (nebula) nebula.setVolumeAmount(i, tag && tag.count > 0 ? 1 : 0);
-      }
-      // The station cloud has to be scattered on the berths this file draws, not
-      // on the throwaway layout the tag builder measured for itself: two
-      // different arrangements put the dust beside its own label.
-      const field = shelf ? shelfField(shelf, spin) : null;
-      machine.nebulaCategory = id;
-      if (layer) layer.setCluster(field);
-      if (machine.genreId && nebulaIndex() < 0) machine.genreId = null;
-      return shelf;
-    };
-
-    /** Scatter one category's shelf stations onto the shared berth geometry. */
-    const shelfField = (shelf, spin) => {
-      const sizes = new Map();
-      for (const group of shelf.groups || []) sizes.set(group.id, group.radius);
-      const groups = [];
-      for (let i = 0; i < nebulaLayout.genres.length; i += 1) {
-        const volume = nebulaLayout.genres[i];
-        const tag = shelf.tags[i];
-        if (!tag || !tag.count || !tag.stations || !tag.stations.length) continue;
-        groups.push({
-          id: volume.id,
-          count: tag.count,
-          radius: sizes.get(volume.id) || volume.radius * 0.92,
-          center: volume.center,
-          stations: tag.stations,
-        });
-      }
-      if (!groups.length) return null;
-      // The groups already carry the turned centres, so the scatter arrives in
-      // the turned space: rotating it again would put the dust beside its own
-      // label, which is exactly what it looked like the first time.
-      const scattered = scatterStations(stations.length, groups, catalog.seed);
-      const members = new Uint8Array(stations.length);
-      for (const group of groups) {
-        for (const index of group.stations) {
-          if (index >= 0 && index < members.length) members[index] = 1;
-        }
-      }
-      return {
-        positions: scattered.positions,
-        weights: scattered.weights,
-        members,
-        radius: nebulaLayout.extent,
-      };
-    };
-
-    /**
-     * The genre palette as CSS. Kept near-opaque so a label stays readable, but
-     * it is the volume's own colour, not a second light source.
-     */
-    const nebulaCss = (color) =>
-      `rgba(${Math.round(Math.min(1, color[0]) * 255)}, ${Math.round(Math.min(1, color[1]) * 255)}, ${Math.round(Math.min(1, color[2]) * 255)}, 0.95)`;
-
-    /**
-     * Pick a volume under a pointer position.
-     *
-     * The hit test runs against each volume's padded sphere, never the
-     * particles: 26,000 dust motes cannot be projected per pointer move, and the
-     * sphere is the shape the eye is already reading.
-     */
-    const pickNebulaAt = (clientX, clientY) => {
-      if (!nebula || !machine.expanded) return null;
-      const rect = canvas.getBoundingClientRect();
-      const px = clientX - rect.left;
-      const py = clientY - rect.top;
-      if (px < 0 || py < 0 || px > viewport.w || py > viewport.h) return null;
-      camera.updateMatrixWorld();
-      const hit = nebula.pick(camera, (px / viewport.w) * 2 - 1, 1 - (py / viewport.h) * 2);
-      if (!hit || hit.index < 0) return null;
-      // An empty shelf draws nothing, so it cannot be hovered either.
-      const volume = nebulaLayout.genres[hit.index];
-      return volume && volume.count > 0 ? hit : null;
-    };
 
     /**
      * The group under a pointer, in the cluster space.
@@ -642,170 +430,6 @@ export function mountStage(container, options) {
       requestFrame();
     };
 
-    const setNebulaHover = (index) => {
-      const next = Number.isInteger(index) && index >= 0 ? index : -1;
-      if (next === hoverNebulaIndex) return;
-      hoverNebulaIndex = next;
-      if (nebula) {
-        nebula.setHover(next, 1);
-        if (reducedMotion) nebula.update(1 / 60, { instant: true });
-      }
-      canvas.style.cursor = next >= 0 ? 'pointer' : 'grab';
-      dirty = true;
-      requestFrame();
-    };
-
-    /**
-     * Dolly onto one volume without selecting or playing anything.
-     *
-     * The nebula's own limits still own the distance: the point is to fill the
-     * frame with the sphere the reader aimed at, not to fly the camera into it.
-     */
-    const zoomToNebula = (index) => {
-      if (!nebula || !Number.isInteger(index) || index < 0) return;
-      const volume = nebulaLayout.genres[index];
-      if (!volume || volume.count <= 0) return;
-      const limits = nebulaLimits();
-      const center = volume.center;
-      const distance = Math.max(0.001, Math.hypot(center.x, center.y, center.z));
-      const phi = Math.acos(Math.min(1, Math.max(-1, center.y / distance)));
-      const theta = Math.atan2(center.x, center.z);
-      const framing = rig.framing();
-      const radius = Math.min(
-        limits.maxRadius,
-        Math.max(limits.minRadius, Math.max(volume.radius * 2.6, framing.radius * 0.62)),
-      );
-      rig.setHome({
-        radius,
-        phi,
-        theta,
-        target: { x: center.x, y: center.y, z: center.z },
-        minRadius: limits.minRadius,
-        maxRadius: limits.maxRadius,
-      });
-      setNebulaHover(index);
-      dirty = true;
-      requestFrame();
-    };
-
-    /**
-     * Select a genre. This is the stable hook phase 4 needs: the selection lives
-     * in the machine, is mirrored into the layer's uniforms and is reported to
-     * the host through `onGenreChange`, but nothing here enters a cluster.
-     */
-    const setGenre = (id, options) => {
-      const opts = options || {};
-      const next = typeof id === 'string' && id ? id : null;
-      const changed = next !== machine.genreId;
-      machine.genreId = next;
-      if (nebula) {
-        nebula.setSelected(next ? nebulaIndex() : -1);
-        dirty = true;
-        requestFrame();
-      }
-      if (changed) {
-        notifyMode();
-        if (!opts.silent && typeof settings.onGenreChange === 'function') {
-          try {
-            settings.onGenreChange(next);
-          } catch {
-            /* a panel bug must not stop the scene */
-          }
-        }
-      }
-      return changed;
-    };
-
-    /**
-     * The label payload for the nebula space: one entry per visible genre.
-     * Occlusion is decided here against the same padded spheres picking uses, so
-     * a label cannot float on top of the volume that is hiding it.
-     */
-    const nebulaLabels = () => {
-      if (!nebula) return [];
-      const selected = nebulaIndex();
-      const entries = [];
-      for (const volume of nebulaLayout.genres) {
-        // Only a shelf that holds stations is named: an empty slot has no dust
-        // on screen, so a label there would point at nothing.
-        if (volume.count <= 0) continue;
-        projected.set(volume.center.x, volume.center.y, volume.center.z).project(camera);
-        if (projected.z < -1 || projected.z > 1) continue;
-        const x = (projected.x * 0.5 + 0.5) * viewport.w;
-        const y = (0.5 - projected.y * 0.5) * viewport.h;
-        nebulaPoint.set(volume.center.x, volume.center.y, volume.center.z);
-        const distance = camera.position.distanceTo(nebulaPoint);
-        camera.updateMatrixWorld();
-        const probe = nebula.pick(camera, (x / viewport.w) * 2 - 1, 1 - (y / viewport.h) * 2);
-        const occluded = Boolean(
-          probe && probe.index !== volume.index && probe.near < distance - volume.radius * 0.55,
-        );
-        entries.push({
-          id: volume.id,
-          index: volume.index,
-          label: genreLabel(volume.id, labelLanguage) || volume.id,
-          count: volume.count,
-          position: volume.center,
-          x,
-          y,
-          color: nebulaCss(volume.color),
-          radiusPx: nebula.radiusPx(volume.index, camera, viewport.h),
-          hovered: volume.index === hoverNebulaIndex,
-          selected: volume.index === selected,
-          occluded,
-          distance,
-        });
-      }
-      // Nearest first: the closest volume gets the first claim on a label slot.
-      entries.sort((a, b) => a.distance - b.distance);
-      return entries;
-    };
-
-    /** The distance the shell needs at this box, so a narrow window still fits. */
-    const nebulaFitRadius = (w, h, fov) => nebulaFramingRadius(nebulaLayout.extent, w, h, fov);
-
-    /**
-     * One source of truth for the nebula dolly range.
-     *
-     * The fit distance is the authored view, not a boundary: the floor has to
-     * stay below it or the wheel has nowhere to go, and the ceiling has to stay
-     * above it or the shell collapses to dust on the first scroll out.
-     */
-    const nebulaLimits = () => {
-      const fit = nebulaFitRadius(viewport.w, viewport.h, camera.fov);
-      return {
-        fit,
-        minRadius: Math.max(26, Math.min(nebulaLayout.camera.minRadius, fit * 0.62)),
-        maxRadius: Math.min(300, Math.max(nebulaLayout.camera.maxRadius, fit * 1.45)),
-      };
-    };
-
-    /**
-     * Keep the shell framed after a resize without re-authoring the view: the
-     * angles and the user's zoom level survive, only the distance moves. A
-     * portrait box needs a wider shell on screen, so the home distance follows
-     * the box instead of staying at the distance authored for the old one.
-     */
-    const applyNebulaFraming = () => {
-      if (!nebula || machine.nebulaTarget < 0.5) return;
-      const limits = nebulaLimits();
-      const framing = rig.framing();
-      const previous = nebulaFit;
-      nebulaFit = limits.fit;
-      // No previous fit means this is the entry frame, not a resize: the authored
-      // distance wins and no zoom ratio is applied.
-      const zoom = previous > 0 ? Math.min(1.6, Math.max(0.55, framing.radius / previous)) : 1;
-      rig.setLimits({ minRadius: limits.minRadius, maxRadius: limits.maxRadius });
-      rig.setHome({
-        radius: Math.min(limits.maxRadius, Math.max(limits.minRadius, limits.fit * zoom)),
-        phi: framing.home.phi,
-        theta: framing.home.theta,
-        target: framing.home.target,
-        minRadius: limits.minRadius,
-        maxRadius: limits.maxRadius,
-      });
-    };
-
     const positionOf = (index) => {
       if (layer) layer.positionInto(index, labelPoint);
       else if (stations[index] && stations[index].position) {
@@ -852,7 +476,7 @@ export function mountStage(container, options) {
         return [
           {
             id: group.id,
-            label: categoryLabel(group.id, labelLanguage) || group.id,
+            label: genreLabel(group.id, labelLanguage) || group.id,
             count: group.count,
             position: group.center,
             occluded: false,
@@ -899,16 +523,11 @@ export function mountStage(container, options) {
       }
       labels.resize(w, h, renderer.getPixelRatio());
       if (radio) radio.resize(w, h, renderer.getPixelRatio());
-      if (nebula) {
-        nebula.setPixelRatio(renderer.getPixelRatio());
-        nebula.setViewport(w, h, camera.fov);
-        applyNebulaFraming();
-      }
       // The hole's far limit is a property of the box, not a constant: opening
       // the sidebar narrows the canvas, and a ceiling authored for the full
       // window would let the shadow fall below its size floor there. A cluster
       // keeps the limit its own layout authored, so only the hole is refitted.
-      if (machine.target < 0.5 && machine.nebulaTarget < 0.5 && machine.mode === 'black-hole') {
+      if (machine.target < 0.5 && machine.mode === 'black-hole') {
         rig.setLimits(holeOrbitLimits());
       }
       return true;
@@ -998,12 +617,11 @@ export function mountStage(container, options) {
       // frame. The commit threshold does not switch layouts or cut the image.
       const rise = smoothstep01(machine.progress);
 
-      const nebulaRise = smoothstep01(machine.nebula);
-      // Whichever space is taking over drives the hole out. The hole leaves a
-      // little after the content starts moving, and returns a little before it
-      // arrives: the matter should look reorganised, not cross-faded.
-      // `wormCover` is the third source: the wormhole has already swallowed the
-      // frame, so the hole is gone even while the nebula is still at zero.
+      // The arriving space drives the hole out. The hole leaves a little after
+      // the content starts moving, and returns a little before it arrives: the
+      // matter should look reorganised, not cross-faded.
+      // `wormCover` is the second source: the wormhole has already swallowed the
+      // frame, so the hole is gone even while `progress` is still at zero.
       const cover = clamp01(machine.wormCover);
       // Hold pressure is not a source of "the hole is leaving": the disc is
       // winding up under the shadow, and the shadow itself must not move. The
@@ -1011,7 +629,7 @@ export function mountStage(container, options) {
       // is the only way to show a wind-up without drawing a second population
       // of points over the first.
       const charge = clamp01(machine.wormCharge);
-      const leaving = Math.max(rise, nebulaRise, cover);
+      const leaving = Math.max(rise, cover);
       const holeFade = smoothstep01(clamp01((leaving - 0.05) / 0.62));
       // A captured source cell and the imaged disc are NEVER drawn together.
       // During the passage this pass supplies only the sky/shadow; all visible
@@ -1041,63 +659,28 @@ export function mountStage(container, options) {
       const dark = clamp01(machine.wormDark);
       renderer.toneMappingExposure = 1.15 + 0.08 * charge - 0.74 * dark;
 
-      // The starfield stays as the deep background in the nebula space: the
-      // camera sits inside its outer shells there, and empty black around the
-      // volumes reads as a missing backdrop, not as space.
-      // The sky is one sky. Dimming it as the cluster or the shelves arrive was
-      // reading as "the background changed", which is exactly what this page is
-      // not allowed to do: the three states share one field of stars at one
-      // brightness. Only the wormhole cover, mid-passage, may pull it down.
+      // The starfield stays as the deep background in the cluster space: the
+      // camera sits inside its outer shells there.
+      // The sky is one sky. Dimming it as the cluster arrives was reading as
+      // "the background changed", which is exactly what this page is not allowed
+      // to do: the two states share one field of stars at one brightness. Only
+      // the wormhole cover, mid-passage, may pull it down.
       starfield.setDim(cover * 0.55);
       if (layer) {
-        // The nebula page is itself a shelf layout of the same station cloud,
-        // so it needs the same gate: the cluster amount is what fades the
-        // stations that are not part of what is on screen.
-        layer.setClusterAmount(Math.max(rise, nebulaRise));
+        // The cluster is the same station cloud rearranged, so the cluster
+        // amount is what fades the stations that are not part of what is on
+        // screen.
+        layer.setClusterAmount(rise);
         // The normal particle population is a resting-state representation,
         // not an in-flight substitute. It returns only after the source cells
         // have reached their station destinations.
         layer.object.visible = !transferred || handoff > 0;
-        layer.setHoleOnly(clamp01(1 - Math.max(clamp01(rise * 1.6), machine.nebula)));
+        layer.setHoleOnly(clamp01(1 - clamp01(rise * 1.6)));
 
         layer.setDiskMatter(clamp01(1 - rise));
         layer.setDim((HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
       }
-      if (nebula) {
-        nebula.object.visible = nebulaRise > 0.001;
-        // A volume is a tint on the shelf's own light, not a fog you look
-        // through: the stations are the nebula. A sixteenth of the dust is
-        // enough to outline a tag group's hue and extent without veiling the
-        // stars inside it.
-        nebula.setAmount(nebulaRise * 0.16);
-      }
-      if (rise > 0.001 || nebulaRise > 0.001 || cover > 0.001) dirty = true;
-    };
-
-    /**
-     * The shelf fade reached its destination.
-     *
-     * Opening and closing a berth both stay inside the cluster page, so this
-     * only ever clears state — it never moves `mode`.
-     */
-    const finishNebulaTransition = () => {
-      nebulaMoving = false;
-      // Back to the house rate: only a wormhole-reveal is fast.
-      nebulaSpeed = TRANSITION_RATE * 0.82;
-      if (machine.nebulaTarget > 0.5) {
-        machine.mode = 'cluster';
-      } else if (machine.progress > 0.5) {
-        machine.mode = 'cluster';
-        hoverNebulaIndex = -1;
-        if (nebula) nebula.setHover(-1, 0);
-      } else {
-        machine.mode = 'black-hole';
-        machine.ui = 'black-hole';
-        hoverNebulaIndex = -1;
-        if (nebula) nebula.setHover(-1, 0);
-      }
-      syncDataset();
-      notifyMode();
+      if (rise > 0.001 || cover > 0.001) dirty = true;
     };
 
     const frameTimes = [];
@@ -1158,28 +741,7 @@ export function mountStage(container, options) {
       // wormhole mask can never cover them. They now ride the same scalar as
       // the space they name: the cover is opaque black and the names fade with
       // it, because the deck no longer drives an alpha of its own.
-      const nebulaReveal = smoothstep01(machine.nebula);
-      if (nebulaReveal > 0.02) {
-        // The nebula space names its volumes and nothing else: no station names,
-        // no category legend, and no hole keep-out (the hole is not drawn).
-        labels.draw({
-          camera,
-          lod: 0,
-          stations: [],
-          categories: [],
-          selectedIndex: -1,
-          hole: null,
-          visibilityAt: () => 0,
-          positionAt: () => null,
-          clouds: [],
-          cloudStrength: 0,
-          cluster: 0,
-          nebulae: nebulaLabels(),
-          nebulaFade: nebulaReveal,
-          hover: hoverFrame(),
-          hint: { text: hint.text, alpha: hint.alpha },
-        });
-      } else if (layer) {
+      if (layer) {
         const info = layer.filterInfo();
         // The label overlay follows the same rule: black-hole mode draws none.
         // It is still created, resized and disposed exactly as before.
@@ -1210,8 +772,8 @@ export function mountStage(container, options) {
         labels.clear();
       }
       // Fixture labels last: they sit above the station names by design, but
-      // only in the space they belong to. A nebula frame carries no fixtures.
-      if (nebulaReveal > 0.02) {
+      // only in the space they belong to. The cluster frame carries no fixtures.
+      if (machine.progress > 0.02) {
         if (radio) radio.clear();
       } else {
         updateRadioOverlay();
@@ -1256,24 +818,6 @@ export function mountStage(container, options) {
         if (!transitioning) finishTransition();
       }
 
-      // The nebula fade. Deliberately its own value: entering the nebula never
-      // touches the cluster's progress, so an interrupted cluster transition
-      // cannot be mistaken for part of this one.
-      // A running wormhole owns the nebula value (see driveNebula): integrating
-      // a rate here as well would put the dust on a second, slower clock.
-      if (!worm.kind && machine.nebula !== machine.nebulaTarget) {
-        const delta = machine.nebulaTarget - machine.nebula;
-        const step = nebulaSpeed * dt;
-        machine.nebula += Math.sign(delta) * Math.min(Math.abs(delta), step);
-        if (Math.abs(machine.nebulaTarget - machine.nebula) < 1e-4) {
-          machine.nebula = machine.nebulaTarget;
-        }
-        nebulaMoving = machine.nebula !== machine.nebulaTarget;
-        applyTransition();
-        dirty = true;
-        if (!nebulaMoving) finishNebulaTransition();
-      }
-
       if (!reducedMotion) {
         elapsed += dt;
         starfield.update(elapsed, dt);
@@ -1313,12 +857,6 @@ export function mountStage(container, options) {
         else if (fps > 55 && pickableLevel > 0) pickableLevel -= 1;
       }
 
-      if (nebula && (nebula.amount > 0.001 || nebula.isEmphasised)) {
-        nebula.update(dt, { paused: reducedMotion });
-        if (!reducedMotion) dirty = true;
-      }
-
-
       // The eased field spin only moves when frames are drawn, and hovering is
       // the one interaction that happens with a still camera: keep drawing
       // until it has settled, or resuming after the card closes would only be
@@ -1332,14 +870,11 @@ export function mountStage(container, options) {
       // uploaded and rendered. A full progress ring must never lead the image.
       if (worm.landed) finishWormhole();
       const morphing = layer ? layer.isAnimating : false;
-      const nebulaDrift = nebula ? nebula.amount > 0.001 && !reducedMotion : false;
       if (
         !reducedMotion ||
         moved ||
         morphing ||
         transitioning ||
-        nebulaMoving ||
-        nebulaDrift ||
         hint.text ||
         worm.kind
       ) {
@@ -1481,7 +1016,6 @@ export function mountStage(container, options) {
       // raster that drew the pixel. So the projected grid is only ever built
       // for a space that still picks by projection.
       if (machine.progress < 0.5) return;
-      if (machine.nebula > 0.5) return;
       const now = performance.now();
       if (now - pickableAt < PICKABLE_REFRESH_MS) return;
       const signature = cameraSignature();
@@ -1626,12 +1160,8 @@ export function mountStage(container, options) {
     // no other chrome: no breadcrumb, no level badge, no permanent legend.
     const HINTS = {
       cluster: {
-        zh: '点击星团进入星云 · 右键长按返回',
-        en: 'Click a cluster for its nebula · Right-hold to go back',
-      },
-      nebula: {
-        zh: '点击电台播放 · 滚轮缩放 · 右键长按返回',
-        en: 'Click a station to play · Wheel to zoom · Right-hold to go back',
+        zh: '点击电台播放 · 右键长按返回',
+        en: 'Click a station to play · Right-hold to go back',
       },
       hole: {
         zh: '长按黑洞进入星团',
@@ -2129,8 +1659,6 @@ export function mountStage(container, options) {
       if (selectedId) canvas.setAttribute('data-bhrl-selected', selectedId);
       else canvas.removeAttribute('data-bhrl-selected');
       canvas.setAttribute('data-bhrl-mode', machine.mode);
-      if (machine.genreId) canvas.setAttribute('data-bhrl-genre', machine.genreId);
-      else canvas.removeAttribute('data-bhrl-genre');
     };
 
     const emitSelect = (station) => {
@@ -2144,10 +1672,7 @@ export function mountStage(container, options) {
 
     const notifyMode = () => {
       const snapshot = stateSnapshot();
-      // `expanded` belongs in the key: opening a berth does not change `state`
-      // (it is still the cluster page), so without it the host would never be
-      // told that the shelf surfaces should appear.
-      const key = `${snapshot.state}|${snapshot.categoryId || ''}|${snapshot.expanded || ''}|${snapshot.transitioning ? 1 : 0}`;
+      const key = `${snapshot.state}|${snapshot.categoryId || ''}|${snapshot.transitioning ? 1 : 0}`;
       if (key === lastModeKey) return;
       lastModeKey = key;
       canvas.setAttribute('data-bhrl-state', snapshot.state);
@@ -2160,48 +1685,28 @@ export function mountStage(container, options) {
     };
 
     const stateSnapshot = () => {
-      const movingNebula = machine.nebula !== machine.nebulaTarget;
       const state = transitioning
         ? machine.target > 0.5
           ? 'transition-to-cluster'
           : 'transition-to-black-hole'
-        : movingNebula
-          ? machine.nebulaTarget > 0.5
-            ? 'cluster'
-            : machine.expanded
-              ? 'cluster'
-              : 'transition-to-cluster'
-          : machine.mode === 'cluster'
-            ? 'cluster'
-            : machine.ui;
-      const tn = Math.round(smoothstep01(machine.nebula) * 1000) / 1000;
+        : machine.mode === 'cluster'
+          ? 'cluster'
+          : machine.ui;
       return {
         state,
         mode: machine.mode,
         ui: machine.ui,
         categoryId: machine.categoryId,
-        genreId: machine.genreId,
         progress: Math.round(machine.progress * 1000) / 1000,
-        // The two reserved scalars of the phase-1 design: `tn` is how much of
-        // the nebula space is present, `tc` how much of a genre cluster is.
-        // `tc` stays a constant 0 until phase 4 wires the genre → cluster leg.
-        tn,
+        // How much of the cluster space is present. Kept under its phase-1 name
+        // so the panel contract does not have to follow the scene's internals.
         tc: Math.round(smoothstep01(machine.progress) * 1000) / 1000,
-        transitioning: transitioning || movingNebula,
-        // Which berth the shelf field belongs to. `categoryId` is the field's
-        // selection, which is empty when the whole field is on screen; the
-        // shelf's own category has to survive that, or nothing can say which
-        // shelves are labelled.
-        nebulaCategory: machine.nebulaCategory || null,
-        // The berth whose tag shelves are open, or null while the field is
-        // whole. This is what the host renders the shelf surfaces from — there
-        // is no separate nebula page to switch to.
-        expanded: machine.expanded || null,
+        transitioning,
         crossing: worm.kind
           ? { kind: worm.kind, target: worm.target || null, locked: Boolean(worm.locked) }
           : null,
         stations: stations.length,
-        nebulae: nebulaLayout.genres.length,
+        genres: genres.length,
       };
     };
 
@@ -2267,7 +1772,7 @@ export function mountStage(container, options) {
       if (machine.mode === 'cluster' && machine.target === 1) return true;
       let layout = layoutCache.get('field');
       if (!layout) {
-        layout = buildClusterLayout(stations, { seed: catalog.seed, vocabulary: GENRE_IDS });
+        layout = buildClusterLayout(stations, { seed: catalog.seed, vocabulary: GENRE_IDS, byGenre: true, forms: true });
         layoutCache.set('field', layout);
       }
       if (machine.mode !== 'cluster' && machine.target < 0.5) {
@@ -2346,162 +1851,6 @@ export function mountStage(container, options) {
       return true;
     };
 
-    /**
-     * Enter the nebula space. The cluster state is dropped rather than faded:
-     * the two spaces do not share a shot, and phase 4 owns the real genre →
-     * cluster leg. `options.genreId` selects a volume on arrival.
-     */
-    /**
-     * Open one berth of the cluster field.
-     *
-     * This is not a page change. The field is the page; opening a berth keeps
-     * `mode` at 'cluster' and `progress` at 1, then lets the other berths leave
-     * the frame while this category's tag shelves take it over. `machine.expanded`
-     * is the question every interaction now asks instead of "is this the nebula".
-     */
-    const enterNebula = (enterOptions) => {
-      const opts = enterOptions || {};
-      if (!nebula) return false;
-      const requested = opts.categoryId ? String(opts.categoryId) : machine.categoryId;
-      const categoryId = requested
-        || (machine.layout && machine.layout.groups
-          ? (machine.layout.groups.find((group) => group.count > 0) || {}).id || null
-          : null);
-      if (machine.expanded && machine.nebulaTarget === 1 && machine.expanded === categoryId) {
-        if (opts.genreId) setGenre(String(opts.genreId));
-        return true;
-      }
-      if (machine.nebulaTarget < 0.5) machine.nebulaSavedCamera = rig.framing();
-      clearTimers();
-      clearSelection(false);
-      // The berth this shelf field was opened from survives as a camera and a
-      // layout, so closing it puts the cluster field back instead of dropping
-      // the user out at the hole.
-      machine.fieldBack = machine.progress > 0.5 && Boolean(machine.layout);
-      machine.ui = 'black-hole';
-      machine.mode = 'cluster';
-      machine.progress = 1;
-      machine.target = 1;
-      machine.expanded = categoryId;
-      machine.nebulaTarget = 1;
-      if (machine.nebula > 0.999) machine.nebula = 0.999;
-      // The shelf field is relabelled before the camera is placed, so the fit
-      // distance is measured against the layout that is actually on screen.
-      applyNebulaShelves(categoryId);
-      if (opts.genreId) setGenre(String(opts.genreId));
-      // Opening a berth is a push, not a cut: the camera swings onto that
-      // berth's own bearing while the stations glide from their group into
-      // their shelves, so the arrival has a direction.
-      const berth = categoryId && machine.layout
-        ? (machine.layout.groups || []).find((group) => group.id === categoryId)
-        : null;
-      const limits = nebulaLimits();
-      // The field was just turned onto this berth's bearing, so the camera can
-      // take its polar angle from the berth too: the arrival looks down the
-      // shelf it opened, not at the fixed slot the placeholder layout used.
-      const berthDir = berth ? new Vector3(berth.center.x, berth.center.y, berth.center.z).normalize() : null;
-      // Re-entering a berth returns to the last bearing and zoom it was left at;
-      // a berth never opened before starts from its own bearing and the fit.
-      const remembered = categoryId ? berthCameras.get(String(categoryId)) : null;
-      rig.setHome({
-        radius: remembered && Number.isFinite(remembered.radius)
-          ? remembered.radius
-          : berth
-            ? limits.fit * 0.88
-            : limits.fit,
-        phi: remembered && Number.isFinite(remembered.phi)
-          ? remembered.phi
-          : berthDir
-            ? Math.acos(Math.max(-0.9, Math.min(0.9, berthDir.y)))
-            : nebulaLayout.camera.phi,
-        theta: remembered && Number.isFinite(remembered.theta)
-          ? remembered.theta
-          : berthDir
-            ? Math.atan2(berthDir.x, berthDir.z)
-            : nebulaLayout.camera.theta,
-        target: remembered && remembered.target ? remembered.target : undefined,
-        minRadius: limits.minRadius,
-        maxRadius: limits.maxRadius,
-      });
-      nebulaFit = limits.fit;
-      rig.setAnchorZoom(true);
-      showHint(hintFor('nebula'));
-      applyTransition();
-      syncDataset();
-      dirty = true;
-      requestFrame();
-      notifyMode();
-      return true;
-    };
-
-    /** Close the open berth, or leave the field for the hole. */
-    const exitNebula = (exitOptions) => {
-      const opts = exitOptions || {};
-      if (!nebula) return false;
-      if (machine.nebulaTarget === 0 && machine.mode === 'black-hole') return true;
-      clearTimers();
-      // Where this berth was left, before the state that names it is dropped.
-      if (machine.expanded) berthCameras.set(machine.expanded, rig.framing());
-      // The chosen genre is left in place on purpose: coming back to the shelf
-      // field should restore where the user was, not the default framing.
-      machine.nebulaTarget = 0;
-      machine.expanded = null;
-      machine.ui = 'black-hole';
-      const saved = machine.nebulaSavedCamera;
-      machine.nebulaSavedCamera = null;
-      if (machine.fieldBack && machine.layout) {
-        // Back to the cluster page the shelf field was opened from: the same
-        // groups, the same framing, no trip through the hole in between.
-        machine.mode = 'cluster';
-        machine.progress = 1;
-        machine.target = 1;
-        machine.fieldBack = false;
-        // The shelf field is gone the instant the veil comes down, not faded:
-        // leaving it for its berth is one crossing, and a second fade underneath
-        // would run the nebula's own landing on top of it.
-        machine.nebula = 0;
-        machine.nebulaTarget = 0;
-        // The volume hover belonged to the shelf that is closing; the cluster
-        // has no volumes, so the index cannot outlive the berth.
-        hoverNebulaIndex = -1;
-        if (nebula) nebula.setHover(-1, 0);
-        if (layer) layer.setCluster(machine.layout);
-        rig.setHome({
-          radius: saved && Number.isFinite(saved.radius) ? saved.radius : machine.layout.camera.radius,
-          phi: saved && Number.isFinite(saved.phi) ? saved.phi : machine.layout.camera.phi,
-          theta: saved && Number.isFinite(saved.theta) ? saved.theta : machine.layout.camera.theta,
-          minRadius: machine.layout.minRadius,
-          maxRadius: machine.layout.maxRadius,
-        });
-        rig.setAnchorZoom(true);
-        showHint(hintFor('cluster'));
-        applyTransition();
-        syncDataset();
-        dirty = true;
-        requestFrame();
-        notifyMode();
-        return true;
-      }
-      machine.mode = 'black-hole';
-      machine.nebulaCategory = null;
-      const limits = holeOrbitLimits();
-      rig.setHome({
-        radius: saved && Number.isFinite(saved.radius) ? saved.radius : undefined,
-        phi: saved && Number.isFinite(saved.phi) ? saved.phi : undefined,
-        theta: saved && Number.isFinite(saved.theta) ? saved.theta : undefined,
-        minRadius: limits.minRadius,
-        maxRadius: limits.maxRadius,
-      });
-      rig.setAnchorZoom(false);
-      showHint(hintFor('hole'));
-      applyTransition();
-      syncDataset();
-      dirty = true;
-      requestFrame();
-      notifyMode();
-      return opts.instant === true ? true : true;
-    };
-
     const finishTransition = () => {
       transitioning = false;
       if (machine.target > 0.5) {
@@ -2564,7 +1913,7 @@ export function mountStage(container, options) {
     // ---- the wormhole hold ------------------------------------------------
     //
     // One hold machine for both directions. `kind` says which way the frame is
-    // being pushed ('enter' from the hole, 'exit' from the nebula), `startedAt`
+    // being pushed ('enter' from the hole, 'exit' from the cluster), `startedAt`
     // is a wall clock reading so a slow frame shortens the wait instead of
     // stretching it, and `locked` is the point of no return: before it a release
     // cancels, after it the timeline runs to the end.
@@ -2622,7 +1971,6 @@ export function mountStage(container, options) {
       recoilBlend: 0,
       /** State captured before the exit preparation, so a cancel can restore it. */
       coverBefore: 0,
-      nebulaSpeedBefore: 0,
       /** Cluster blend when the exit was armed: a cancel before it settles resumes. */
       progressBefore: 0,
       /** The ring reached its full arc and was dismissed for this hold. */
@@ -2637,7 +1985,7 @@ export function mountStage(container, options) {
     const prepareDiscTransfer = (options) => {
       let field = layoutCache.get('field');
       if (!field) {
-        field = buildClusterLayout(stations, { seed: catalog.seed, vocabulary: GENRE_IDS });
+        field = buildClusterLayout(stations, { seed: catalog.seed, vocabulary: GENRE_IDS, byGenre: true, forms: true });
         layoutCache.set('field', field);
       }
       if (!reducedMotion && !discTransfer.active) {
@@ -2726,7 +2074,7 @@ export function mountStage(container, options) {
       worm.cursorY = p.y;
       // The ring starts with motion, not with an idle hold threshold. Entry
       // moves immediately except under reduced motion; exit starts at 0.55 s.
-      const clusterExit = kind === 'exit' && !machine.expanded && machine.progress > 0.5;
+      const clusterExit = kind === 'exit' && machine.progress > 0.5;
       if (holdRing && (kind === 'enter' ? !reducedMotion : !clusterExit)) {
         holdRing.show(p.x, p.y);
         holdRing.setProgress(smoothstep01(clamp01(resumeAt / (WORM_END_S - 0.18))), p.x, p.y);
@@ -2791,37 +2139,26 @@ export function mountStage(container, options) {
      */
     const armExit = () => {
       if (worm.armed) return;
-      // Leaving for the hole. Which space is being left decides the target:
-      // the cluster field has the hole one step up, and a shelf field opened
-      // from a berth goes back to that berth, not to the hole.
-      // Which space is being left decides the target. The shelf field is one
-      // step below the field it was opened from, and the whole field has the
-      // hole one step up — so the gesture is always "one level", never a jump.
-      const fromShelf = Boolean(machine.expanded);
-      const fromCluster = !fromShelf && machine.progress > 0.5;
+      // Which space is being left decides the target: the cluster field has the
+      // hole one step up, so the gesture is always "one level", never a jump.
+      const fromCluster = machine.progress > 0.5;
       if (reducedMotion && !fromCluster) {
-        nebulaSpeed = WORM_CALM_RATE;
-        if (fromShelf) exitNebula({});
         cancelHold(true);
         return;
       }
       worm.armed = true;
       worm.coverBefore = machine.wormCover;
-      worm.nebulaSpeedBefore = nebulaSpeed;
       worm.progressBefore = machine.progress;
-      worm.target = fromShelf ? 'field' : fromCluster ? 'cluster' : 'nebula';
+      worm.target = fromCluster ? 'cluster' : 'field';
       if (fromCluster && !prepareDiscTransfer({ holeFraming: machine.savedCamera })) {
         worm.armed = false;
         cancelHold(true);
         return;
       }
       machine.wormCover = fromCluster ? 0 : 1;
-      nebulaSpeed = WORM_REVEAL_RATE;
-      if (fromShelf) exitNebula({});
-      else if (fromCluster) exitCluster({});
-      // Only the cluster leg is reversible under this timeline: the shelf and
-      // nebula legs own state that has no mirror undo here, so they keep the
-      // old commit-at-preparation rule.
+      if (fromCluster) exitCluster({});
+      // The cluster leg is reversible under this timeline, so the lock waits for
+      // the ring to be full.
       if (worm.target !== 'cluster') worm.locked = true;
     };
 
@@ -2842,7 +2179,6 @@ export function mountStage(container, options) {
     const beginCover = () => {
       // Entry dissolves continuously with progress, never with an opaque cut.
       machine.wormCover = 0;
-      nebulaSpeed = WORM_REVEAL_RATE;
       // The host is told at the moment the space actually changes, exactly as
       // the old centre hold told it. Its handler calls enterCluster(); if the
       // host has no handler the transition starts here instead.
@@ -2885,9 +2221,6 @@ export function mountStage(container, options) {
       machine.wormCharge = 0;
       machine.wormDark = 0;
       machine.wormCover = worm.coverBefore;
-      nebulaSpeed = settled
-        ? worm.nebulaSpeedBefore || TRANSITION_RATE * 0.82
-        : WORM_REVEAL_RATE;
       if (layer) {
         if (layout) layer.setCluster(layout);
         // A resumed entry keeps feeding the disc transfer: driveCluster above
@@ -2910,7 +2243,6 @@ export function mountStage(container, options) {
       worm.blend = 0;
       worm.armed = false;
       worm.coverBefore = 0;
-      worm.nebulaSpeedBefore = 0;
       worm.progressBefore = 0;
       worm.ringFull = false;
       worm.recoilTarget = 0;
@@ -2939,45 +2271,30 @@ export function mountStage(container, options) {
 
     const finishWormhole = () => {
       // Land exactly on the end state rather than a frame short of it. The
-      // destination is whichever scalar the crossing was driving: the cluster
-      // field for the hole ↔ cluster leg, the nebula for the older leg.
-      const target = worm.target === 'nebula' ? 'nebula' : worm.target === 'field' ? 'field' : 'cluster';
+      // destination is the cluster field for the hole ↔ cluster leg.
+      const target = worm.target === 'field' ? 'field' : 'cluster';
       if (worm.kind === 'enter') {
-        if (target === 'cluster') {
-          if (machine.target < 0.5) enterCluster();
-          machine.progress = 1;
-        } else {
-          if (machine.nebulaTarget < 0.5) enterNebula();
-          machine.nebula = 1;
-        }
+        if (machine.target < 0.5) enterCluster();
+        machine.progress = 1;
       } else if (target === 'field') {
-        // Already landed: exitNebula() put the berth field back the moment the
-        // hold committed, and the veil has been peeling off it ever since.
         machine.progress = 1;
         machine.target = 1;
-      } else if (target === 'cluster') {
-        machine.progress = 0;
       } else {
-        machine.nebula = 0;
+        machine.progress = 0;
       }
       machine.wormCover = 0;
-      nebulaSpeed = TRANSITION_RATE * 0.82;
       applyTransition();
-      if (target === 'cluster' || target === 'field') {
-        // The mode follows the scalar, never the other way round: the field is
-        // on screen before the host is told it is the space it is in.
-        transitioning = false;
-        machine.mode = worm.kind === 'enter' || target === 'field' ? 'cluster' : 'black-hole';
-        if (worm.kind !== 'enter' && target !== 'field') {
-          machine.categoryId = null;
-          machine.layout = null;
-          machine.pendingFocus = null;
-        }
-        syncDataset();
-        notifyMode();
-      } else {
-        finishNebulaTransition();
+      // The mode follows the scalar, never the other way round: the field is
+      // on screen before the host is told it is the space it is in.
+      transitioning = false;
+      machine.mode = worm.kind === 'enter' || target === 'field' ? 'cluster' : 'black-hole';
+      if (worm.kind !== 'enter' && target !== 'field') {
+        machine.categoryId = null;
+        machine.layout = null;
+        machine.pendingFocus = null;
       }
+      syncDataset();
+      notifyMode();
       // The passage is over: no cones, no swell, no dimmer left on the frame.
       if (layer) layer.setBurst(0);
       // Hand the blend back to the layer, already at the value it should rest on.
@@ -3004,7 +2321,6 @@ export function mountStage(container, options) {
       worm.recoilTarget = 0;
       worm.recoilBlend = 0;
       worm.coverBefore = 0;
-      worm.nebulaSpeedBefore = 0;
       worm.progressBefore = 0;
       worm.ringFull = false;
       worm.from = null;
@@ -3030,38 +2346,11 @@ export function mountStage(container, options) {
     };
 
     /**
-     * Write the nebula value straight from the hold's timeline.
-     *
-     * The nebula used to integrate a rate against the frame delta, which is fine
-     * for a fade the user cannot see through but wrong here: the mask and the
-     * dust have to arrive at the same instant, at any frame rate. Driven from
-     * the wall clock, a dropped frame shortens the animation instead of making
-     * the two halves drift apart.
-     */
-    const driveNebula = (value) => {
-      const next = clamp01(value);
-      if (Math.abs(next - machine.nebula) < 1e-4) return;
-      machine.nebula = next;
-      applyTransition();
-      dirty = true;
-    };
-
-    /**
-     * Advance the one hold. Called from the frame loop; returns whether a frame
-     * is still owed. Every branch reads the wall clock, so the timeline is the
-     * same length whatever the frame rate was.
-     */
-    /**
      * The hold's three channels. `progress` is the geometry — the disc tearing
      * open along its axis and folding back down into the cluster; `charge` is
      * only the wind-up that comes before the commit; `dark` is the dimmer the
      * fold is watched through. Each is written from the wall clock, so a dropped
      * frame shortens the animation instead of desynchronising the parts.
-     */
-    /**
-     * The crossing's other destination. The hold lands on the cluster field,
-     * not on the genre nebula, so its timeline drives `progress` — the scalar
-     * the station cloud gathers on — instead of `nebula`.
      */
     const driveCluster = (value) => {
       const next = clamp01(value);
@@ -3162,8 +2451,6 @@ export function mountStage(container, options) {
             machine.categoryId = null;
             machine.layout = null;
             machine.pendingFocus = null;
-            // beginCover also handed the reveal clock to the wormhole.
-            nebulaSpeed = TRANSITION_RATE * 0.82;
             transitioning = false;
           }
           // The layout was only installed to give the under-hand move a
@@ -3243,8 +2530,7 @@ export function mountStage(container, options) {
       // Resolve the destination before its ring: a previous hold may have left
       // a different target. Neither geometry nor ring moves during the threshold.
       if (t < WORM_OUT_RING_S) {
-        // Shelf/nebula navigation is outside this repair; retain its countdown.
-        if (holdRing && (machine.expanded || machine.progress <= 0.5)) {
+        if (holdRing && machine.progress <= 0.5) {
           holdRing.setProgress(clamp01(t / WORM_OUT_END_S), worm.cursorX, worm.cursorY);
         }
         return true;
@@ -3262,21 +2548,15 @@ export function mountStage(container, options) {
         machine.wormCover = 0;
         applyTransition();
       }
-      if (t >= WORM_OUT_RING_S) {
-        if (worm.target === 'nebula') {
-          // The genre nebula never had cones to unsend: it only sinks, on its
-          // own veiling window.
-          driveNebula(1 - smoothstep01(clamp01((t - WORM_OUT_RING_S) / (WORM_OUT_VEIL_S - WORM_OUT_RING_S))));
-        } else if (worm.target !== 'field') {
-          const u = clamp01((t - WORM_OUT_RING_S) / (end - WORM_OUT_RING_S));
-          const blend = reducedMotion ? 1 - u : smoothstep01(1 - u);
-          driveCluster(blend);
-          if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
-          // Coming back to the hole there is nothing to wind up: the disc
-          // reassembles at the very end, already at rest.
-          driveCharge(0);
-          driveDark(darkAt(blend));
-        }
+      if (t >= WORM_OUT_RING_S && worm.target !== 'field') {
+        const u = clamp01((t - WORM_OUT_RING_S) / (end - WORM_OUT_RING_S));
+        const blend = reducedMotion ? 1 - u : smoothstep01(1 - u);
+        driveCluster(blend);
+        if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
+        // Coming back to the hole there is nothing to wind up: the disc
+        // reassembles at the very end, already at rest.
+        driveCharge(0);
+        driveDark(darkAt(blend));
       }
       if (holdRing) {
         const exitRing = worm.target === 'cluster'
@@ -3326,14 +2606,12 @@ export function mountStage(container, options) {
     const canOpenCenter = () => machine.mode === 'black-hole' && machine.progress < 0.05;
 
     /**
-     * One level out, in the same order the hold uses: the shelf field steps
-     * back to its berth, the berth field steps back to the hole. Nothing skips
-     * a level, so the way out is always the way in reversed. This is the touch
-     * twin of the right-button hold.
+     * One level out, in the same order the hold uses: the cluster field steps
+     * back to the hole. Nothing skips a level, so the way out is always the way
+     * in reversed. This is the touch twin of the right-button hold.
      */
     const goBackOneLevel = () => {
       if (worm.kind && worm.kind !== 'recoil') return false;
-      if (machine.expanded) return exitNebula({});
       if (machine.mode === 'cluster') return exitCluster({});
       return false;
     };
@@ -3341,10 +2619,8 @@ export function mountStage(container, options) {
     /**
      * The hole's centre is the way into the genre field.
      *
-     * It used to open a search box; the search is gone, and the centre now
-     * enters the nebula — the thirteen-genre space — from which a genre opens
-     * its own cluster. The host is told through `onCenterClick` so it can
-     * mirror the same state in its own UI.
+     * The host is told through `onCenterClick` so it can mirror the same state
+     * in its own UI.
      */
     const centerClick = () => {
       if (!canOpenCenter()) return;
@@ -3359,8 +2635,8 @@ export function mountStage(container, options) {
     };
 
     /**
-     * Right click goes back one level: an open cluster returns to the hole, an
-     * open genre leaves the nebula, and at the hole itself it does nothing.
+     * Right click goes back one level: an open cluster returns to the hole, and
+     * at the hole itself it does nothing.
      * Suppressing the context menu is what makes the right click a gesture
      * rather than a browser menu.
      */
@@ -3374,10 +2650,6 @@ export function mountStage(container, options) {
       // Without the wormhole the cluster still leaves on a plain right click.
       if (machine.mode === 'cluster' || machine.progress > 0.05) {
         if (machine.target > 0.5) exitCluster({});
-        return;
-      }
-      if (machine.nebula > 0.05 || machine.nebulaTarget > 0.5) {
-        exitNebula({});
       }
     };
 
@@ -3399,13 +2671,7 @@ export function mountStage(container, options) {
           if (skipWormhole()) event.preventDefault();
           return;
         }
-        if (
-          machine.expanded
-          || machine.nebula > 0.05
-          || machine.nebulaTarget > 0.5
-          || machine.mode === 'cluster'
-          || machine.progress > 0.05
-        ) {
+        if (machine.mode === 'cluster' || machine.progress > 0.05) {
           event.preventDefault();
           startHold('exit', event);
         }
@@ -3495,24 +2761,7 @@ export function mountStage(container, options) {
       if (now - lastHover < HOVER_INTERVAL_MS) return;
       lastHover = now;
 
-      // An open berth has its own hover: the volumes are the regions, and the
-      // station points inside them are the playable things.
-      if (machine.expanded) {
-        // A point outranks its volume: the star is what plays.
-        const index = pick(event.clientX, event.clientY);
-        if (index >= 0) {
-          setNebulaHover(-1);
-          canvas.style.cursor = 'pointer';
-          emitHover(index, event.clientX, event.clientY);
-          return;
-        }
-        clearHover();
-        const hit = pickNebulaAt(event.clientX, event.clientY);
-        setNebulaHover(hit ? hit.index : -1);
-        return;
-      }
-
-      if (machine.mode === 'cluster' && !machine.expanded && machine.progress > 0.5) {
+      if (machine.mode === 'cluster' && machine.progress > 0.5) {
         // The same order as the shelves: a star first, the berth behind it second.
         const index = pick(event.clientX, event.clientY);
         if (index >= 0) {
@@ -3545,10 +2794,10 @@ export function mountStage(container, options) {
       }
       const index = pick(event.clientX, event.clientY);
       canvas.style.cursor = index >= 0 ? 'pointer' : 'grab';
-      // Hover belongs to the disk alone. The cluster and the nebula are browsing
-      // spaces whose click selects, so a card there would promise playback that
-      // the click does not deliver.
-      if (machine.progress > 0.5 || machine.nebula > 0.5) {
+      // Hover belongs to the disk alone. The cluster is a browsing space whose
+      // click selects, so a card there would promise playback the click does not
+      // deliver.
+      if (machine.progress > 0.5) {
         clearHover();
         return;
       }
@@ -3586,41 +2835,27 @@ export function mountStage(container, options) {
         press.consumed = false;
         cardIndex = -1;
         cardShown = false;
+        // The centre press was consumed at pointer down so its release would not
+        // also select a station. A quick release that never became a hold is
+        // still a tap on the hole, and the hole is the search box's handle.
+        const tapMoved = Math.hypot(event.clientX - press.downX, event.clientY - press.downY);
+        const tapHeld = performance.now() - press.at;
+        // A release that cancelled its own wind-up leaves a recoil behind, and a
+        // recoil is not a crossing: the tap still belongs to the hole.
+        const wormIdle = !worm.kind || worm.kind === 'recoil';
+        if (wormIdle && isSelectionGesture(tapMoved, tapHeld) && centerAt(press.downX, press.downY).inside && typeof settings.onHoleTap === 'function') {
+          settings.onHoleTap();
+        }
         return;
       }
       const moved = Math.hypot(event.clientX - press.downX, event.clientY - press.downY);
       const held = performance.now() - press.at;
       if (!isSelectionGesture(moved, held)) return;
-      // A drag orbits the camera and never selects; the same rule the black hole
-      // uses, applied to the volumes.
-      // Inside a berth the stars are the transport and the volumes are the
-      // frame: a click on a point plays it, a click on a volume dollies in.
-      if (machine.expanded) {
+      // One level in from the cluster: a tap on a star plays that station. A tap
+      // that misses every star does nothing at all: no clear, no exit.
+      if (machine.mode === 'cluster') {
         const index = pick(event.clientX, event.clientY);
-        if (index >= 0) {
-          playStation(index);
-          return;
-        }
-        const hit = pickNebulaAt(event.clientX, event.clientY);
-        if (hit) zoomToNebula(hit.index);
-        return;
-      }
-      // One level in from the cluster: a star plays, the berth around it opens
-      // that category's shelves. Neither hides the other's hit area.
-      if (machine.mode === 'cluster' && !machine.expanded) {
-        const index = pick(event.clientX, event.clientY);
-        if (index >= 0) {
-          playStation(index);
-          return;
-        }
-        const group = pickClusterGroupAt(event.clientX, event.clientY);
-        if (group) {
-          setGroupHover(null);
-          enterNebula({ categoryId: group.id });
-        } else {
-          clearSelection(true);
-          clearHover();
-        }
+        if (index >= 0) playStation(index);
         return;
       }
       // The id channel wins over the centre control: if a fixture is drawn at
@@ -3631,9 +2866,11 @@ export function mountStage(container, options) {
         return;
       }
       if (centerAt(event.clientX, event.clientY).inside) {
-        // Holding the centre is what enters the genre field; letting go of it
-        // is not, so a press that ended before the timer fired leaves the hole
-        // as it was instead of selecting or clearing anything.
+        // A press that ended before the ring filled is a tap on the hole, and
+        // the hole is the search box's handle now: a tap opens it. Holding is
+        // still what enters the genre field, so the two gestures never collide
+        // — a completed hold consumed this press at pointer down.
+        if (typeof settings.onHoleTap === 'function') settings.onHoleTap();
         return;
       }
       // A touch press already resolved its target at pointer down; re-picking on
@@ -3678,7 +2915,6 @@ export function mountStage(container, options) {
     const onPointerLeave = (event) => {
       canvas.style.cursor = 'grab';
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
-      if (machine.expanded && hoverNebulaIndex >= 0) setNebulaHover(-1);
       // Leaving the canvas is the end of a hover: the card must not outlive the
       // pointer that asked for it. A card a touch press opened is the exception:
       // the finger has to leave the canvas before it can reach a button on it,
@@ -3687,7 +2923,6 @@ export function mountStage(container, options) {
       // The berth and the volume hovers are not sticky either: with the pointer
       // gone from the sky, no name should still be counting stations.
       if (hoverGroupId) setGroupHover(null);
-      if (hoverNebulaIndex >= 0) setNebulaHover(-1);
     };
 
     const onKeyDown = (event) => {
@@ -3758,9 +2993,6 @@ export function mountStage(container, options) {
     syncDataset();
     draw();
     if (!reducedMotion) requestFrame();
-    // Development preview entry (`?bhrlNebula=1`, or the harness): it changes
-    // nothing about a normal mount, and it never touches the hole's click path.
-    if (settings.nebulaPreview === true && nebula) enterNebula();
 
     let observer = null;
     const onResize = () => {
@@ -3850,14 +3082,6 @@ export function mountStage(container, options) {
       featured: featuredCount,
       categories: categories.length,
       animated: !reducedMotion,
-      nebula: nebula
-        ? {
-            volumes: nebulaLayout.genres.length,
-            particles: nebula.particleCount,
-            seed: nebulaLayout.seed,
-            extent: Math.round(nebulaLayout.extent * 100) / 100,
-          }
-        : null,
     };
 
     const handle = {
@@ -3964,36 +3188,6 @@ export function mountStage(container, options) {
 
       enterCluster,
       exitCluster,
-
-      /** Dev/phase-4 entry into the nebula space; no panel UI uses it yet. */
-      enterNebula,
-      exitNebula,
-      setGenre,
-
-      get genreId() {
-        return machine.genreId;
-      },
-
-      /** Layout + live state, for verification. */
-      nebula: {
-        get visible() {
-          return Boolean(nebula && nebula.object.visible);
-        },
-        get layout() {
-          return nebulaLayout;
-        },
-        get hoverIndex() {
-          return hoverNebulaIndex;
-        },
-        get selectedIndex() {
-          return nebulaIndex();
-        },
-        get particleCount() {
-          return nebula ? nebula.particleCount : 0;
-        },
-        labels: () => nebulaLabels(),
-        pick: (clientX, clientY) => pickNebulaAt(clientX, clientY),
-      },
 
       setCategoryFilter(ids) {
         if (!layer) return;
@@ -4142,7 +3336,7 @@ export function mountStage(container, options) {
        * reads it, and it is removed when the investigation closes.
        */
       handles() {
-        return { scene, camera, rig, renderer, canvas, parts: { starfield, disk, layer, labels, nebula, discTransfer } };
+        return { scene, camera, rig, renderer, canvas, parts: { starfield, disk, layer, labels, discTransfer } };
       },
       /** TEMPORARY DIAGNOSTIC: synchronously draw and read the frame back. */
       renderNow() {
@@ -4178,7 +3372,6 @@ export function mountStage(container, options) {
           locked: worm.locked,
           elapsed: worm.kind ? (performance.now() - worm.startedAt) / 1000 : 0,
           cover: machine.wormCover,
-          nebulaSpeed,
           // What is actually on screen, so a capture can be checked without
           // reading pixels: radius in viewport heights, and the mask's own alpha.
           mask: worm.phase
@@ -4199,7 +3392,7 @@ export function mountStage(container, options) {
         if (kind === 'enter' && !canOpenCenter()) return false;
         if (
           kind === 'exit'
-          && !(machine.expanded || machine.nebula > 0.05 || machine.mode === 'cluster' || machine.progress > 0.05)
+          && !(machine.mode === 'cluster' || machine.progress > 0.05)
         ) return false;
         const rect = container.getBoundingClientRect();
         const hole = silhouette();
@@ -4256,54 +3449,13 @@ export function mountStage(container, options) {
       settle() {
         machine.progress = machine.target;
         transitioning = false;
-        machine.nebula = machine.nebulaTarget;
-        nebulaMoving = false;
         if (layer) {
           for (let i = 0; i < stations.length; i += 1) layer.setClusterAmount(machine.target);
         }
         applyTransition();
         finishTransition();
-        finishNebulaTransition();
         dirty = true;
         requestFrame();
-      },
-      enterNebula(options) {
-        return enterNebula(options);
-      },
-      exitNebula(options) {
-        return exitNebula(options);
-      },
-      setGenre(id) {
-        return setGenre(id);
-      },
-      nebulaInfo() {
-        if (!nebula) return null;
-        return {
-          seed: nebulaLayout.seed,
-          signature: nebulaLayout.signature,
-          extent: nebulaLayout.extent,
-          camera: nebulaLayout.camera,
-          maxShift: nebulaLayout.maxShift,
-          volumes: nebulaLayout.genres.map((volume) => ({
-            id: volume.id,
-            index: volume.index,
-            count: volume.count,
-            radius: volume.radius,
-            center: { ...volume.center },
-            color: volume.color.slice(),
-            brightness: volume.brightness,
-          })),
-          perNebula: nebula.perNebula.slice(),
-          starsPerNebula: nebula.starsPerNebula.slice(),
-          particleCount: nebula.particleCount,
-          amount: nebula.amount,
-          hoverIndex: hoverNebulaIndex,
-          selectedIndex: nebulaIndex(),
-          genreId: machine.genreId,
-        };
-      },
-      nebulaLabels() {
-        return nebulaLabels();
       },
       /**
        * Synchronous render benchmark. requestAnimationFrame is throttled to
@@ -4347,31 +3499,6 @@ export function mountStage(container, options) {
           triangles: drawn.triangles,
           points: drawn.points,
           device: String(device || 'unknown'),
-        };
-      },
-      nebulaPick(x, y) {
-        return pickNebulaAt(x, y);
-      },
-      nebulaHover(index) {
-        setNebulaHover(index);
-        if (nebula) nebula.update(1 / 60, { instant: true });
-        return hoverNebulaIndex;
-      },
-      nebulaParticleAt(index) {
-        if (!nebula) return null;
-        const points = nebula.object.geometry.attributes;
-        if (!points || index < 0 || index >= nebula.particleCount) return null;
-        return {
-          position: [
-            points.position.getX(index),
-            points.position.getY(index),
-            points.position.getZ(index),
-          ],
-          tint: [points.aTint.getX(index), points.aTint.getY(index), points.aTint.getZ(index)],
-          size: points.aSize.getX(index),
-          alpha: points.aAlpha.getX(index),
-          nebula: points.aNebula.getX(index),
-          star: points.aStar.getX(index),
         };
       },
       cameraLimits() {
@@ -4656,7 +3783,7 @@ function resolveCatalog(settings) {
  * does not (an older panel, or data that has not arrived), the counts are
  * recovered from the `genreId` the classification layer stamped on each station
  * — still consumed, never re-derived here. An empty result is a valid scene:
- * the stage simply has no nebula space to enter.
+ * the stage simply draws no genre gob for it.
  */
 function resolveGenres(settings, stations) {
   if (Array.isArray(settings.genres) && settings.genres.length > 0) {

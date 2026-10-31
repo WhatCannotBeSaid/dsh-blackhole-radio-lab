@@ -39,8 +39,15 @@
  * API sent, and the classifier works on a normalised copy.
  */
 
-/** A genre needs at least this many stations in the current sample to earn a nebula. */
-export const MIN_GENRE_STATIONS = 3;
+/**
+ * A genre needs at least this many stations in the current sample to earn a
+ * nebula of its own.
+ *
+ * One, not three: the constellation page shows all thirteen genres as their own
+ * object, so a thin genre is still its own body in the sky. Only an empty genre
+ * stays out, because there is nothing to draw for it.
+ */
+export const MIN_GENRE_STATIONS = 1;
 
 /**
  * The fixed vocabulary, in the order the nebula space will lay it out.

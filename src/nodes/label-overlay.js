@@ -14,8 +14,7 @@
  *     for a name to mean something;
  *   - the name of a revealed category cloud while a category filter is active,
  *     placed at the cloud's live centroid;
- *   - in the nebula space, one name per visible genre, with the station count
- *     only on the hovered or selected volume.
+ *   - the genre named once, with its station count, while it is hovered.
  *
  * Categories have no place names in the default view on purpose: the default
  * view is one continuous accretion structure, and a category legend pinned on
@@ -31,7 +30,6 @@ const MAX_STATION_LABELS = 14;
 // One per berth. The field is the page now, so every category must be readable
 // without hovering it; a cap of six silently hid most of the thirteen.
 const MAX_CLOUD_LABELS = 16;
-const MAX_NEBULA_LABELS = 16;
 
 const COLOR_TEXT = 'rgba(234, 226, 216, 0.88)';
 const COLOR_TEXT_DIM = 'rgba(214, 203, 190, 0.58)';
@@ -131,110 +129,9 @@ export function createLabelOverlay(container) {
   }
 
   /**
-   * A volume's outline, drawn only while it is hovered or selected. Two passes:
-   * a dark backing so the ring survives the dust glow, then the genre's own
-   * colour at low alpha. Nothing flashes; the ring is always there for exactly
-   * as long as the state is.
-   */
-  function drawNebulaRing(x, y, radius, color, strength) {
-    if (!ctx || radius < 6) return;
-    const r = Math.min(320, radius);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(3, 5, 10, 0.55)';
-    ctx.lineWidth = 3.4;
-    ctx.globalAlpha = 0.85 * strength;
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.3;
-    ctx.globalAlpha = 0.9 * strength;
-    ctx.stroke();
-    // Four ticks, the same reticle language the selected station uses.
-    ctx.beginPath();
-    ctx.moveTo(x - r - 5, y);
-    ctx.lineTo(x - r + 2, y);
-    ctx.moveTo(x + r - 2, y);
-    ctx.lineTo(x + r + 5, y);
-    ctx.moveTo(x, y - r - 5);
-    ctx.lineTo(x, y - r + 2);
-    ctx.moveTo(x, y + r - 2);
-    ctx.lineTo(x, y + r + 5);
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.7 * strength;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  /**
-   * Nebula labels: one line per visible genre.
-   *
-   * The name is always there, because in this space the name IS the object. The
-   * count joins it only on the hovered or selected volume, so the default sky
-   * stays quiet. Placement goes below the volume first and above it second;
-   * the normal collision rules then decide whether it fits at all.
-   */
-  function drawNebulae(nebulae, camera, fade) {
-    // `fade` is the space's own opacity. A wormhole reveal hands it in so the
-    // names arrive with the dust instead of standing on a black frame.
-    const strength = fade === undefined ? 1 : Math.max(0, Math.min(1, Number(fade) || 0));
-    if (strength <= 0.01) return;
-    let drawn = 0;
-    for (const nebula of nebulae) {
-      if (drawn >= MAX_NEBULA_LABELS) break;
-      if (!nebula || !nebula.position) continue;
-      const p = project(nebula.position, camera);
-      if (!p) continue;
-      // Dust is translucent, so a volume behind another one is still visible:
-      // an occluded name is dimmed, never dropped. The box test below is what
-      // actually prevents two names from colliding.
-
-      const active = Boolean(nebula.hovered || nebula.selected);
-      // A volume earns its name by being read, not by existing. The sky is a
-      // field of lights until the pointer says which one matters.
-      if (!active) continue;
-      const radius = Math.max(8, Math.min(340, Number(nebula.radiusPx) || 0));
-      drawNebulaRing(p.x, p.y, radius * 0.92, nebula.color || COLOR_ACCENT, 1);
-
-      const text = nebula.count ? `${nebula.label}  ·  ${nebula.count}` : nebula.label;
-      const gap = Math.min(220, radius) * 0.92 + 14;
-      const base = {
-        font: active ? FONT_NEBULA_ACTIVE : FONT_NEBULA,
-        color: active ? nebula.color || COLOR_ACCENT : COLOR_TEXT,
-        alpha: (active ? 1 : nebula.occluded ? 0.46 : 0.74) * strength,
-        padX: 4,
-        force: Boolean(nebula.selected),
-      };
-      // Four placements, in reading order: below, above, right, left. One fixed
-      // offset made the middle volumes lose their names whenever two of them
-      // happened to line up.
-      const spots = [
-        { x: p.x, y: p.y + gap, align: 'center' },
-        { x: p.x, y: p.y - gap + 4, align: 'center' },
-        { x: p.x + radius * 0.92 + 10, y: p.y + 4, align: 'left' },
-        { x: p.x - radius * 0.92 - 10, y: p.y + 4, align: 'right' },
-        { x: p.x + radius * 0.66, y: p.y + gap * 0.82, align: 'left' },
-        { x: p.x - radius * 0.66, y: p.y + gap * 0.82, align: 'right' },
-        { x: p.x + radius * 0.66, y: p.y - gap * 0.72, align: 'left' },
-        { x: p.x - radius * 0.66, y: p.y - gap * 0.72, align: 'right' },
-      ];
-      let placed = false;
-      for (const spot of spots) {
-        if (drawLabel(text, spot.x, spot.y, { ...base, align: spot.align })) {
-          placed = true;
-          break;
-        }
-      }
-      if (placed) drawn += 1;
-    }
-  }
-
-  /**
    * Redraw the overlay for the current camera.
    * @param frame - { camera, lod, stations, selectedIndex, hole,
-   *   visibilityAt(index), positionAt(index), clouds, cloudStrength, nebulae }
+   *   visibilityAt(index), positionAt(index), clouds, cloudStrength }
    */
   function draw(frame) {
     if (!ctx || disposed) return;
@@ -246,7 +143,6 @@ export function createLabelOverlay(container) {
 
     const camera = frame.camera;
     hole = frame.hole || null;
-    const nebulae = Array.isArray(frame.nebulae) ? frame.nebulae : [];
     const lod = Math.min(1, Math.max(0, frame.lod || 0));
     const stations = frame.stations || [];
     const selectedIndex = typeof frame.selectedIndex === 'number' ? frame.selectedIndex : -1;
@@ -396,11 +292,6 @@ export function createLabelOverlay(container) {
         if (landed) drawnClouds += 1;
       }
     }
-    // 4. the nebula space: every visible genre names itself. This runs last so
-    // a genre name is never displaced by a station label, but the collision
-    // boxes it registers still protect it from the next frame's stations.
-    if (nebulae.length) drawNebulae(nebulae, camera, frame.nebulaFade);
-
     // 5. the pointer's own reading, in the scene rather than in a card. A
     // reticle, a name and the genre it belongs to; nothing else is drawn while
     // it is up, so the one node being read is the only text on the sky.

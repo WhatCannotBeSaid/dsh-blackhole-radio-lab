@@ -1,6 +1,6 @@
 /**
- * Genre-layer checks: the thirteen-bucket classification that the nebula space
- * will be built on.
+ * Genre-layer checks: the thirteen-bucket classification the cluster page is
+ * built on.
  *
  * This is a real test, not a fixture dump. It covers the parts of the genre
  * layer that can silently rot:
@@ -118,7 +118,7 @@ check('genreById resolves and rejects', genreById('jazz').en === 'Jazz' && genre
 eq('labels follow the language', [genreLabel('hip-hop', 'en'), genreLabel('hip-hop', 'zh'), genreLabel('nope', 'en')], ['Hip-Hop', '嘻哈', 'nope']);
 check('rgb is a 0–1 triple', genreRgb('jazz').every((v) => v >= 0 && v <= 1) && genreRgb('nope').length === 3);
 check('css is a hex colour', /^#[0-9a-f]{6}$/.test(genreCss('jazz')) && genreCss('nope') === '#9a9a9a');
-check('the merge floor is three', MIN_GENRE_STATIONS === 3);
+check('the merge floor is one — every genre stands', MIN_GENRE_STATIONS === 1);
 check('every genre has tag rules except other', GENRES.filter((g) => g.id !== 'other').every((g) => GENRE_RULES[g.id].tags >= 8), JSON.stringify(Object.fromEntries(GENRES.map((g) => [g.id, GENRE_RULES[g.id].tags]))));
 check('other has no rules', GENRE_RULES.other.tags === 0 && GENRE_RULES.other.names === 0);
 
@@ -304,8 +304,8 @@ addStations(5, 'jazz', 'Jazz');
 addStations(4, 'rock', 'Rock');
 addStations(3, 'techno', 'Techno');
 addStations(3, 'news', 'News');
-addStations(2, 'talk radio', 'Talk'); // below the floor → merged
-addStations(1, 'football', 'Sports'); // below the floor → merged
+addStations(2, 'talk radio', 'Talk'); // its own genre: the floor is one
+addStations(1, 'football', 'Sports'); // one station is still a genre
 addStations(2, 'xyzzy'); // untagged → other
 
 for (const station of SAMPLE) attachGenre(station);
@@ -316,18 +316,18 @@ check('all thirteen genres are reported', summary.raw.length === 13);
 eq('raw counts are right', summary.raw.map((entry) => entry.id), GENRE_IDS);
 eq('jazz count', summary.raw.find((e) => e.id === 'jazz').count, 5);
 eq('talk count', summary.raw.find((e) => e.id === 'talk').count, 2);
-eq('singleton is merged', summary.merged, ['talk', 'sports']);
+eq('a small genre stays its own genre', summary.merged, []);
 check('empty genre is hidden, not merged', summary.hidden.includes('hip-hop') && !summary.merged.includes('hip-hop'));
-check('merged genres are not visible on their own', !summary.visible.some((group) => group.id === 'talk'));
+check('a small genre is visible on its own', summary.visible.some((group) => group.id === 'talk'));
 check('visible groups exclude hidden genres', !summary.visible.some((group) => summary.hidden.includes(group.id)));
 const otherGroup = summary.visible.find((group) => group.id === 'other');
-check('other is visible and owns the merged stations', Boolean(otherGroup) && otherGroup.count === 5, otherGroup && otherGroup.count);
-eq('other lists what it absorbed', otherGroup && otherGroup.mergedIds.slice().sort(), ['sports', 'talk']);
-eq('other composition adds up', summary.other, { raw: 2, merged: 3, total: 5 });
+check('other is visible and owns only the untagged', Boolean(otherGroup) && otherGroup.count === 2, otherGroup && otherGroup.count);
+eq('other absorbed nothing', otherGroup && otherGroup.mergedIds, []);
+eq('other composition adds up', summary.other, { raw: 2, merged: 0, total: 2 });
 eq('display counts conserve the sample', summary.displayTotal, SAMPLE.length);
 eq('visible counts sum to the total', summary.visible.reduce((sum, group) => sum + group.count, 0), SAMPLE.length);
 check('no visible group is empty', summary.visible.every((group) => group.count > 0));
-check('displayGenreId folds only merged genres', displayGenreId('talk', summary.merged) === 'other' && displayGenreId('jazz', summary.merged) === 'jazz' && displayGenreId('other', summary.merged) === 'other');
+check('displayGenreId folds nothing while every genre stands', displayGenreId('talk', summary.merged) === 'talk' && displayGenreId('other', summary.merged) === 'other');
 check('an empty sample summarizes without inventing anything', summarizeGenres([]).total === 0 && summarizeGenres([]).visible.length === 0);
 
 // --- 7. Repository surface --------------------------------------------------
@@ -382,28 +382,24 @@ check('genres() exposes the fixed definitions', genres.definitions.length === 13
 check('genres() reports this sample', genres.total === ROWS.length);
 eq('genreCounts() matches the data', repo.genreCounts().jazz, 5);
 eq('genreCounts() has thirteen keys', Object.keys(repo.genreCounts()).length, 13);
-eq('visibleGenres() hides the small ones', repo.visibleGenres().map((group) => group.id), ['jazz', 'rock', 'electronic', 'news', 'other']);
+eq('visibleGenres() shows every named genre', repo.visibleGenres().map((group) => group.id), ['jazz', 'rock', 'electronic', 'news', 'talk', 'sports', 'other']);
 check('visible counts conserve the sample', repo.visibleGenres().reduce((sum, group) => sum + group.count, 0) === ROWS.length);
-eq('the merged genres are named', repo.genres().merged, ['talk', 'sports']);
+eq('nothing is merged', repo.genres().merged, []);
 
 eq('listByGenre returns the raw genre', repo.listByGenre('jazz').length, 5);
-eq('listByGenre (display) folds a small genre into other', repo.listByGenre('talk').length, 0);
-eq('listByGenre (display:false) still answers for it', repo.listByGenre('talk', { display: false }).length, 2);
-eq('other contains the merged stations', repo.listByGenre('other').length, 5);
-eq('other contains them only once', new Set(repo.listByGenre('other').map((station) => station.id)).size, 5);
+eq('listByGenre answers for a small genre', repo.listByGenre('talk').length, 2);
+eq('listByGenre (display:false) agrees', repo.listByGenre('talk', { display: false }).length, 2);
+eq('other contains only the untagged', repo.listByGenre('other').length, 2);
+eq('other contains them only once', new Set(repo.listByGenre('other').map((station) => station.id)).size, 2);
 eq('unknown genres are empty, not errors', repo.listByGenre('nope').length, 0);
 
 // The three views must agree, and the display groups must partition the sample
-// exactly once — that is what makes a merged station reachable without being
-// double-counted.
+// exactly once. With no merges left the partition is simply the raw one, which
+// is exactly the property worth holding onto.
 const rawAgrees = GENRE_IDS.every((id) => repo.listByGenre(id, { display: false }).length === repo.genreCounts()[id]);
 check('genreCounts agrees with listByGenre(display:false) for all thirteen', rawAgrees);
 const visibleAgrees = repo.visibleGenres().every((group) => repo.listByGenre(group.id).length === group.count);
 check('visibleGenres agrees with listByGenre(display:true)', visibleAgrees);
-const mergedReachable = repo.genres().merged.every((id) =>
-  repo.listByGenre(id, { display: false }).every((station) => repo.listByGenre('other').some((other) => other.id === station.id)),
-);
-check('every merged station is reachable through other', mergedReachable);
 const otherOnce = repo.listByGenre('other').length === new Set(repo.listByGenre('other').map((station) => station.id)).size;
 check('other contains no station twice', otherOnce);
 const seenOnce = new Map();
@@ -411,13 +407,13 @@ for (const group of repo.visibleGenres()) {
   for (const station of repo.listByGenre(group.id)) seenOnce.set(station.id, (seenOnce.get(station.id) || 0) + 1);
 }
 check('the display groups partition the sample exactly once', seenOnce.size === ROWS.length && [...seenOnce.values()].every((count) => count === 1), `${seenOnce.size} of ${ROWS.length}`);
-check('merged genres are absent from visible', repo.genres().merged.every((id) => !repo.visibleGenres().some((group) => group.id === id)));
+check('no genre was folded away', repo.genres().merged.length === 0);
 check('hidden genres resolve to an empty list', repo.genres().hidden.every((id) => repo.listByGenre(id).length === 0));
 
 // Backwards compatibility: the phase-5 surface must still answer.
 const stats = repo.stats();
 check('stats still reports the taxonomy', stats.categories === CATEGORIES.length);
-check('stats names the genre layer', stats.genres === 13 && stats.genreVisible === 5 && stats.genreMerged === 2);
+check('stats names the genre layer', stats.genres === 13 && stats.genreVisible === 7 && stats.genreMerged === 0);
 check('list() is still the catalogue', repo.list().length === ROWS.length);
 check('getById() still resolves', repo.getById(repo.list()[0].id) === repo.list()[0]);
 check('search() still works', repo.search('jazz').length > 0);
@@ -534,7 +530,7 @@ if (OFFLINE_ONLY || typeof fetch !== 'function') {
 
   if (summaryLive.merged.length > 0) console.log(`  merged: ${summaryLive.merged.join(', ')}`);
   const visibleCount = summaryLive.visible.length;
-  console.log(`  nebulae this sample: ${visibleCount} of ${GENRES.length} (${summaryLive.hidden.length} absent)`);
+  console.log(`  genre gobs this sample: ${visibleCount} of ${GENRES.length} (${summaryLive.hidden.length} absent)`);
   check('the live sample is described as a sample', true);
 }
 

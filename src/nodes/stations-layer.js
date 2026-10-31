@@ -35,7 +35,7 @@ import {
   ShaderMaterial,
   Vector3,
 } from 'three';
-import { categoryRgb } from '../radio/taxonomy.js';
+import { colorRgbOf, modulateTint } from '../cluster/forms.js';
 import { centered, hash32, mulberry32 } from '../radio/random.js';
 import { DISK_INNER, DISK_OUTER, CRITICAL_IMPACT_PARAMETER, RS } from '../scene/dimensions.js';
 import { STATION_RADIUS } from '../radio/distribution.js';
@@ -44,6 +44,28 @@ import { NOISE_GLSL } from '../scene/glsl.js';
 const DISK_PARTICLES = 5;
 const FEATURED_PARTICLES = 8;
 const MAX_POINT_PX = 44;
+
+/**
+ * The colour one station wears in the constellation.
+ *
+ * Layer one is the genre's fixed main colour; layer two is the country's
+ * brightness and the language's warm/cool push, both deterministic per station
+ * so the same station keeps the same tint on every mount. Country and language
+ * never rotate the hue: a member of the Jazz body still reads as Jazz.
+ */
+function stationTint(station, seed, index) {
+  const meta = station && station.metadata;
+  const genreId =
+    (station && typeof station.genre === 'string' && station.genre) ||
+    (station && Array.isArray(station.genres) && typeof station.genres[0] === 'string' && station.genres[0]) ||
+    (meta && typeof meta.genre === 'string' && meta.genre) ||
+    (station && Array.isArray(station.categories) && station.categories[0]) ||
+    'other';
+  const base = colorRgbOf(genreId);
+  const country = (hash32(seed, index, 'tintCountry') % 1000) / 1000;
+  const language = (hash32(seed, index, 'tintLanguage') % 1000) / 1000;
+  return modulateTint(base, country, language);
+}
 /** How fast the cluster transition settles, per station-speed unit. */
 const CLUSTER_RATE = 3.1;
 
@@ -238,7 +260,13 @@ const VERTEX_SHADER = /* glsl */ `
 
     // Cluster sprites are small, so their per-pixel coverage is low; a modest
     // gain keeps single stars readable without turning the core into a disc.
-    float clusterGain = mix(1.0, 2.1, cluster);
+    // A cluster star used to be given more than twice the disk's energy, which
+    // is what made the page read as over-exposed the moment the transition
+    // landed: the last frames of the crossing multiplied "dim restored" by
+    // "gain doubled" in the same instant. One step above the disk is enough to
+    // read as a lit object; the core keeps its shape because the fragment pass
+    // below no longer saturates it.
+    float clusterGain = mix(1.0, 1.32, cluster);
     // Heat spots are lit by the disk they sit in: the doppler gain and the
     // radial heat both scale the energy, so a spot on the approaching side
     // outshines one on the receding side instead of every node glowing alike.
@@ -280,11 +308,13 @@ const VERTEX_SHADER = /* glsl */ `
     // Category colour stays a whisper, exactly as before: it speaks only while
     // its cloud is revealed.
     vec3 tinted = mix(hot, aTint, mix(0.04, 0.52, uFilterActive * aMatch));
-    // Cluster: a nearly white star, a shade warm at the core and cool at the
-    // rim. Category colour stays a whisper: a rainbow cluster would turn the
-    // density gradient into a legend.
-    vec3 clusterColor = mix(vec3(1.0, 0.72, 0.50), vec3(0.86, 0.92, 1.0), clusterRad);
-    vec3 mixedColor = mix(tinted, mix(clusterColor, aTint, 0.08), cluster);
+    // Cluster: the genre's own colour, warmed at the core and cooled at the
+    // rim. Country brightness and language temperature are already inside
+    // aTint, so those two layers need no second pass here — this is a 10% shift
+    // in temperature, not a different hue. Every body therefore keeps the fixed
+    // colour it was given, which is the whole point of the thirteen-colour ring.
+    vec3 clusterColor = aTint * mix(vec3(1.08, 1.00, 0.92), vec3(0.90, 0.97, 1.10), clusterRad);
+    vec3 mixedColor = mix(tinted, clusterColor, cluster);
     // Under the hole these are not catalogue stars at all: they are the disc's
     // own matter, and the traced image behind them has already decided what
     // that looks like. Wearing its colour is what keeps the hold from reading
@@ -355,8 +385,11 @@ const FRAGMENT_SHADER = /* glsl */ `
     // neighbouring sprites stay separate instead of stacking into a white disc.
     float starHalo = pow(1.0 - eStar, 2.4);
     float starCore = pow(1.0 - eStar, 7.0);
-    float profile = mix(halo * 0.50 + core * 0.34, starHalo * 0.40 + starCore * 0.60, vCluster);
-    vec3 color = vColor * (0.88 + 0.42 * core + vSelected * 0.15);
+    // Kept under one on purpose: at 0.40 + 0.60 the cluster's own core summed
+    // past 1.0 and every dense body had a white centre with no gradient left in
+    // it. This is the second half of "slightly brighter than the hole".
+    float profile = mix(halo * 0.50 + core * 0.34, starHalo * 0.34 + starCore * 0.42, vCluster);
+    vec3 color = vColor * (0.86 + 0.30 * core + vSelected * 0.15);
     float alpha = profile * vAlpha * mask * uDim;
     if (alpha <= 0.003) discard;
     gl_FragColor = vec4(color, alpha);
@@ -512,7 +545,7 @@ export function createStationsLayer(stations, options) {
     stationClouds[i] = station.metadata.clouds || [];
 
     const featured = station.isFeatured === true;
-    const rgb = categoryRgb(station.categories[0]);
+    const rgb = stationTint(station, seed, i);
     const baseSize = featured ? 0.118 : 0.068;
     const tangSigma = featured ? 0.032 : 0.075;
     const radSigma = featured ? 0.018 : 0.045;
@@ -839,8 +872,8 @@ export function createStationsLayer(stations, options) {
         markerColor[1] = 0.88;
         markerColor[2] = 0.70;
       } else {
-        // A selected-but-silent station keeps the category tint it always had.
-        const rgb = categoryRgb(stations[owner].categories[0]);
+        // A selected-but-silent station keeps its genre tint.
+        const rgb = stationTint(stations[owner], seed, owner);
         markerColor[0] = 1.0;
         markerColor[1] = Math.min(1, 0.58 + rgb[1] * 0.35);
         markerColor[2] = Math.min(1, 0.38 + rgb[2] * 0.4);

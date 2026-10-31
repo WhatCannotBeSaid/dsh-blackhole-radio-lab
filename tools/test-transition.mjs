@@ -39,7 +39,7 @@ const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const smoothstep01 = (x) => x * x * (3 - 2 * x);
 const declarations = [
   'worm', 'ringPoint', 'prepareDiscTransfer', 'startHold', 'cancelHold', 'lockHold', 'beginCover',
-  'finishWormhole', 'driveNebula', 'driveCluster', 'driveCharge', 'driveDark',
+  'finishWormhole', 'driveCluster', 'driveCharge', 'driveDark',
   'burstOf', 'darkAt', 'advanceWormhole', 'applyTransition',
   'enterCluster', 'exitCluster', 'armExit', 'restoreClusterAfterCancel', 'skipWormhole',
 ];
@@ -57,6 +57,7 @@ const stations = GENRE_IDS.flatMap((genre, group) => Array.from({ length: 8 }, (
   const radius = 1.5 + k * 0.32;
   return {
     id: `${genre}-${k}`, name: `${genre} ${k}`, categories: [genre],
+    genre, genres: [genre],
     position: { x: Math.cos(angle) * radius, y: 0, z: Math.sin(angle) * radius },
     metadata: { primaryCategory: genre, presence: 1, layout: { radius, angle, height: 0 } },
   };
@@ -75,7 +76,7 @@ camera.updateMatrixWorld();
     ids[i] = i % 5 ? i : -1; // Unowned gas must inherit a real observed identity.
   }
   const before = pixels.slice();
-  const layout = buildClusterLayout(stations, { seed: 7, vocabulary: GENRE_IDS });
+  const layout = buildClusterLayout(stations, { seed: 7, vocabulary: GENRE_IDS, byGenre: true, forms: true });
   const snapshot = { width, height, pixels, ids, camera };
   const fragments = buildDiscFragments(snapshot, layout);
   assert.equal(fragments.count, pixels.filter((_, i) => i % 4 === 3 && pixels[i] > 0).length);
@@ -121,24 +122,24 @@ function harness(reducedMotion = false) {
     describe: (error) => error.message, console: { warn() {} },
     clamp01, smoothstep01, DISC_TRANSFER_LANDING, discTransferHandoff, Math, layoutCache: new Map(), catalog: { seed: 7 },
     performance: { now: () => context.now }, now: 0, renderedEnd: false,
-    machine: { mode: 'black-hole', progress: 0, target: 0, nebula: 0, nebulaTarget: 0,
+    machine: { mode: 'black-hole', progress: 0, target: 0,
       wormCharge: 0, wormDark: 0, wormCover: 0, wormTakeover: 0 },
     settings: { onCenterClick() {} }, renderer: { toneMappingExposure: 1.15 },
-    starfield: { setDim() {} }, nebula: null,
+    starfield: { setDim() {} },
     container: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
     rig: { isSettled: true, framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {}, setAnchorZoom() {} },
     hoverGroupId: null, setGroupHover() {}, showHint() {}, hintFor: (key) => key,
     WORM_RING_S: 1, WORM_END_S: 2.5, WORM_OUT_RING_S: 0.55,
     WORM_OUT_VEIL_S: 1.15, WORM_OUT_END_S: 1.75, WORM_RECOIL_S: 0.22,
     WORM_CALM_RATE: 5, WORM_REVEAL_RATE: 1 / 1.15, TRANSITION_RATE: 0.95,
-    HOLE_STATION_DIM: 0.55, dirty: false, transitioning: false, nebulaSpeed: 0,
+    HOLE_STATION_DIM: 0.55, dirty: false, transitioning: false,
     requestFrame() {}, clearSelection() {}, clearTimers() {}, notifyMode() {},
-    syncDataset() {}, finishNebulaTransition() {}, exitNebula() {}, enterNebula() {},
+    syncDataset() {},
     holeOrbitLimits: () => ({ minRadius: 3.6, maxRadius: 44 }), focusOrSelect() {},
   });
   vm.runInContext(code, context);
   const api = context.api;
-  const layout = buildClusterLayout(stations, { seed: 7, vocabulary: GENRE_IDS });
+  const layout = buildClusterLayout(stations, { seed: 7, vocabulary: GENRE_IDS, byGenre: true, forms: true });
   assert.equal(layout.groups.filter((g) => g.count > 0).length, 13);
   function endpoint() {
     assert.equal(disk.opacity, 0, 'black-hole pass is still visible');
@@ -399,21 +400,6 @@ for (const leg of ['enter', 'exit']) {
   assert.equal(h.context.machine.progress, 0);
   h.layer.dispose(); cases++;
 }
-// Shelf navigation retains its existing countdown rather than inheriting the
-// repaired hole/cluster motion window.
-{
-  const h = harness();
-  h.context.machine.mode = 'cluster';
-  h.context.machine.progress = 1;
-  h.context.machine.expanded = 'jazz';
-  h.api.startHold('exit', { ...event, button: 2 });
-  assert.equal(h.ring.visible, true);
-  h.frame(0.2);
-  assert.equal(h.ring.progress, 0.2 / 1.75);
-  h.api.cancelHold();
-  assert.equal(h.ring.visible, false);
-  h.layer.dispose(); cases++;
-}
 // Use the real damping rig, including a first rAF beyond the material endpoint.
 // Completion must wait for the camera, not just for particle geometry.
 for (const calm of [false, true]) {
@@ -496,6 +482,20 @@ assert.ok(tick.indexOf('layer.update(dt, camera, viewport.h)') < tick.indexOf('i
 assert.ok(tick.indexOf('if (dirty) draw()') < tick.indexOf('if (worm.landed) finishWormhole()'));
 assert.ok(tick.includes('if (!worm.kind && machine.progress !== machine.target)'));
 assert.equal(tick.includes('layer.setHoleOnly('), false, 'tick has a second visibility owner');
+// A quick release on the hole is a tap even though the press was consumed at
+// pointer down: the host needs that tap to open its search box, and the tap has
+// to survive the recoil its own cancelled wind-up leaves behind.
+{
+  const gate = source.indexOf('const wormIdle = !worm.kind');
+  assert.ok(gate > 0, 'the consumed press never reaches the hole tap');
+  const tap = source.indexOf('settings.onHoleTap()', gate);
+  assert.ok(tap > gate, 'the hole tap gate does not reach the host callback');
+  const guard = source.slice(gate, tap);
+  assert.ok(guard.includes("worm.kind === 'recoil'"), 'a cancelled wind-up swallows the tap');
+  assert.ok(guard.includes('isSelectionGesture(tapMoved, tapHeld)'), 'the tap ignores the click geometry');
+  assert.ok(guard.includes('centerAt(press.downX, press.downY).inside'), 'the tap is not anchored to the press origin');
+  console.log('PASS hole tap survives the consumed press: recoil is not a crossing, geometry and origin still gate the host callback.');
+}
 console.log(`PASS ${cases} transition cases + production frame ordering; 13 nonempty fixture groups; real particle buffers and interaction anchors. GPU/browser acceptance NOT exercised.`);
 if (process.argv.includes('--bundles')) {
   for (const file of ['client.js', 'client.stage.js']) {
