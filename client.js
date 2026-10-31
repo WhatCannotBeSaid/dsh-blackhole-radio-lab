@@ -2364,12 +2364,21 @@ window.__ModuleLoader__.load({
             if (actionsRef.current.playFromDisk) actionsRef.current.playFromDisk(station);
           },
           /**
-           * The scene names the hovered station in place, so the panel has
-           * nothing to show and nothing to re-render for it. The callback stays
-           * because the stage's settings bundle is built once and expects it.
+           * The scene reports the heat spot under the pointer; the card that
+           * names it belongs to this panel, so it is routed through the ref for
+           * the same reason as the other actions: this memo is built once, and a
+           * captured `hoverCardIn` would still be the first render's.
            */
-          onHover() {
-            /* the label layer owns the hover reading */
+          onHover(payload) {
+            if (actionsRef.current.hoverCardIn) actionsRef.current.hoverCardIn(payload || null);
+          },
+          /**
+           * A short right press in the scene asks for the library. The stage has
+           * already done the gesture work (long press is the way back, and the
+           * two never overlap), so all that is left is where it landed.
+           */
+          onFavourites(x, y) {
+            if (actionsRef.current.openFavourites) actionsRef.current.openFavourites(x, y);
           },
         }),
         [],
@@ -2489,13 +2498,18 @@ window.__ModuleLoader__.load({
         const localX = rect ? payload.x - rect.left : payload.x;
         const localY = rect ? payload.y - rect.top : payload.y;
         // The card hangs to the right of the spot until that would push it off
-        // the stage, then flips. Measured here, not in render, so the layout is
-        // read once per hover instead of once per paint.
+        // the stage, then flips. Vertically it is centred unless the spot is
+        // within half a card of the stage's top or bottom edge. Measured here,
+        // not in render, so the layout is read once per hover instead of once
+        // per paint.
+        const cardHalf = 48;
+        const tall = Boolean(rect) && rect.height > cardHalf * 4;
         const placed = {
           ...payload,
           x: localX,
           y: localY,
           flip: Boolean(rect) && rect.width > 0 && localX > rect.width - 280,
+          vAlign: !tall ? 'center' : localY > rect.height - cardHalf ? 'up' : localY < cardHalf ? 'down' : 'center',
         };
         hoverCardPending.current = placed;
         // Already showing one: move it to the new station rather than dropping it
@@ -2554,6 +2568,116 @@ window.__ModuleLoader__.load({
         [store, hoverCard && hoverCard.station],
       );
 
+      /**
+       * Tell the scene when the pointer is standing on the card.
+       *
+       * The card floats over the canvas, so naming a station and then reaching
+       * for its star means leaving the canvas — and leaving is one of the things
+       * that lets the disk start turning again. The star would then be a moving
+       * target; this hands the freeze back while the card is under the pointer.
+       */
+      const setCardHover = (on) => {
+        const handle = stageRef.current;
+        if (!handle || typeof handle.setCardHover !== 'function') return;
+        handle.setCardHover(on);
+      };
+
+      // A card that disappears while the pointer still rests on it — dismissed,
+      // replaced by another station, torn down — has no pointerleave to give:
+      // the scene has to be told the freeze is over, or the record stays pinned
+      // for nobody.
+      useEffect(() => {
+        if (!hoverCard) setCardHover(false);
+      }, [hoverCard]);
+
+      // ---- the library on the scene -----------------------------------------
+      //
+      // A short right press anywhere in the scene opens the favourites where the
+      // press happened. It is the same list the card's corner post unfolds, with
+      // the star on the row itself: this one is reached from the sky, not from a
+      // mark that already means "favourites", so the row has to carry the mark.
+      const [favMenu, setFavMenu] = useState(null);
+      const favMenuRef = useRef(null);
+      favMenuRef.current = favMenu;
+
+      const favouriteList = useShared(
+        shared,
+        'radio',
+        () => (store ? store.favoriteStations() : []),
+        [store],
+      );
+
+      const playFavourite = useCallback(
+        (station) => {
+          const pb = shared ? shared.playback : null;
+          if (!pb || !station) return;
+          const stream = streamOf(station);
+          if (!stream) return;
+          // The list is transport, not navigation: this starts what was pressed
+          // and leaves the list open, so a row of favourites can be tried out.
+          if (store) store.select(station);
+          pb.play(station.id, stream);
+        },
+        [shared, store],
+      );
+
+      const dropFavourite = useCallback(
+        (station) => {
+          if (!store || !station) return;
+          store.toggleFavorite(station);
+        },
+        [store],
+      );
+
+      /**
+       * Open the list where the press landed, or close it when it is already up:
+       * the second right press is the way out — the same gesture that opened it.
+       * The corner it hangs from is flipped here, not by a layout pass, so a
+       * press near an edge does not put the list off the screen.
+       */
+      const openFavourites = useCallback(
+        (x, y) => {
+          if (!store) return;
+          // A second right press is the way out — the same gesture that opened
+          // it, so the list needs no other key of its own.
+          if (favMenuRef.current) {
+            setFavMenu(null);
+            return;
+          }
+          const width = 260;
+          const height = 240;
+          const gap = 6;
+          const flipX = x + width + gap > window.innerWidth;
+          const flipY = y + height + gap > window.innerHeight;
+          // The card behind the list still names the last station crossed; it
+          // belongs to a hover the press has already ended.
+          hoverCardIn(null);
+          setFavMenu({
+            x: flipX ? Math.max(6, x - width - gap) : x + gap,
+            y: flipY ? Math.max(6, y - height - gap) : y + gap,
+          });
+        },
+        [store, hoverCardIn],
+      );
+
+      // Escape belongs to the page's own key handler — the list has to close
+      // before the radio does — so only the press outside lives here. A right
+      // press in the scene is excluded: that one is the list's own toggle, and
+      // closing it here would let the stage's report reopen it a frame later.
+      useEffect(() => {
+        if (!favMenu) return undefined;
+        const onPointerDown = (event) => {
+          const node = event.target;
+          if (node instanceof Element) {
+            if (node.closest('.bhrl-favpop')) return;
+            if (event.button === 2 && node.closest('.bhrl-stage')) return;
+          }
+          setFavMenu(null);
+        };
+        window.addEventListener('pointerdown', onPointerDown, true);
+        return () => window.removeEventListener('pointerdown', onPointerDown, true);
+      }, [favMenu]);
+
       // The disk's ring belongs to playback, so the panel must say when the
       // transport changed for a reason the stage cannot see.
       const playId = playState && playState.stationId ? String(playState.stationId) : null;
@@ -2599,6 +2723,7 @@ window.__ModuleLoader__.load({
           onHoleTap: stageCallbacks.onHoleTap,
           onPlay: stageCallbacks.onPlay,
           onHover: stageCallbacks.onHover,
+          onFavourites: stageCallbacks.onFavourites,
         };
       }, [cfg, repository, anchors, stageCallbacks]);
 
@@ -2628,12 +2753,6 @@ window.__ModuleLoader__.load({
         if (!handle || typeof handle.setFavourites !== 'function' || !store) return;
         handle.setFavourites((station) => store.isFavorite(station));
       }, [favouriteSignature, store, stage && stage.status]);
-
-      // A card belongs to the disk. Leaving that space takes it with it, so a
-      // cluster that happens to sit under the pointer never inherits one.
-      useEffect(() => {
-        if (modeState.mode && modeState.mode !== 'black-hole') hoverCardIn(null);
-      }, [modeState.mode, hoverCardIn]);
 
       // ---- mode transitions ----------------------------------------------
 
@@ -2773,6 +2892,12 @@ window.__ModuleLoader__.load({
           }
           event.preventDefault();
           event.stopPropagation();
+          // The library drawn over the scene is the innermost layer: it closes
+          // first, and only the next Escape leaves the radio page.
+          if (favMenuRef.current) {
+            setFavMenu(null);
+            return;
+          }
           const handle = stageRef.current;
           if (handle && typeof handle.dismissHover === 'function') handle.dismissHover();
           try {
@@ -2789,6 +2914,7 @@ window.__ModuleLoader__.load({
         backToHole,
         playFromDisk,
         hoverCardIn,
+        openFavourites,
         /**
          * The disk click selects before it plays, and the store that records the
          * choice arrives a render later than the memo that asks for it. Reading
@@ -2847,7 +2973,6 @@ window.__ModuleLoader__.load({
        */
       const hoverCardStation = hoverCard ? hoverCard.station : null;
       const hoverCardLive = Boolean(hoverCardStation && playId && String(hoverCardStation.id) === playId);
-      const hoverCardPlaying = hoverCardLive && playStatus === 'playing';
       const hoverCardCountry =
         hoverCardStation && hoverCardStation.country
           ? lang === 'en'
@@ -2861,10 +2986,162 @@ window.__ModuleLoader__.load({
             : hoverCardStation.language.zh || hoverCardStation.language.en
           : '';
 
-      // The scene names the hovered station in place (name + genre), so this
-      // page draws no hover card at all. Kept as a null so the render tree
-      // stays unchanged around it.
-      const hoverCardNode = null;
+      /**
+       * The hover card.
+       *
+       * It is DOM and not a canvas label: the name has to be a real target for
+       * the pointer (so the card can be held still while the star is pressed),
+       * and it carries nothing else — no transport row, no hint line, no
+       * navigation — so it never competes with the disk it floats over.
+       */
+      const hoverCardNode = hoverCardStation
+        ? h(
+            'div',
+            {
+              className: 'bhrl-hovercard',
+              'data-touch': hoverCard.touch ? 'true' : 'false',
+              style: {
+                left: `${hoverCard.x}px`,
+                top: `${hoverCard.y}px`,
+                // Horizontally the card hangs off the side that has room; vertically
+                // it is centred on the spot unless that would run it off the stage's
+                // own edge, where it sits above or below instead. The stage clips
+                // itself, so a centred card near the frame would lose its name.
+                transform: `translate(${hoverCard.flip ? 'calc(-100% - 14px)' : '14px'}, ${
+                  hoverCard.vAlign === 'up'
+                    ? 'calc(-100% - 12px)'
+                    : hoverCard.vAlign === 'down'
+                      ? '12px'
+                      : '-50%'
+                })`,
+              },
+              // The card is part of the hover, not a new target: entering it
+              // keeps the hover alive, leaving it is what ends it. The scene is
+              // told as well, because the disk must stop turning underneath it.
+              onPointerEnter: () => {
+                hoverCardKeep();
+                setCardHover(true);
+              },
+              onPointerLeave: () => {
+                setCardHover(false);
+                hoverCardIn(null);
+              },
+              onPointerDown: (event) => event.stopPropagation(),
+              onContextMenu: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              },
+            },
+            h('span', { className: 'bhrl-hovercard__name' }, hoverCardStation.name),
+            hoverCardCountry || hoverCardLanguage
+              ? h(
+                  'span',
+                  { className: 'bhrl-hovercard__meta' },
+                  [hoverCardCountry, hoverCardLanguage].filter(Boolean).join(' · '),
+                )
+              : null,
+            h(
+              'span',
+              { className: 'bhrl-hovercard__genre' },
+              h('span', {
+                className: 'bhrl-hovercard__dot',
+                style: { background: genreCssOf(hoverCardStation.genre || 'other') },
+                'aria-hidden': 'true',
+              }),
+              h('span', null, genreLabelOf(hoverCardStation.genre || 'other')),
+            ),
+            hoverCardLive ? h('span', { className: 'bhrl-hovercard__live' }, t('hoverLiveBadge')) : null,
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'bhrl-hovercard__fav',
+                'data-icon': 'true',
+                'data-active': hoverCardFavourite ? 'true' : 'false',
+                'aria-pressed': hoverCardFavourite ? 'true' : 'false',
+                'aria-label': hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
+                title: hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
+                onClick: (event) => {
+                  event.stopPropagation();
+                  favouriteFromCard();
+                },
+              },
+              h(StarGlyph, { size: 12, filled: hoverCardFavourite }),
+            ),
+          )
+        : null;
+
+      /**
+       * The favourites, opened where the right press landed.
+       *
+       * A row starts what it names and the list stays open; the star on the row
+       * is the only thing that changes the library.
+       */
+      const favMenuNode = favMenu
+        ? h(
+            'div',
+            {
+              className: 'bhrl-favpop',
+              style: { left: `${favMenu.x}px`, top: `${favMenu.y}px` },
+              role: 'dialog',
+              'aria-label': t('favouriteListTitle'),
+              onContextMenu: (event) => event.preventDefault(),
+              onPointerDown: (event) => event.stopPropagation(),
+            },
+            h(
+              'p',
+              { className: 'bhrl-favpop__title' },
+              `${t('favouriteListTitle')} · ${favouriteList.length}`,
+            ),
+            favouriteList.length === 0
+              ? h('p', { className: 'bhrl-favpop__empty' }, t('favouriteListEmpty'))
+              : h(
+                  'ul',
+                  { className: 'bhrl-favpop__list' },
+                  favouriteList.slice(0, 40).map((entry) => {
+                    const language = entry.language
+                      ? lang === 'en'
+                        ? entry.language.en || entry.language.zh
+                        : entry.language.zh || entry.language.en
+                      : '';
+                    const meta = [genreLabelOf(entry.genre || 'other'), language]
+                      .filter(Boolean)
+                      .join(' · ');
+                    return h(
+                      'li',
+                      { className: 'bhrl-favpop__row', key: String(entry.id) },
+                      h(
+                        'div',
+                        { className: 'bhrl-favpop__line' },
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'bhrl-favpop__item',
+                            onClick: () => playFavourite(entry),
+                          },
+                          h('span', { className: 'bhrl-favpop__name' }, entry.name),
+                          meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
+                        ),
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'bhrl-favpop__star',
+                            'data-on': 'true',
+                            'aria-pressed': 'true',
+                            'aria-label': t('unfavouriteAction'),
+                            title: t('unfavouriteAction'),
+                            onClick: () => dropFavourite(entry),
+                          },
+                          h(StarGlyph, { size: 11, filled: true }),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+          )
+        : null;
 
       return h(
         'div',
@@ -2973,10 +3250,15 @@ window.__ModuleLoader__.load({
           /**
            * Nothing is drawn over the scene. The berth's shelves, the tag
            * names, the station names and the per-label counts all live inside
-           * the three.js field now: this page has no chrome of its own, and
-           * the corner hint that explains each space fades out on its own.
+           * the three.js field now: this page has no chrome of its own.
            */
         ),
+
+        /*
+         * The library hangs off the root, not the stage: a right press anywhere
+         * in the scene opens it, and the stage clips its own overflow.
+         */
+        favMenuNode,
       );
     }
 
@@ -3118,6 +3400,7 @@ window.__ModuleLoader__.load({
 .bhrl-hovercard__name { font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; }
 .bhrl-hovercard__meta { font-size: 10.5px; color: var(--bhrl-ink-dim); }
 .bhrl-hovercard__genre { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--bhrl-ink-dim); }
+.bhrl-hovercard__dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .bhrl-hovercard__live {
   align-self: flex-start; margin-top: 1px; padding: 1px 5px; border-radius: 4px;
   background: rgba(255, 150, 86, 0.16); color: #ffb884;
@@ -3132,6 +3415,13 @@ window.__ModuleLoader__.load({
 }
 .bhrl-hovercard__fav:hover { border-color: var(--bhrl-line); background: rgba(255, 255, 255, 0.09); }
 .bhrl-hovercard__fav[data-active='true'] { color: #ffc08a; border-color: rgba(255, 150, 86, 0.42); }
+/* The star alone in the card's action slot: the card is already the station's
+   own label, so the only thing worth pressing is the mark that changes the
+   library. Square-ish padding keeps it a target rather than a caption. */
+.bhrl-hovercard__fav[data-icon='true'] {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 7px;
+}
 
 .bhrl-backbtn, .bhrl-iconbtn {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 7px;
@@ -3538,6 +3828,24 @@ window.__ModuleLoader__.load({
 .bhrl-favpop__meta {
   font-size: 10px; line-height: 1.25; color: var(--bhrl-ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A row of the scene's list: the station and the mark that removes it, side by
+   side. The mark keeps its own hit area instead of living inside the row's
+   button, because a row starts playback and must never change the library. */
+.bhrl-favpop__line { display: flex; align-items: stretch; gap: 2px; }
+.bhrl-favpop__line .bhrl-favpop__item { flex: 1 1 auto; min-width: 0; }
+.bhrl-favpop__star {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; padding: 0; border: 0; border-radius: 6px;
+  background: none; color: #ffc08a; cursor: pointer; flex: none;
+}
+.bhrl-favpop__star:hover,
+.bhrl-favpop__star:focus-visible {
+  background: color-mix(in oklab, var(--bhrl-ink) 8%, transparent);
+}
+.bhrl-favpop__star:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--bhrl-ink) 40%, transparent);
+  outline-offset: 1px;
 }
 /* The platform picker: one row per platform, the current one marked on the
  * right rather than by a tick, so the row never changes height. */

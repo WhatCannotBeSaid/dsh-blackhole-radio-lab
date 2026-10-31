@@ -59,6 +59,7 @@ import { createStarfield } from './scene/starfield.js';
 import {
   HORIZON_RADIUS,
   CRITICAL_IMPACT_PARAMETER,
+  DISK_OUTER,
   maxOrbitRadiusForShadow,
   shadowAngularRadius,
 } from './scene/dimensions.js';
@@ -168,6 +169,9 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  *   pointer settles on a station, and with null when it leaves one. The panel
  *   owns the timing of any card; the stage only reports what is under the
  *   pointer. `touch` says the report came from a long press, not a hover.
+ * @param options.onFavourites - fired with (x, y) in client pixels when a short
+ *   right press ended. The hold that leaves a cluster needs the ring to fill, so
+ *   a press shorter than that is free to mean something else.
  * @returns a handle with selection, mode, camera and measurement helpers.
  */
 export function mountStage(container, options) {
@@ -761,9 +765,9 @@ export function mountStage(container, options) {
             clouds: revealedClouds(),
             cloudStrength: machine.progress > 0.5 ? 1 : info.strength,
             cluster: machine.progress,
+            // The panel's own card names the hovered station now, so the sky
+            // keeps one caption per station: the hovered one is simply skipped.
             suppressedIndex: hoverIndex,
-            hover: hoverFrame(),
-            hint: { text: hint.text, alpha: hint.alpha },
           });
         } else {
           labels.clear();
@@ -826,7 +830,6 @@ export function mountStage(container, options) {
 
       // Resolve the timeline before uploading particle buffers and disk uniforms.
       advanceWormhole(now);
-      updateHint(now);
 
       currentLod = computeLod();
       if (layer) {
@@ -875,7 +878,6 @@ export function mountStage(container, options) {
         moved ||
         morphing ||
         transitioning ||
-        hint.text ||
         worm.kind
       ) {
         // Scheduling goes through the same guard requestFrame uses: the hold can
@@ -1104,132 +1106,100 @@ export function mountStage(container, options) {
     // appears. The panel owns that timing, so the same report can drive a card,
     // a label suppression and a touch long-press without a second source.
     let hoverIndex = -1;
-    // Where the pointer last read a station, in canvas pixels. The label layer
-    // draws the name there, so this is the only position it needs.
-    const hoverPos = { x: 0, y: 0, valid: false };
 
     /**
-     * The one line of chrome this page has: shown when a space arrives, then
-     * left to fade on its own. No bars, no breadcrumbs, no level indicator.
+     * The disc's own footprint on screen, as one circle.
+     *
+     * The pointer freezes the record while it is anywhere in here, not only
+     * while a station is directly under it: the stations are laid over the whole
+     * disc, so pinning on a hit alone made the band stop and start at every seam
+     * between two stations. The centre is the shadow's and the radius is the
+     * outer rim's projection, so the region follows the camera without a second
+     * source of truth. One projection per pointer move.
      */
-    const hint = { text: '', until: 0, alpha: 0 };
-    const showHint = (text) => {
-      hint.text = typeof text === 'string' ? text : '';
-      hint.until = hint.text ? performance.now() + 2600 : 0;
-      hint.alpha = 0;
+    const discRegion = () => {
+      const hole = silhouette();
+      const distance = Math.max(HORIZON_RADIUS * 1.0001, camera.position.distanceTo(holeCenter));
+      const halfFov = (camera.fov * Math.PI) / 360;
+      const tangent = Math.tan(halfFov);
+      const radius =
+        tangent > 1e-4 ? (DISK_OUTER / (distance * tangent)) * viewport.h * 0.5 : hole.r;
+      return { x: hole.x, y: hole.y, r: radius };
+    };
+
+    /** The pointer is somewhere inside the disc's footprint. */
+    let pauseHeld = false;
+    /** The panel reports the pointer on the hover card, which counts as inside. */
+    let cardHeld = false;
+
+    /**
+     * Freeze or resume the record for the two reasons that can hold it: the
+     * pointer inside the disc's footprint, or the pointer on the card that freeze
+     * produced. Resuming waits out the card's own dismissal, so carrying the
+     * pointer from a station onto its card does not set the band turning again
+     * underneath someone who is about to click the card.
+     */
+    const syncSpin = () => {
+      if (!disk || typeof disk.setStationSpin !== 'function') return;
+      if (spinTimer) {
+        clearTimeout(spinTimer);
+        spinTimer = 0;
+      }
+      if (pauseHeld || cardHeld) {
+        disk.setStationSpin(0);
+      } else {
+        spinTimer = setTimeout(() => {
+          spinTimer = 0;
+          disk.setStationSpin(1);
+          dirty = true;
+          requestFrame();
+        }, 240);
+      }
       dirty = true;
       requestFrame();
     };
-    const updateHint = (now) => {
-      if (!hint.text) return;
-      const remain = hint.until - now;
-      if (remain <= 0) {
-        hint.text = '';
-        hint.alpha = 0;
-        dirty = true;
+
+    const holdSpin = (value) => {
+      const next = Boolean(value);
+      if (pauseHeld === next) return;
+      pauseHeld = next;
+      syncSpin();
+    };
+
+    /** Read the disc region from a pointer position in client pixels. */
+    const trackDiscRegion = (clientX, clientY) => {
+      if (!canOpenCenter() || lastPointerType === 'touch') {
+        holdSpin(false);
         return;
       }
-      const age = 2600 - remain;
-      const next = Math.min(1, Math.min(age / 220, remain / 520));
-      if (Math.abs(next - hint.alpha) > 0.01) {
-        hint.alpha = next;
-        dirty = true;
-      }
+      const region = discRegion();
+      const rect = canvas.getBoundingClientRect();
+      const dx = clientX - rect.left - region.x;
+      const dy = clientY - rect.top - region.y;
+      holdSpin(dx * dx + dy * dy <= region.r * region.r);
     };
 
-    /** The genre a station belongs to, as the label layer wants it. */
-    const genreNameOf = (station) => {
-      const id = station && station.metadata && station.metadata.genreId;
-      return id ? genreLabel(id, labelLanguage) || id : '';
-    };
-
-    /** The pointer's reading, or null. Names the one node being looked at. */
-    const hoverFrame = () => {
-      if (!hoverPos.valid || hoverIndex < 0) return null;
-      const station = stations[hoverIndex];
-      if (!station) return null;
-      return {
-        x: hoverPos.x,
-        y: hoverPos.y,
-        name: station.name,
-        genre: genreNameOf(station),
-      };
-    };
-
-    // Each space says how to leave it once, on arrival, in the corner. There is
-    // no other chrome: no breadcrumb, no level badge, no permanent legend.
-    const HINTS = {
-      cluster: {
-        zh: '点击电台播放 · 右键长按返回',
-        en: 'Click a station to play · Right-hold to go back',
-      },
-      hole: {
-        zh: '长按黑洞进入星团',
-        en: 'Hold the hole for the cluster',
-      },
-    };
-    const hintFor = (key) => {
-      const entry = HINTS[key];
-      if (!entry) return '';
-      return labelLanguage === 'zh' ? entry.zh : entry.en;
-    };
     // A card opened by a touch press has no pointer hovering it: the finger is
     // gone before the card is read. Such a card survives a pointerleave and is
     // dismissed by the next press instead.
     let hoverSticky = false;
     /**
-     * Resuming is delayed past the card's own 200 ms dismissal, so moving the
-     * pointer from a station onto its card does not start the disc turning
-     * again underneath the reader while the card is still on screen.
+     * Resuming is delayed past the card's own dismissal, so carrying the pointer
+     * from the disc onto the card does not start the record turning again
+     * underneath a reader who is about to click the card.
      */
     let spinTimer = 0;
 
     const emitHover = (index, clientX, clientY) => {
       const station = index >= 0 ? stations[index] : null;
-      // The scene names the station itself, so the pointer position is the only
-      // thing the label layer needs from this event. It updates even while the
-      // pointer slides across one station, so the name stays under the cursor.
-      if (station) {
-        const rect = canvas.getBoundingClientRect();
-        hoverPos.x = clientX - rect.left;
-        hoverPos.y = clientY - rect.top;
-        hoverPos.valid = true;
-      } else {
-        hoverPos.valid = false;
-      }
-      if (index === hoverIndex) {
-        if (station) {
-          dirty = true;
-          requestFrame();
-        }
-        return;
-      }
+      if (index === hoverIndex) return;
       hoverIndex = index;
+      // The panel's card names the station; the sky only steps its own caption
+      // aside, which is a redraw either way.
       if (layer) layer.setHoverIndex(hoverIndex);
       hoverSticky = Boolean(station) && lastPointerType === 'touch';
-      // Pin the field while a station is under the pointer. The card is a
-      // separate surface, so without this the record turns away from the cursor
-      // and the same spot stops being a station before the pointer gets there.
-      if (disk && typeof disk.setStationSpin === 'function') {
-        if (spinTimer) {
-          clearTimeout(spinTimer);
-          spinTimer = 0;
-        }
-        if (station) {
-          disk.setStationSpin(0);
-        } else {
-          spinTimer = setTimeout(() => {
-            spinTimer = 0;
-            disk.setStationSpin(1);
-            dirty = true;
-          }, 240);
-        }
-        // The spin is eased across frames, so ask for them explicitly: under
-        // reduced motion nothing else would schedule a redraw while the pointer
-        // sits still on a station.
-        dirty = true;
-        requestFrame();
-      }
+      dirty = true;
+      requestFrame();
       if (typeof settings.onHover !== 'function') return;
       try {
         settings.onHover(
@@ -1249,14 +1219,7 @@ export function mountStage(container, options) {
     };
 
     const clearHover = () => {
-      if (hoverIndex < 0) {
-        if (hoverPos.valid) {
-          hoverPos.valid = false;
-          dirty = true;
-          requestFrame();
-        }
-        return;
-      }
+      if (hoverIndex < 0) return;
       emitHover(-1, 0, 0);
     };
 
@@ -1724,6 +1687,14 @@ export function mountStage(container, options) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
+      // The record's own resume timer belongs to the scene too: left behind, it
+      // fires against a disposed disk when the page changes mid-freeze. Resuming
+      // here is the same thing the timer would have done, minus the wait.
+      if (spinTimer) {
+        clearTimeout(spinTimer);
+        spinTimer = 0;
+        if (!pauseHeld && !cardHeld && disk && typeof disk.setStationSpin === 'function') disk.setStationSpin(1);
+      }
     };
 
     const select = (index, selectOptions) => {
@@ -1800,7 +1771,6 @@ export function mountStage(container, options) {
         minRadius: Math.min(layout.minRadius, here),
         maxRadius: Math.max(layout.maxRadius, here * 2),
       });
-      showHint(hintFor('cluster'));
       applyTransition();
       dirty = true;
       requestFrame();
@@ -1840,7 +1810,6 @@ export function mountStage(container, options) {
         minRadius: limits.minRadius,
         maxRadius: limits.maxRadius,
       });
-      showHint(hintFor('hole'));
       applyTransition();
       dirty = true;
       requestFrame();
@@ -2591,6 +2560,15 @@ export function mountStage(container, options) {
     let cardTimer = 0;
     let cardIndex = -1;
     let cardShown = false;
+    /**
+     * The right button's short press, which asks the panel for the favourites.
+     *
+     * The right button is also the exit hold, and the two differ only in
+     * duration: the exit cannot commit before WORM_OUT_RING_S, so a press that
+     * ends before the ring fills leaves nothing behind and is free to be read as
+     * a tap. No waiting on the release, no timer, no second gesture.
+     */
+    const menuPress = { active: false, id: -1, at: 0, downX: 0, downY: 0 };
 
     const centerAt = (clientX, clientY) => {
       const region = centerRegion();
@@ -2656,9 +2634,9 @@ export function mountStage(container, options) {
       // whether that card goes away.
       hoverSticky = false;
       if (event.button === 2) {
-        // Right is the way back out, and only by holding it. A short right click
-        // does nothing at all: the exit used to be instant, and an instant exit
-        // would be a shortcut around the wormhole.
+        // Right is the way back out, and only by holding it. A short right press
+        // is the favourites instead; the two never overlap, because the exit
+        // cannot commit before its ring fills.
         if (!wormholeEnabled) return;
         // While a hold owns the gesture, nothing else may start one. The only
         // thing a second right press does is land a running exit. A recoil is
@@ -2668,6 +2646,11 @@ export function mountStage(container, options) {
           if (skipWormhole()) event.preventDefault();
           return;
         }
+        menuPress.active = true;
+        menuPress.id = event.pointerId;
+        menuPress.at = performance.now();
+        menuPress.downX = event.clientX;
+        menuPress.downY = event.clientY;
         if (machine.mode === 'cluster' || machine.progress > 0.05) {
           event.preventDefault();
           startHold('exit', event);
@@ -2728,6 +2711,12 @@ export function mountStage(container, options) {
       // the live one: a mouse moving over a touch-opened card must be treated as
       // a mouse, not as the finger that opened it.
       lastPointerType = event.pointerType || 'mouse';
+      // A right press that travels is a camera drag, not the favourites list.
+      if (menuPress.active && event.pointerId === menuPress.id) {
+        if (Math.hypot(event.clientX - menuPress.downX, event.clientY - menuPress.downY) > CLICK_SLOP) {
+          menuPress.active = false;
+        }
+      }
       // A hold is a hold only while the pointer stays put. Eight pixels of slop
       // covers the hand shaking on a trackpad; past that it is a drag and the
       // camera is what the gesture belongs to.
@@ -2754,6 +2743,11 @@ export function mountStage(container, options) {
         }
         return;
       }
+      // The record's freeze follows the pointer itself, ahead of the hover
+      // throttle and ahead of any pick: it has to catch the entry into the disc
+      // while the pointer is still between two stations, and it must not lag 90
+      // ms on the way out either.
+      trackDiscRegion(event.clientX, event.clientY);
       const now = performance.now();
       if (now - lastHover < HOVER_INTERVAL_MS) return;
       lastHover = now;
@@ -2803,12 +2797,33 @@ export function mountStage(container, options) {
     };
 
     const onPointerUp = (event) => {
+      // A drag that started on the disc and ended off it leaves no move behind
+      // to re-read the region, so the release settles it: the record must not
+      // stay frozen under a pointer that has already been put down.
+      trackDiscRegion(event.clientX, event.clientY);
       if (event.button === 2) {
+        const asked = menuPress.active && menuPress.id === event.pointerId;
+        const tappedAt = menuPress.at;
+        const tappedFrom = { x: menuPress.downX, y: menuPress.downY };
+        menuPress.active = false;
         // Letting go of the right button before the ring fills is a cancel:
         // nothing has moved yet, so there is nothing to take back. Only the very
         // button that opened the hold may end it.
         if (worm.kind && !worm.locked && event.pointerId === worm.pointerId && event.button === worm.button) {
           cancelHold();
+        }
+        // A press that became a hold is not a tap: only one that ended before its
+        // ring filled, leaving no hold and no recoil behind, asks for the list.
+        const tapped = isSelectionGesture(
+          Math.hypot(event.clientX - tappedFrom.x, event.clientY - tappedFrom.y),
+          performance.now() - tappedAt,
+        );
+        if (asked && tapped && !worm.kind && !worm.locked && typeof settings.onFavourites === 'function') {
+          try {
+            settings.onFavourites(tappedFrom.x, tappedFrom.y);
+          } catch {
+            /* a panel bug must not break the render loop */
+          }
         }
         return;
       }
@@ -2906,6 +2921,7 @@ export function mountStage(container, options) {
       }
       cardIndex = -1;
       cardShown = false;
+      menuPress.active = false;
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
     };
 
@@ -2917,6 +2933,10 @@ export function mountStage(container, options) {
       // the finger has to leave the canvas before it can reach a button on it,
       // so that card is dismissed by the next tap instead.
       if (!hoverSticky) clearHover();
+      // The disc's footprint is a canvas region: with the pointer off the canvas
+      // there is nothing left in it, so the record may turn again. The card the
+      // hover just opened can still ask for the freeze back through the panel.
+      holdSpin(false);
       // The berth and the volume hovers are not sticky either: with the pointer
       // gone from the sky, no name should still be counting stations.
       if (hoverGroupId) setGroupHover(null);
@@ -3121,6 +3141,21 @@ export function mountStage(container, options) {
         requestFrame();
       },
       locateStation: focusOrSelect,
+
+      /**
+       * Panel → stage: the pointer is on the station card.
+       *
+       * The card sits over the disc, so the pointer has to leave the canvas to
+       * reach it — and leaving the canvas would otherwise resume the record
+       * underneath someone who is about to click the card's star. The panel is
+       * the only one that knows, so it says.
+       */
+      setCardHover(on) {
+        const next = Boolean(on);
+        if (cardHeld === next) return;
+        cardHeld = next;
+        syncSpin();
+      },
 
       /**
        * Where the berths are, in CSS pixels.
