@@ -4642,10 +4642,12 @@ float stationIndexAt(float r, float phi, float clock) {
  *
  * @param discPos      point on the disc, Rs units, shader frame (z ~ 0)
  * @param retardedTime camera time minus the light travel time
+ * @param patternClock the disc's own clock: camera time minus the pause offset,
+ *                     with no light-travel term
  * @param doppler      g = nu_obs / nu_emit
  * @param stationId    out: index of the station under this point, or -1
  */
-vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint, float detailTrust, out float stationId) {
+vec4 shadeDisc(vec2 discPos, float retardedTime, float patternClock, float doppler, float footprint, float detailTrust, out float stationId) {
   stationId = -1.0;
   float r = length(discPos);
   if (r < uDiscInner || r > DISC_OUTER) return vec4(0.0);
@@ -4656,7 +4658,14 @@ vec4 shadeDisc(vec2 discPos, float retardedTime, float doppler, float footprint,
   // One clock for every pattern on the disc: the procedural turbulence and the
   // catalogue's density field have to pause and resume together, or the stations
   // would slide through the gas instead of riding it.
-  float clock = retardedTime - uStationPhase;
+  //
+  // It is NOT the retarded time. The retarded time carries the light-travel term,
+  // which changes the moment the camera dollies: the pattern would then slide
+  // round, and its detail layers would re-seed, on every step of a zoom. The
+  // wheel must change how large the disc looks and nothing else, so the pattern
+  // reads the camera clock, and the light-travel term stays where it belongs \u2014
+  // in the emission pulse below, which really does travel with the light.
+  float clock = patternClock;
 
   float phi = atan(discPos.y, discPos.x);
   float density = discDensity(r, phi, clock, footprint, detailTrust);
@@ -5407,7 +5416,7 @@ void main() {
                   - u1 * sqrt(u1 / (2.0 - 3.0 * u1)) * dot(eZ, eZPrime);
     doppler1 = gReceiver / gSource;
     vec3 i1 = crossDir1 / u1;
-    disc1 = shadeDisc(i1.xy, uTime - t1, doppler1, footprint1, detailTrust1, stationId1);
+    disc1 = shadeDisc(i1.xy, uTime - t1, uTime - uStationPhase, doppler1, footprint1, detailTrust1, stationId1);
     brightness1 = dot(disc1.rgb, vec3(0.2126, 0.7152, 0.0722));
     radioAtCrossing(i1.xy, u1, a1, fwp1, dxp1, dyp1, sqrtF, 2, (u0 >= 0.0 ? 2 : 1),
                     radioPrem1, radioCover1, radioLum1, radioId1, radioSlot1,
@@ -5418,7 +5427,7 @@ void main() {
                   - u0 * sqrt(u0 / (2.0 - 3.0 * u0)) * dot(eZ, eZPrime);
     doppler0 = gReceiver / gSource;
     vec3 i0 = crossDir0 / u0;
-    disc0 = shadeDisc(i0.xy, uTime - t0, doppler0, footprint0, detailTrust0, stationId0);
+    disc0 = shadeDisc(i0.xy, uTime - t0, uTime - uStationPhase, doppler0, footprint0, detailTrust0, stationId0);
     brightness0 = dot(disc0.rgb, vec3(0.2126, 0.7152, 0.0722));
     radioAtCrossing(i0.xy, u0, a0, fwp0, dxp0, dyp0, sqrtF, 1, 1,
                     radioPrem0, radioCover0, radioLum0, radioId0, radioSlot0,
