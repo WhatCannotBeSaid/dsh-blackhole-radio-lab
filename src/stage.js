@@ -123,6 +123,12 @@ const WORM_OUT_END_S = 1.75;
 const WORM_DEADZONE_PX = 8;
 /** How long an abandoned hold takes to retreat to where the frame was (ms/s). */
 const WORM_RECOIL_S = 0.22;
+/**
+ * Below this much advance nothing has visibly moved, so a release is a plain
+ * undo and not a recoil. Without it a right tap — which arms the exit the
+ * moment it is pressed — would shake the cluster for WORM_RECOIL_S.
+ */
+const WORM_RECOIL_EPS = 0.003;
 /** Reduced motion: no wormhole, one 200 ms cross-fade. */
 const WORM_CALM_RATE = 1 / 0.2;
 /** Catalogue brightness while the hole is the subject. */
@@ -1864,15 +1870,23 @@ export function mountStage(container, options) {
       // A recoil keeps its direction and preparation. Resume the same geometry
       // clock, even after an exit has crossed the halfway point.
       const resuming = worm.kind === 'recoil';
-      if (resuming && (kind === 'exit') !== (worm.recoilTarget === 1)) return false;
+      if (resuming && (kind === 'exit') !== (worm.recoilTarget === 1)) {
+        if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        return false;
+      }
       if (kind === 'enter' && !prepareDiscTransfer()) return false;
       const duration = kind === 'enter'
         ? (reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S - 0.18)
         : (reducedMotion ? 1 / TRANSITION_RATE : WORM_OUT_END_S - WORM_OUT_RING_S);
-      const progress = kind === 'enter' ? clamp01(machine.progress) : 1 - clamp01(machine.progress);
-      const phase = reducedMotion && kind === 'exit'
-        ? progress
-        : 0.5 - Math.sin(Math.asin(1 - 2 * progress) / 3);
+      // Every inverse here is taken on the blend the timeline itself walks, so a
+      // resumed leg lands exactly on the frame the eye left. The exit walks its
+      // blend downwards, from the cluster to the hole, so its distance into the
+      // leg is the complement of that blend — the same number the arc draws.
+      const blendNow = clamp01(machine.progress);
+      const walked = kind === 'enter' ? blendNow : 1 - blendNow;
+      // The inverse smoothstep is a cubic, so it is exact at both ends: the leg
+      // never resumes a rounding error past the frame it was told to hold.
+      const phase = inverseSmoothstep(walked);
       const resumeAt = resuming ? phase * duration : 0;
       const p = ringPoint(event);
       worm.kind = kind;
@@ -1900,10 +1914,12 @@ export function mountStage(container, options) {
       worm.downY = event.clientY;
       worm.cursorX = p.x;
       worm.cursorY = p.y;
-      // The arc reads the very same geometry scalar in either direction.
+      // The arc reads the very same geometry scalar in either direction, taken
+      // as the ring draws it: the entry fills it, the exit empties it.
       if (holdRing) {
         holdRing.show(p.x, p.y);
-        holdRing.setProgress(Math.min(0.999, progress), p.x, p.y);
+        const arc = kind === 'enter' ? blendNow : 1 - blendNow;
+        holdRing.setProgress(Math.min(0.999, arc), p.x, p.y);
       }
       dirty = true;
       requestFrame();
@@ -1927,8 +1943,13 @@ export function mountStage(container, options) {
       // its preparation but not its lock is still reversible: the cluster is
       // already half gone and has to come back.
       const wasExit = worm.kind === 'exit';
+      // Arming the exit used to be part of the clock, so a released exit had
+      // always moved. It now happens on the press, and a tap that never
+      // advanced has nothing to take back.
+      const exitMoved = wasExit && (worm.target !== 'cluster'
+        || Math.abs(machine.progress - worm.progressBefore) > WORM_RECOIL_EPS);
       const recoiling = (worm.kind === 'enter' && (machine.wormCharge > 0.004 || machine.progress > 0.0001 || worm.layoutReady))
-        || (wasExit && worm.armed && worm.target === 'cluster');
+        || exitMoved;
       worm.locked = false;
       worm.covered = false;
       worm.veiled = false;
@@ -1942,6 +1963,10 @@ export function mountStage(container, options) {
         worm.kind = 'recoil';
         worm.charge = machine.wormCharge;
         worm.recoilTarget = wasExit ? 1 : 0;
+        // Where the frame actually stands: the scalar is the frame that has
+        // already been drawn, in both legs. `worm.blend` is the same value on an
+        // exit but lags it by a frame on an entry, so the scalar is the one that
+        // can be resumed from without moving the picture.
         worm.recoilBlend = clamp01(machine.progress);
         worm.blend = machine.progress;
         worm.startedAt = performance.now();
@@ -2355,7 +2380,9 @@ export function mountStage(container, options) {
       // first and the cones reassemble last because that is what the forward
       // passage looks like from the other end.
       // No hold threshold: preserve the old moving segment, starting at press.
-      const end = reducedMotion && worm.target === 'cluster'
+      // The exit is the entry backwards on the shorter clock; reduced motion
+      // keeps its own short leg rather than borrowing the full one.
+      const end = reducedMotion
         ? 1 / TRANSITION_RATE
         : WORM_OUT_END_S - WORM_OUT_RING_S;
       // The mask is opaque at the end of the veil: drop the cover behind it.
@@ -2364,22 +2391,33 @@ export function mountStage(container, options) {
         machine.wormCover = 0;
         applyTransition();
       }
+      // The field leg advances on the same clock the arc reads. It used to hold
+      // still under an opaque cover while the arrangement slid, which left a
+      // second time source behind a threshold. A hole is the head of the entry,
+      // a field its tail, so an exit runs the entry backwards — read from where
+      // the frame actually stands, which is the same thing for a normal press
+      // and the only safe thing after an interrupted one.
+      const u = clamp01(t / end);
+      // The exit runs the entry backwards, so its blend climbs back towards the
+      // cluster while the arc empties. A resumed leg takes the same predicate:
+      // it is the same exit, continued from the frame the eye left.
+      const entry = machine.target === 1 && !worm.armed;
+      const blend = entry ? smoothstep01(u) : 1 - smoothstep01(u);
+      driveCluster(blend);
+      // The exit has to leave the same trail the entry does, or a release would
+      // retreat to the hole it started from instead of to the frame on screen.
+      worm.blend = blend;
+      // Told after the arrangement, because settling the framing rewrites the
+      // layer's flow and only the no-op branch leaves a resumed flow alone.
+      if (discTransfer.active) layer.setFlow(clamp01(machine.progress / DISC_TRANSFER_LANDING));
       if (worm.target !== 'field') {
-        const u = clamp01(t / end);
-        const blend = reducedMotion ? 1 - u : smoothstep01(1 - u);
-        driveCluster(blend);
         if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
         // Coming back to the hole there is nothing to wind up: the disc
         // reassembles at the very end, already at rest.
         driveCharge(0);
         driveDark(darkAt(blend));
       }
-      if (holdRing) {
-        const exitRing = worm.target === 'cluster'
-          ? 1 - machine.progress
-          : clamp01(t / WORM_OUT_END_S);
-        holdRing.setProgress(Math.min(0.999, exitRing), worm.cursorX, worm.cursorY);
-      }
+      if (holdRing) holdRing.setProgress(Math.min(0.999, 1 - blend), worm.cursorX, worm.cursorY);
       if (t >= end) {
         // Restore the real normal-disc owner BEFORE the final draw. Completion
         // after that draw must not acknowledge a still-captured image instead.
@@ -2503,6 +2541,12 @@ export function mountStage(container, options) {
         if (machine.mode === 'cluster' || machine.progress > 0.05 || (worm.kind === 'recoil' && worm.recoilTarget === 1)) {
           event.preventDefault();
           startHold('exit', event);
+        } else if (worm.kind === 'recoil' && worm.recoilTarget === 0) {
+          // A hole-side recoil is the entry given back, not an exit to resume.
+          // The hold must not begin, but the press is still consumed, or the tap
+          // would reach the favourites list through a hole that has no cluster
+          // to leave.
+          event.preventDefault();
         }
         return;
       }
@@ -2651,9 +2695,10 @@ export function mountStage(container, options) {
         const tappedAt = menuPress.at;
         const tappedFrom = { x: menuPress.downX, y: menuPress.downY };
         menuPress.active = false;
-        // Letting go of the right button before the ring fills is a cancel:
-        // nothing has moved yet, so there is nothing to take back. Only the very
-        // button that opened the hold may end it.
+        // Letting go of the right button before the ring fills is a cancel. An
+        // exit that armed on the press has to be unarmed here as well, or the
+        // armed preparation would linger past the gesture. Only the very button
+        // that opened the hold may end it.
         if (worm.kind && !worm.locked && event.pointerId === worm.pointerId && event.button === worm.button) {
           cancelHold();
         }
@@ -3718,6 +3763,17 @@ function clamp01(value) {
 function smoothstep01(value) {
   const t = clamp01(value);
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * The time at which `smoothstep01` reaches `value`. Exact at both ends: the
+ * cubic closed form is a rounding error off there, which is enough to make a
+ * resumed transition restart from the wrong side of its endpoint.
+ */
+function inverseSmoothstep(value) {
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  return 0.5 - Math.sin(Math.asin(1 - 2 * value) / 3);
 }
 
 function describe(error) {

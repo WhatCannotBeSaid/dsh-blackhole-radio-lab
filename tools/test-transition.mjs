@@ -37,6 +37,7 @@ import { buildDiscFragments, DISC_TRANSFER_LANDING, discTransferHandoff } from '
 const source = readFileSync(new URL('../src/stage.js', import.meta.url), 'utf8');
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const smoothstep01 = (x) => x * x * (3 - 2 * x);
+const inverseSmoothstep = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : 0.5 - Math.sin(Math.asin(1 - 2 * v) / 3));
 const declarations = [
   'worm', 'ringPoint', 'prepareDiscTransfer', 'startHold', 'cancelHold', 'lockHold', 'beginCover',
   'finishWormhole', 'driveCluster', 'driveCharge', 'driveDark',
@@ -120,17 +121,18 @@ function harness(reducedMotion = false) {
   const context = vm.createContext({
     layer, holdRing: ring, disk, discTransfer, camera, Vector3, elapsed: 0, reducedMotion, stations, GENRE_IDS, buildClusterLayout,
     describe: (error) => error.message, console: { warn() {} },
-    clamp01, smoothstep01, DISC_TRANSFER_LANDING, discTransferHandoff, Math, layoutCache: new Map(), catalog: { seed: 7 },
+    clamp01, smoothstep01, inverseSmoothstep, DISC_TRANSFER_LANDING, discTransferHandoff, Math, layoutCache: new Map(), catalog: { seed: 7 },
     performance: { now: () => context.now }, now: 0, renderedEnd: false,
     machine: { mode: 'black-hole', progress: 0, target: 0,
       wormCharge: 0, wormDark: 0, wormCover: 0, wormTakeover: 0 },
-    settings: { onCenterClick() {} }, renderer: { toneMappingExposure: 1.15 },
+    settings: { onCenterClick() {}, reducedMotion }, renderer: { toneMappingExposure: 1.15 },
     starfield: { setDim() {} },
     container: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
     rig: { isSettled: true, framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {} },
     hoverGroupId: null, setGroupHover() {}, showHint() {}, hintFor: (key) => key,
     WORM_RING_S: 1, WORM_END_S: 2.5, WORM_OUT_RING_S: 0.55,
     WORM_OUT_VEIL_S: 1.15, WORM_OUT_END_S: 1.75, WORM_RECOIL_S: 0.22,
+    WORM_RECOIL_EPS: 0.003,
     WORM_CALM_RATE: 5, WORM_REVEAL_RATE: 1 / 1.15, TRANSITION_RATE: 0.95,
     HOLE_STATION_DIM: 0.55, dirty: false, transitioning: false,
     requestFrame() {}, clearSelection() {}, clearTimers() {}, notifyMode() {},
@@ -256,15 +258,14 @@ for (const firstFrame of [1.1, 3.0]) {
 {
   const h = harness(true);
   h.api.startHold('enter', event);
-  assert.equal(h.ring.visible, false, 'calm entry ring appeared before motion');
-  h.frame(0.6);
-  assert.equal(h.context.machine.progress, 0);
-  assert.equal(h.ring.visible, false);
-  h.frame(1.1);
+  assert.equal(h.ring.visible, true, 'calm entry missed immediate feedback');
+  h.frame(0.05);
+  assert.ok(h.context.machine.progress > 0);
+  h.frame(0.1);
   assert.equal(h.ring.completed, 0);
   assert.equal(h.ring.visible, true);
   assert.equal(h.ring.progress, h.context.machine.progress);
-  h.frame(1.17);
+  h.frame(0.17);
   assert.equal(h.ring.completed, 1);
   h.endpoint(); h.layer.dispose(); cases++;
 }
@@ -275,8 +276,28 @@ for (const firstFrame of [1.1, 3.0]) {
   h.api.startHold('exit', { ...event, button: 2 });
   h.frame(2.7);
   h.api.cancelHold();
-  assert.equal(h.api.worm.kind, null, 'cancelled exit unexpectedly recoils into the hole');
+  assert.equal(h.api.worm.kind, 'recoil');
+  assert.ok(h.context.machine.progress < 1);
+  assert.equal(h.ring.visible, true);
+  h.frame(3.4);
   assert.equal(h.context.machine.progress, 1);
+  assert.equal(h.ring.visible, false);
+  h.layer.dispose(); cases++;
+}
+{
+  // A right tap: armed on the press, released before anything advanced. It must
+  // leave no hold and no recoil behind, or the favourites tap would pay a shake.
+  const h = harness();
+  h.api.startHold('enter', event); h.frame(2.5);
+  const armed = h.context.machine.progress;
+  h.api.startHold('exit', { ...event, button: 2 });
+  h.api.cancelHold();
+  assert.equal(h.api.worm.kind, null, 'a right tap must not leave a recoil');
+  assert.equal(h.api.worm.armed, false, 'a right tap must disarm the exit');
+  assert.equal(h.ring.visible, false, 'a right tap must leave no ring');
+  assert.equal(h.context.machine.progress, armed, 'a right tap must not move the frame');
+  h.frame(3.0);
+  assert.equal(h.context.machine.progress, armed);
   h.layer.dispose(); cases++;
 }
 {
@@ -332,22 +353,22 @@ for (const failedOwner of ['capture', 'build']) {
   assert.equal(h.ring.completed, 2);
   h.layer.dispose(); cases++;
 }
-// Sample both directions against the actual geometry, including the idle
-// threshold, first delayed frame, pre-completion cancellation and calm motion.
+// Sample immediate motion and shared geometry/ring progress in both motion modes.
 for (const calm of [false, true]) {
   for (const hz of [15, 30, 60]) {
     const h = harness(calm);
     h.api.startHold('enter', event); h.frame(2.5);
     h.api.startHold('exit', { ...event, button: 2 });
-    assert.equal(h.ring.visible, false, 'exit ring appeared during the idle threshold');
-    const end = calm ? 0.55 + 1 / 0.95 : 1.75;
-    for (let n = 1; n <= Math.ceil(end * hz); n++) {
+    assert.equal(h.ring.visible, true, 'exit missed immediate feedback');
+    // The scalar is 1 at the cluster and the exit empties the arc, so a press
+    // that has not drawn a frame yet shows an empty arc, not a full one.
+    assert.ok(h.ring.progress <= 0.001, 'exit ring did not start empty');
+    const end = calm ? 1 / 0.95 : 1.2;
+    for (let n = 1; n <= Math.ceil((end + 0.4) * hz); n++) {
       const t = n / hz;
       h.frame(2.5 + t, 1 / hz);
-      if (t < 0.55) {
-        assert.equal(h.ring.visible, false);
-        assert.equal(h.context.machine.progress, 1);
-      } else if (t < end) {
+      if (t < end) {
+        assert.ok(h.context.machine.progress < 1, 'exit still has an idle threshold');
         assert.equal(h.ring.visible, true, 'exit motion has no progress ring');
         assert.equal(h.ring.completed, 1);
         assert.ok(Math.abs(h.ring.progress - Math.min(0.999, 1 - h.context.machine.progress)) < 1e-12);
@@ -363,12 +384,11 @@ for (const calm of [false, true]) {
 for (const firstExitFrame of [0.56, 1.9]) {
   const h = harness();
   h.api.startHold('enter', event); h.frame(2.5);
-  h.api.startHold('exit', { ...event, button: 2 });
-  // A previous shelf hold may have left this value; armExit must resolve it
-  // before using it to choose a ring clock.
+  // A previous hold must not choose this exit's target.
   h.api.worm.target = 'field';
+  h.api.startHold('exit', { ...event, button: 2 });
   h.frame(2.5 + firstExitFrame);
-  if (firstExitFrame < 1.75) {
+  if (firstExitFrame < 1.2) {
     assert.equal(h.ring.progress, 1 - h.context.machine.progress);
     h.frame(4.25);
   }
@@ -399,6 +419,58 @@ for (const leg of ['enter', 'exit']) {
   assert.equal(h.ring.completed, 2, 'skip did not complete with its final draw');
   assert.equal(h.context.machine.progress, 0);
   h.layer.dispose(); cases++;
+}
+// Recoil uses the same scalar as the picture, and repress in either half of
+// either direction must preserve the current geometry, arc and one-shot setup.
+for (const calm of [false, true]) {
+  for (const leg of ['enter', 'exit']) {
+    for (const portion of [0.2, 0.8]) {
+      const h = harness(calm);
+      if (leg === 'exit') { h.api.startHold('enter', event); h.frame(2.5); }
+      const start = h.context.now / 1000;
+      const duration = leg === 'enter' ? (calm ? 0.17 : 2.32) : (calm ? 1 / 0.95 : 1.2);
+      const pointer = { ...event, button: leg === 'exit' ? 2 : 0 };
+      h.api.startHold(leg, pointer);
+      h.frame(start + duration * portion);
+      const released = h.ring.progress;
+      h.api.cancelHold();
+      assert.equal(h.ring.visible, true, 'release hid the arc instead of unwinding');
+      assert.equal(h.ring.progress, released, 'release snapped the arc');
+      h.frame(start + duration * portion + 0.03);
+      assert.ok(h.ring.progress < released, 'recoil did not unwind the arc');
+      const progress = h.context.machine.progress;
+      const ring = h.ring.progress;
+      const captures = h.context.disk.captures;
+      const positions = stations.map((_, i) => h.layer.positionAt(i));
+      assert.equal(h.api.startHold(leg, pointer), true);
+      assert.ok(Math.abs(h.ring.progress - ring) < 1e-12, 'repress snapped the arc');
+      h.api.advanceWormhole(h.context.now);
+      h.layer.update(0, camera, 900);
+      assert.ok(Math.abs(h.context.machine.progress - progress) < 1e-4, 'repress jumped the geometry');
+      // A resume has to be a resume, not a freeze: the arc moving on does not
+      // prove the geometry did. Step the same leg one frame further and require
+      // it to advance by a visible-but-continuous amount from where it stood.
+      const resumed = h.context.machine.progress;
+      h.api.advanceWormhole(h.context.now + 16);
+      h.layer.update(0, camera, 900);
+      const step = Math.abs(h.context.machine.progress - resumed);
+      assert.ok(step > 1e-6, 'repress left the geometry frozen');
+      // One 16 ms frame cannot cover more than a fraction of the leg, whatever
+      // that leg's length is; a restart would overshoot by the leg's head start.
+      assert.ok(step < 16 / (duration * 1000) * 2, 'repress restarted the leg instead of continuing it');
+      assert.equal(h.context.disk.captures, captures, 'repress recaptured the scene');
+      for (let i = 0; i < positions.length; i++) {
+        const p = h.layer.positionAt(i), before = positions[i];
+        assert.ok(Math.hypot(p.x-before.x,p.y-before.y,p.z-before.z) < 1e-4, 'repress teleported a particle');
+      }
+      h.api.cancelHold();
+      h.frame(h.context.now / 1000 + 1);
+      assert.equal(h.context.machine.progress, leg === 'exit' ? 1 : 0);
+      assert.equal(h.ring.visible, false);
+      assert.equal(h.api.worm.kind, null);
+      h.layer.dispose(); cases++;
+    }
+  }
 }
 // Use the real damping rig, including a first rAF beyond the material endpoint.
 // Completion must wait for the camera, not just for particle geometry.

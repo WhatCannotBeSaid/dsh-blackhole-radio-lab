@@ -2470,6 +2470,10 @@ window.__ModuleLoader__.load({
       const hoverCardTimer = useRef(0);
       const hoverCardPending = useRef(null);
       const stageElRef = useRef(null);
+      // True while the pointer is on the card itself. The stage can only report
+      // heat spots, so every move over the card reads as "no station" there;
+      // without this the card would time itself out while being read.
+      const hoverCardInside = useRef(false);
 
       const applyHoverCard = (next) => {
         hoverCardRef.current = next;
@@ -2482,6 +2486,8 @@ window.__ModuleLoader__.load({
           hoverCardTimer.current = 0;
         }
         if (!payload) {
+          // The pointer is on the card, not on the sky: the card keeps itself.
+          if (hoverCardInside.current) return;
           // Leaving is slower than arriving, so a pointer crossing a gap between
           // two heat spots does not make the card blink.
           hoverCardTimer.current = setTimeout(() => {
@@ -2490,6 +2496,9 @@ window.__ModuleLoader__.load({
           }, 200);
           return;
         }
+        // A station means the pointer is over the sky again, whatever the card
+        // last saw. Self-healing, so a lost leave cannot wedge the dismissal off.
+        hoverCardInside.current = false;
         // The stage reports viewport coordinates because that is what it reads
         // off the pointer event; the card is positioned inside the stage, so it
         // has to be brought into the stage's own frame here, once.
@@ -2527,11 +2536,17 @@ window.__ModuleLoader__.load({
 
       const hoverCardKeep = useCallback(() => {
         // The pointer crossed from the heat spot into the card itself. That is
-        // still the same hover, so the dismissal must not fire.
+        // still the same hover, so the dismissal must not fire — and it must not
+        // re-arm while the pointer stays on the card.
+        hoverCardInside.current = true;
         if (hoverCardTimer.current) {
           clearTimeout(hoverCardTimer.current);
           hoverCardTimer.current = 0;
         }
+      }, []);
+
+      const hoverCardRelease = useCallback(() => {
+        hoverCardInside.current = false;
       }, []);
 
       /**
@@ -3023,6 +3038,7 @@ window.__ModuleLoader__.load({
                 setCardHover(true);
               },
               onPointerLeave: () => {
+                hoverCardRelease();
                 setCardHover(false);
                 hoverCardIn(null);
               },
@@ -3032,7 +3048,31 @@ window.__ModuleLoader__.load({
                 event.stopPropagation();
               },
             },
-            h('span', { className: 'bhrl-hovercard__name' }, hoverCardStation.name),
+            // The star sits with the name it acts on: one line, title on the left
+            // and the mark at the right end, so the card opens as a name plus its
+            // action instead of stacking a button under the text.
+            h(
+              'div',
+              { className: 'bhrl-hovercard__head' },
+              h('span', { className: 'bhrl-hovercard__name' }, hoverCardStation.name),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'bhrl-hovercard__fav',
+                  'data-icon': 'true',
+                  'data-active': hoverCardFavourite ? 'true' : 'false',
+                  'aria-pressed': hoverCardFavourite ? 'true' : 'false',
+                  'aria-label': hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
+                  title: hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
+                  onClick: (event) => {
+                    event.stopPropagation();
+                    favouriteFromCard();
+                  },
+                },
+                h(StarGlyph, { size: 12, filled: hoverCardFavourite }),
+              ),
+            ),
             hoverCardCountry || hoverCardLanguage
               ? h(
                   'span',
@@ -3041,32 +3081,19 @@ window.__ModuleLoader__.load({
                 )
               : null,
             h(
-              'span',
-              { className: 'bhrl-hovercard__genre' },
-              h('span', {
-                className: 'bhrl-hovercard__dot',
-                style: { background: genreCssOf(hoverCardStation.genre || 'other') },
-                'aria-hidden': 'true',
-              }),
-              h('span', null, genreLabelOf(hoverCardStation.genre || 'other')),
-            ),
-            hoverCardLive ? h('span', { className: 'bhrl-hovercard__live' }, t('hoverLiveBadge')) : null,
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'bhrl-hovercard__fav',
-                'data-icon': 'true',
-                'data-active': hoverCardFavourite ? 'true' : 'false',
-                'aria-pressed': hoverCardFavourite ? 'true' : 'false',
-                'aria-label': hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
-                title: hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
-                onClick: (event) => {
-                  event.stopPropagation();
-                  favouriteFromCard();
-                },
-              },
-              h(StarGlyph, { size: 12, filled: hoverCardFavourite }),
+              'div',
+              { className: 'bhrl-hovercard__row' },
+              h(
+                'span',
+                { className: 'bhrl-hovercard__genre' },
+                h('span', {
+                  className: 'bhrl-hovercard__dot',
+                  style: { background: genreCssOf(hoverCardStation.genre || 'other') },
+                  'aria-hidden': 'true',
+                }),
+                h('span', null, genreLabelOf(hoverCardStation.genre || 'other')),
+              ),
+              hoverCardLive ? h('span', { className: 'bhrl-hovercard__live' }, t('hoverLiveBadge')) : null,
             ),
           )
         : null;
@@ -3397,18 +3424,26 @@ window.__ModuleLoader__.load({
 }
 @keyframes bhrl-card-in { from { opacity: 0; } to { opacity: 1; } }
 .bhrl-hovercard[data-touch='true'] { animation: none; }
-.bhrl-hovercard__name { font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; }
+/* Title line: the station's name and the mark that changes the library, so the
+   action sits with the thing it acts on instead of under the text. */
+.bhrl-hovercard__head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.bhrl-hovercard__name {
+  font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .bhrl-hovercard__meta { font-size: 10.5px; color: var(--bhrl-ink-dim); }
-.bhrl-hovercard__genre { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--bhrl-ink-dim); }
+/* The card's second line: what the station is, with the live badge beside it. */
+.bhrl-hovercard__row { display: flex; align-items: center; gap: 6px; margin-top: 4px; min-width: 0; }
+.bhrl-hovercard__genre { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--bhrl-ink-dim); min-width: 0; }
 .bhrl-hovercard__dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .bhrl-hovercard__live {
-  align-self: flex-start; margin-top: 1px; padding: 1px 5px; border-radius: 4px;
+  flex: none; padding: 1px 5px; border-radius: 4px;
   background: rgba(255, 150, 86, 0.16); color: #ffb884;
   font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase;
 }
 .bhrl-hovercard__hint { margin-top: 5px; font-size: 10px; color: var(--bhrl-ink-faint); }
 .bhrl-hovercard__fav {
-  margin-top: 7px; align-self: flex-start; padding: 4px 9px; border-radius: 6px;
+  flex: none; margin-left: auto; padding: 4px 9px; border-radius: 6px;
   border: 1px solid var(--bhrl-line-soft); background: rgba(255, 255, 255, 0.04);
   color: var(--bhrl-ink); font: inherit; font-size: 10.5px; cursor: pointer;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
