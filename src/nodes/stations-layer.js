@@ -102,6 +102,11 @@ const VERTEX_SHADER = /* glsl */ `
   // The station whose stream is live, or -1. One knob, read by the vertex pass
   // only: the heat source is the full brightening, the ring lives on the marker.
   uniform float uPlaying;
+  // The station the pointer is over, or -1, plus whether anything is hovered at
+  // all. A hover is a reading aid, not a selection: it recedes every other
+  // sprite and lifts this one, and it is cleared the moment the pointer leaves.
+  uniform float uHover;
+  uniform float uHoverActive;
 
   varying vec3 vColor;
   varying float vAlpha;
@@ -190,6 +195,13 @@ const VERTEX_SHADER = /* glsl */ `
     float selected = step(abs(aStation - uSelected), 0.5);
     vSelected = selected;
 
+    // Hover belongs to one station at a time. The others step back so the name
+    // being read has a quiet field around it; the hovered one lifts slightly,
+    // which is enough to connect the label to the speck it names.
+    float hovered = step(abs(aStation - uHover), 0.5);
+    float hoverMask = mix(1.0, 0.20, uHoverActive * (1.0 - hovered));
+    float hoverBoost = mix(1.0, 1.30, uHoverActive * hovered);
+
     float dim = mix(1.0, 0.13, uFilterActive * (1.0 - aMatch));
     // A revealed cloud is denser, not brighter: per-sprite energy goes DOWN while
     // the cluster packs more sprites per pixel. That is what keeps the cloud a
@@ -243,6 +255,7 @@ const VERTEX_SHADER = /* glsl */ `
 
     vAlpha = aPresence * matter * dim * boost * lodAlpha * diskFade
       * sizeFade * energy * memberFade * clusterGain * diskLight * liveGain * standIn
+      * hoverMask * hoverBoost
       * (1.0 - uHoleOnly);
 
 
@@ -583,6 +596,8 @@ export function createStationsLayer(stations, options) {
     // this is a visibility gate, not a data change.
     uHoleOnly: { value: 0 },
     uPlaying: { value: -1 },
+    uHover: { value: -1 },
+    uHoverActive: { value: 0 },
   };
 
   const material = new ShaderMaterial({
@@ -913,6 +928,17 @@ export function createStationsLayer(stations, options) {
       uniforms.uHolePx.value[0] = px;
       uniforms.uHolePx.value[1] = py;
       uniforms.uHoleRadiusPx.value = Math.max(1, radiusPx);
+    },
+
+    /**
+     * One station under the pointer, or -1. Nothing here is remembered beyond
+     * the two uniforms: the label, the cursor and the recede all read from the
+     * same index the stage already keeps.
+     */
+    setHoverIndex(index) {
+      const next = Number.isInteger(index) && index >= 0 && index < count ? index : -1;
+      uniforms.uHover.value = next;
+      uniforms.uHoverActive.value = next >= 0 ? 1 : 0;
     },
 
     setSelectedIndex(index) {

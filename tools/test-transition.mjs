@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { PerspectiveCamera, Vector3 } from 'three';
 import { createStationsLayer } from '../src/nodes/stations-layer.js';
+import { createCameraRig } from '../src/scene/camera-rig.js';
 import { buildClusterLayout } from '../src/cluster/layout.js';
 import { GENRE_IDS } from '../src/radio/genres.js';
 import { buildFragmentShader } from '../src/scene/geodesic.glsl.js';
@@ -40,7 +41,7 @@ const declarations = [
   'worm', 'ringPoint', 'prepareDiscTransfer', 'startHold', 'cancelHold', 'lockHold', 'beginCover',
   'finishWormhole', 'driveNebula', 'driveCluster', 'driveCharge', 'driveDark',
   'burstOf', 'darkAt', 'advanceWormhole', 'applyTransition',
-  'enterCluster', 'exitCluster',
+  'enterCluster', 'exitCluster', 'armExit', 'restoreClusterAfterCancel', 'skipWormhole',
 ];
 function declaration(name) {
   const start = source.indexOf(`    const ${name} = `);
@@ -98,7 +99,7 @@ camera.updateMatrixWorld();
 function harness(reducedMotion = false) {
   const layer = createStationsLayer(stations, { seed: 7 });
   const ring = { progress: 0, completed: 0, visible: false,
-    show() { this.visible = true; }, hide() { this.visible = false; },
+    show() { this.visible = true; }, hide() { this.progress = 0; this.visible = false; },
     setProgress(p) { this.progress = p; this.visible = true; },
     complete() {
       assert.equal(context.renderedEnd, true, 'ring completed before the endpoint draw');
@@ -125,7 +126,8 @@ function harness(reducedMotion = false) {
     settings: { onCenterClick() {} }, renderer: { toneMappingExposure: 1.15 },
     starfield: { setDim() {} }, nebula: null,
     container: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
-    rig: { framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {} },
+    rig: { isSettled: true, framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {}, setAnchorZoom() {} },
+    hoverGroupId: null, setGroupHover() {}, showHint() {}, hintFor: (key) => key,
     WORM_RING_S: 1, WORM_END_S: 2.5, WORM_OUT_RING_S: 0.55,
     WORM_OUT_VEIL_S: 1.15, WORM_OUT_END_S: 1.75, WORM_RECOIL_S: 0.22,
     WORM_CALM_RATE: 5, WORM_REVEAL_RATE: 1 / 1.15, TRANSITION_RATE: 0.95,
@@ -152,6 +154,9 @@ function harness(reducedMotion = false) {
   }
   function frame(seconds, dt = 1 / 60) {
     context.now = seconds * 1000;
+    context.renderedEnd = false;
+    const completions = ring.completed;
+    if (typeof context.rig.update === 'function') context.rig.update(Math.min(dt, 0.05));
     api.advanceWormhole(context.now);
     if (discTransfer.active && context.machine.progress <= DISC_TRANSFER_LANDING) {
       assert.equal(layer.object.visible, false, 'old substitute particle population is still drawn in flight');
@@ -163,7 +168,7 @@ function harness(reducedMotion = false) {
     if (api.worm.landed) {
       if (api.worm.kind === 'enter') {
         endpoint();
-        assert.equal(ring.completed, 0);
+        assert.equal(ring.completed, completions);
       } else {
         assert.equal(context.machine.progress, 0, 'exit did not upload its exact endpoint');
         assert.equal(discTransfer.active, false, 'exit draw still belongs to captured fragments');
@@ -185,7 +190,9 @@ for (const hz of [15, 30, 60]) {
   h.api.startHold('enter', event);
   let previousProgress = 0;
   let before = h.layer.object.geometry.getAttribute('position').array.slice();
-  for (let n = 1; n <= Math.ceil(2.5 * hz); n++) {
+  const arrival = 2.32;
+  assert.equal(h.ring.visible, true, 'entry ring missed the first frame');
+  for (let n = 1; n <= Math.ceil(arrival * hz); n++) {
     h.frame(n / hz, 1 / hz);
     assert.ok(h.context.machine.progress >= previousProgress, 'competing tween pulled progress backwards');
     previousProgress = h.context.machine.progress;
@@ -194,7 +201,11 @@ for (const hz of [15, 30, 60]) {
     const maxStep = buffer.reduce((m, v, i) => Math.max(m, Math.abs(v - before[i])), 0);
     assert.ok(maxStep < 0.8, `particle teleport: ${maxStep} at ${hz} Hz`);
     before = buffer.slice();
-    if (n / hz < 2.5) assert.equal(h.ring.completed, 0);
+    if (n / hz < arrival) {
+      assert.equal(h.ring.completed, 0);
+      assert.equal(h.ring.visible, true);
+      assert.ok(Math.abs(h.ring.progress - Math.min(0.999, h.context.machine.progress)) < 1e-12, 'entry ring drifted from the geometry');
+    }
     if (n === Math.ceil(hz * 0.5)) {
       assert.notDeepEqual(h.layer.positionAt(0), start, 'no under-hand movement');
       assert.ok(h.ring.progress < 1);
@@ -235,21 +246,24 @@ for (const firstFrame of [1.1, 3.0]) {
   h.api.startHold('enter', event);
   h.frame(firstFrame, 0.05);
   assert.equal(h.api.worm.layoutReady || h.ring.completed === 1, true, 'late first frame lost layout');
-  if (firstFrame < 2.5) {
-    h.api.cancelHold(); // committed entry is not cancelled by release
-    assert.equal(h.api.worm.kind, 'enter');
-    h.frame(2.5, 0.05);
+  if (firstFrame < 2.32) {
+    assert.equal(h.api.worm.locked, false, 'entry committed before its ring filled');
+    h.frame(2.32, 0.05);
   }
   h.endpoint(); h.layer.dispose(); cases++;
 }
 {
   const h = harness(true);
   h.api.startHold('enter', event);
+  assert.equal(h.ring.visible, false, 'calm entry ring appeared before motion');
   h.frame(0.6);
   assert.equal(h.context.machine.progress, 0);
+  assert.equal(h.ring.visible, false);
   h.frame(1.1);
   assert.equal(h.ring.completed, 0);
-  h.frame(1.2);
+  assert.equal(h.ring.visible, true);
+  assert.equal(h.ring.progress, h.context.machine.progress);
+  h.frame(1.17);
   assert.equal(h.ring.completed, 1);
   h.endpoint(); h.layer.dispose(); cases++;
 }
@@ -316,6 +330,163 @@ for (const failedOwner of ['capture', 'build']) {
   h.frame(4.25);
   assert.equal(h.ring.completed, 2);
   h.layer.dispose(); cases++;
+}
+// Sample both directions against the actual geometry, including the idle
+// threshold, first delayed frame, pre-completion cancellation and calm motion.
+for (const calm of [false, true]) {
+  for (const hz of [15, 30, 60]) {
+    const h = harness(calm);
+    h.api.startHold('enter', event); h.frame(2.5);
+    h.api.startHold('exit', { ...event, button: 2 });
+    assert.equal(h.ring.visible, false, 'exit ring appeared during the idle threshold');
+    const end = calm ? 0.55 + 1 / 0.95 : 1.75;
+    for (let n = 1; n <= Math.ceil(end * hz); n++) {
+      const t = n / hz;
+      h.frame(2.5 + t, 1 / hz);
+      if (t < 0.55) {
+        assert.equal(h.ring.visible, false);
+        assert.equal(h.context.machine.progress, 1);
+      } else if (t < end) {
+        assert.equal(h.ring.visible, true, 'exit motion has no progress ring');
+        assert.equal(h.ring.completed, 1);
+        assert.ok(Math.abs(h.ring.progress - Math.min(0.999, 1 - h.context.machine.progress)) < 1e-12);
+        assert.equal(h.api.worm.locked, false);
+      }
+    }
+    assert.equal(h.ring.completed, 2);
+    assert.equal(h.context.machine.mode, 'black-hole');
+    assert.equal(h.api.worm.kind, null);
+    h.layer.dispose(); cases++;
+  }
+}
+for (const firstExitFrame of [0.56, 1.9]) {
+  const h = harness();
+  h.api.startHold('enter', event); h.frame(2.5);
+  h.api.startHold('exit', { ...event, button: 2 });
+  // A previous shelf hold may have left this value; armExit must resolve it
+  // before using it to choose a ring clock.
+  h.api.worm.target = 'field';
+  h.frame(2.5 + firstExitFrame);
+  if (firstExitFrame < 1.75) {
+    assert.equal(h.ring.progress, 1 - h.context.machine.progress);
+    h.frame(4.25);
+  }
+  assert.equal(h.ring.completed, 2);
+  h.layer.dispose(); cases++;
+}
+for (const leg of ['enter', 'exit']) {
+  const h = harness();
+  if (leg === 'exit') { h.api.startHold('enter', event); h.frame(2.5); }
+  const start = h.context.now / 1000;
+  h.api.startHold(leg, { ...event, button: leg === 'exit' ? 2 : 0 });
+  h.frame(start + 1.1);
+  h.api.cancelHold();
+  assert.equal(h.api.worm.kind, 'recoil');
+  h.frame(start + 2);
+  assert.equal(h.api.worm.kind, null);
+  assert.equal(h.context.machine.progress, leg === 'exit' ? 1 : 0);
+  assert.equal(h.ring.visible, false);
+  assert.equal(h.ring.completed, leg === 'exit' ? 1 : 0);
+  h.layer.dispose(); cases++;
+}
+{
+  const h = harness();
+  h.api.startHold('enter', event); h.frame(2.5);
+  h.api.startHold('exit', { ...event, button: 2 }); h.frame(3.2);
+  assert.equal(h.api.skipWormhole(), true);
+  h.frame(3.21);
+  assert.equal(h.ring.completed, 2, 'skip did not complete with its final draw');
+  assert.equal(h.context.machine.progress, 0);
+  h.layer.dispose(); cases++;
+}
+// Shelf navigation retains its existing countdown rather than inheriting the
+// repaired hole/cluster motion window.
+{
+  const h = harness();
+  h.context.machine.mode = 'cluster';
+  h.context.machine.progress = 1;
+  h.context.machine.expanded = 'jazz';
+  h.api.startHold('exit', { ...event, button: 2 });
+  assert.equal(h.ring.visible, true);
+  h.frame(0.2);
+  assert.equal(h.ring.progress, 0.2 / 1.75);
+  h.api.cancelHold();
+  assert.equal(h.ring.visible, false);
+  h.layer.dispose(); cases++;
+}
+// Use the real damping rig, including a first rAF beyond the material endpoint.
+// Completion must wait for the camera, not just for particle geometry.
+for (const calm of [false, true]) {
+  for (const hz of [15, 30, 60]) {
+    const h = harness(calm);
+    h.api.startHold('enter', event); h.frame(2.5);
+    const rig = createCameraRig(camera.clone(), {
+      addEventListener() {}, removeEventListener() {},
+    });
+    rig.setHome({ radius: 28, phi: 1.2, theta: 2, target: { x: 3, y: 2, z: 1 } });
+    for (let i = 0; i < 80; i++) rig.update(0.05);
+    assert.equal(rig.isSettled, true);
+    h.context.rig = rig;
+    h.api.startHold('exit', { ...event, button: 2 });
+    h.frame(4.4, 1 / hz);
+    assert.equal(h.context.machine.progress, 0);
+    assert.equal(rig.isSettled, false, 'exit did not exercise a displaced camera');
+    assert.equal(h.ring.completed, 1, 'delayed first rAF skipped camera homing');
+    let n = 1;
+    while (h.api.worm.kind && n < 240) {
+      h.frame(4.4 + n / hz, 1 / hz);
+      if (!rig.isSettled) assert.equal(h.ring.completed, 1, 'full ring led the camera');
+      n++;
+    }
+    assert.ok(n < 240, 'camera endpoint never completed');
+    assert.equal(h.ring.completed, 2);
+    assert.equal(rig.isSettled, true);
+    rig.dispose(); h.layer.dispose(); cases++;
+  }
+}
+// Exercise the real DOM ring implementation without a browser or timed waits.
+// Only the document/timer boundary is stubbed; SVG and style writes are real.
+{
+  const timers = new Map();
+  let timerId = 0;
+  const node = () => ({
+    style: {}, attributes: {}, children: [], parentNode: null, visibleFlushes: 0,
+    getBoundingClientRect() {
+      assert.equal(this.style.opacity, '1', 'completion did not commit a visible ring');
+      this.visibleFlushes++;
+      return {};
+    },
+    setAttribute(k, v) { this.attributes[k] = v; },
+    appendChild(child) { this.children.push(child); child.parentNode = this; },
+    removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; },
+  });
+  const ringContext = vm.createContext({
+    document: { createElement: node, createElementNS: node },
+    setTimeout(fn) { timers.set(++timerId, fn); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  const ringSource = readFileSync(new URL('../src/nodes/hold-ring.js', import.meta.url), 'utf8');
+  vm.runInContext(ringSource.replace('export function createHoldRing', 'function createHoldRing') + '\nglobalThis.createHoldRing = createHoldRing;', ringContext);
+  const container = node();
+  const ring = ringContext.createHoldRing(container);
+  const arc = ring.element.children[0].children[2];
+  ring.show(100, 100); ring.setProgress(0);
+  assert.equal(ring.element.style.opacity, '1');
+  assert.equal(ring.element.style.transition, 'none', 'entry ring still has a delayed fade-in');
+  ring.setProgress(0.5);
+  assert.ok(Math.abs(+arc.attributes['stroke-dashoffset'] - Math.PI * 17) < 1e-10);
+  ring.complete();
+  assert.equal(arc.attributes['stroke-dashoffset'], '0');
+  assert.match(ring.element.style.transition, /220ms/);
+  ring.show(100, 100); ring.setProgress(0.1);
+  assert.equal(timers.size, 0, 'repress left a stale completion timer');
+  assert.equal(ring.element.style.transition, 'none');
+  ring.hide(); ring.setProgress(0.2, 100, 100);
+  assert.equal(ring.element.style.opacity, '1');
+  assert.equal(ring.element.style.transition, 'none', 'delayed exit appearance still fades in');
+  ring.dispose();
+  assert.equal(container.children.length, 0);
+  console.log('PASS real SVG ring: immediate show/re-show, same-clock arc, full endpoint and completion-timer cancellation.');
 }
 const tickStart = source.indexOf('    const tick = ');
 const tickEnd = source.indexOf('\n    };', tickStart);

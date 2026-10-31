@@ -192,10 +192,13 @@ export function createLabelOverlay(container) {
       // actually prevents two names from colliding.
 
       const active = Boolean(nebula.hovered || nebula.selected);
+      // A volume earns its name by being read, not by existing. The sky is a
+      // field of lights until the pointer says which one matters.
+      if (!active) continue;
       const radius = Math.max(8, Math.min(340, Number(nebula.radiusPx) || 0));
-      if (active) drawNebulaRing(p.x, p.y, radius * 0.92, nebula.color || COLOR_ACCENT, 1);
+      drawNebulaRing(p.x, p.y, radius * 0.92, nebula.color || COLOR_ACCENT, 1);
 
-      const text = active && nebula.count ? `${nebula.label}  ·  ${nebula.count}` : nebula.label;
+      const text = nebula.count ? `${nebula.label}  ·  ${nebula.count}` : nebula.label;
       const gap = Math.min(220, radius) * 0.92 + 14;
       const base = {
         font: active ? FONT_NEBULA_ACTIVE : FONT_NEBULA,
@@ -250,6 +253,10 @@ export function createLabelOverlay(container) {
     // The station under the pointer keeps its name off the canvas: the panel's
     // card already names it, and two copies of one label read as a glitch.
     const suppressedIndex = typeof frame.suppressedIndex === 'number' ? frame.suppressedIndex : -1;
+    // The pointer's own reading: one station, named in place with the genre it
+    // belongs to. While it is on, the other station names step off the canvas
+    // so there is exactly one thing to read.
+    const hover = frame.hover && Number.isFinite(frame.hover.x) ? frame.hover : null;
     const visibilityAt = typeof frame.visibilityAt === 'function' ? frame.visibilityAt : () => 1;
     // Live animated positions: during a cloud morph a label must travel with its
     // node instead of pointing at the authored slot it left behind.
@@ -260,7 +267,7 @@ export function createLabelOverlay(container) {
     const cameraPos = camera.position;
 
     // 1. the selected station always gets a name, plus a hairline to its node
-    if (selectedIndex >= 0 && stations[selectedIndex] && selectedIndex !== suppressedIndex) {
+    if (!hover && selectedIndex >= 0 && stations[selectedIndex] && selectedIndex !== suppressedIndex) {
       const station = stations[selectedIndex];
       const p = project(positionAt(selectedIndex) || station.position, camera);
       if (p) {
@@ -308,7 +315,7 @@ export function createLabelOverlay(container) {
     // 2. featured and nearby station names, genuinely close only. On the default
     // overview the camera sits ~10.9 R out, so featured nodes (r 1.2) are ~9.6
     // away and stay unnamed: names are earned by proximity, not by being pretty.
-    if (lod < 0.58) {
+    if (!hover && lod < 0.58) {
       const candidates = [];
       for (let i = 0; i < stations.length && candidates.length < 60; i += 1) {
         if (i === selectedIndex || i === suppressedIndex) continue;
@@ -393,6 +400,59 @@ export function createLabelOverlay(container) {
     // a genre name is never displaced by a station label, but the collision
     // boxes it registers still protect it from the next frame's stations.
     if (nebulae.length) drawNebulae(nebulae, camera, frame.nebulaFade);
+
+    // 5. the pointer's own reading, in the scene rather than in a card. A
+    // reticle, a name and the genre it belongs to; nothing else is drawn while
+    // it is up, so the one node being read is the only text on the sky.
+    if (hover) {
+      const hx = Math.min(width - 12, Math.max(12, hover.x));
+      const hy = Math.min(height - 12, Math.max(12, hover.y));
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(4, 6, 12, 0.7)';
+      ctx.lineWidth = 3;
+      ctx.arc(hx, hy, 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.strokeStyle = COLOR_ACCENT;
+      ctx.lineWidth = 1.1;
+      ctx.arc(hx, hy, 9, 0, Math.PI * 2);
+      ctx.stroke();
+      if (hover.name) {
+        drawLabel(hover.name, hx + 14, hy - 6, {
+          font: FONT_SELECTED,
+          color: COLOR_ACCENT,
+          padX: 5,
+          force: true,
+        });
+      }
+      if (hover.genre) {
+        drawLabel(hover.genre, hx + 14, hy + 10, {
+          font: FONT_CLOUD,
+          color: COLOR_TEXT_DIM,
+          padX: 4,
+          force: true,
+        });
+      }
+    }
+
+    // 6. the space's one-line hint, in the corner, only while the moment is
+    // still new. It is the page's only chrome, so it leaves on its own.
+    const hint = frame.hint;
+    if (hint && hint.text) {
+      const alpha = Math.min(1, Math.max(0, hint.alpha === undefined ? 1 : hint.alpha)) * 0.82;
+      if (alpha > 0.02) {
+        ctx.font = FONT_CLOUD;
+        const w = ctx.measureText(hint.text).width;
+        const x = width - 20 - w;
+        const y = height - 18;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = COLOR_SHADOW;
+        ctx.fillText(hint.text, x + 0.7, y + 0.8);
+        ctx.fillStyle = COLOR_TEXT_DIM;
+        ctx.fillText(hint.text, x, y);
+        ctx.globalAlpha = 1;
+      }
+    }
 
     ctx.shadowBlur = 0;
   }

@@ -83,10 +83,20 @@ export function createCameraRig(camera, element, options) {
   };
 
   const offset = new Vector3();
+  // Wheel-anchor scratch. The anchor is computed, never stored: it belongs to
+  // the tick that asked for it.
+  const wheelDir = new Vector3();
+  const wheelNormal = new Vector3();
+  const wheelAnchor = new Vector3();
   let drag = null;
   let disposed = false;
   let onChange = null;
   let mode = 'orbit';
+  // Off by default: the black hole's wheel is a pure dolly around the shadow,
+  // which is the framing that view was authored for. The cluster and the
+  // nebula turn it on, because there the wheel is how you pick a region to
+  // look at rather than how far back you stand from one object.
+  let anchorZoom = false;
 
   const notify = () => {
     if (onChange) onChange();
@@ -166,7 +176,39 @@ export function createCameraRig(camera, element, options) {
     event.preventDefault();
     const unit = event.deltaMode === 1 ? 18 : event.deltaMode === 2 ? 240 : 1;
     const amount = clamp(event.deltaY * unit, -240, 240);
-    goal.radius = clamp(goal.radius * Math.exp(amount * 0.0011), home.minRadius, home.maxRadius);
+    const previous = goal.radius;
+    const next = clamp(previous * Math.exp(amount * 0.0011), home.minRadius, home.maxRadius);
+    if (anchorZoom && Math.abs(next - previous) > 1e-6 && typeof element.getBoundingClientRect === 'function') {
+      // The pointer is the region the user wants to look at. There is no frame
+      // to hit-test here, so the anchor is geometric: the cursor's ray cut by
+      // the plane through the current target that faces the eye. Pulling in
+      // walks the target toward that crossing; pulling out walks it back to
+      // home, so one gesture undoes itself without a separate "reset" mode.
+      const rect = element.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      const ndcX = ((event.clientX - rect.left) / w) * 2 - 1;
+      const ndcY = 1 - ((event.clientY - rect.top) / h) * 2;
+      wheelDir.set(ndcX, ndcY, 0.5).unproject(camera).sub(camera.position).normalize();
+      wheelNormal.subVectors(goal.target, camera.position);
+      const eyeDistance = wheelNormal.length();
+      if (eyeDistance > 0.001) {
+        wheelNormal.divideScalar(eyeDistance);
+        const facing = wheelDir.dot(wheelNormal);
+        // A ray almost parallel to the plane has no meaningful crossing; such a
+        // tick falls back to a plain dolly instead of throwing the target aside.
+        if (facing > 0.12) {
+          wheelAnchor.copy(camera.position).addScaledVector(wheelDir, eyeDistance / facing);
+          const ratio = next / previous;
+          // The pull shares the tick's own strength, capped so a fast scroll
+          // cannot teleport the target across the whole field in one event.
+          const pull = Math.min(0.62, Math.abs(1 - ratio) * 1.6);
+          if (ratio < 1) goal.target.lerp(wheelAnchor, pull);
+          else goal.target.lerp(home.target, pull * 0.8);
+        }
+      }
+    }
+    goal.radius = next;
     notify();
   };
 
@@ -326,11 +368,24 @@ export function createCameraRig(camera, element, options) {
       onChange = typeof fn === 'function' ? fn : null;
     },
     update,
+    /** Read-only endpoint signal; keep the existing damping motion untouched. */
+    get isSettled() {
+      return (
+        Math.abs(goal.radius - state.radius) <= 1e-4 &&
+        Math.abs(goal.phi - state.phi) <= 1e-4 &&
+        Math.abs(goal.theta - state.theta) <= 1e-4 &&
+        state.target.distanceTo(goal.target) <= 1e-4
+      );
+    },
     reset,
     focusOn,
     exitFocus,
     setHome,
     setLimits,
+    /** Turn the pointer-anchored wheel on for a browsing space, off for the hole. */
+    setAnchorZoom(enabled) {
+      anchorZoom = enabled === true;
+    },
     /** Current spherical framing, for the stage's LOD readout and tests. */
     framing() {
       return {

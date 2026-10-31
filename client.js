@@ -2443,7 +2443,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Panel({ localeSvc, requireAsync, shared }) {
+    function Panel({ localeSvc, requireAsync, shared, layoutSvc }) {
       const t = useT(localeSvc);
       const lang = activeLanguage(localeSvc).startsWith('zh') ? 'zh' : 'en';
       const langRef = useRef(lang);
@@ -2503,7 +2503,10 @@ window.__ModuleLoader__.load({
            * or the crossing would land on shelves nobody asked for.
            */
           onCenterClick() {
-            selectNone();
+            // Routed through the ref: this memo is built once, before the store
+            // exists, so calling `selectNone` directly would capture its first,
+            // empty closure and never clear a later selection.
+            if (actionsRef.current.selectStation) actionsRef.current.selectStation(null);
             setNebulaGenreId(null);
           },
           /**
@@ -2515,9 +2518,13 @@ window.__ModuleLoader__.load({
           onPlay(station) {
             if (actionsRef.current.playFromDisk) actionsRef.current.playFromDisk(station);
           },
-          /** The pointer settled on a station, or left one (null). */
-          onHover(payload) {
-            if (actionsRef.current.hoverCardIn) actionsRef.current.hoverCardIn(payload);
+          /**
+           * The scene names the hovered station in place, so the panel has
+           * nothing to show and nothing to re-render for it. The callback stays
+           * because the stage's settings bundle is built once and expects it.
+           */
+          onHover() {
+            /* the label layer owns the hover reading */
           },
         }),
         [],
@@ -2901,31 +2908,37 @@ window.__ModuleLoader__.load({
       const inCluster = modeState.mode === 'cluster' || modeState.state === 'transition-to-cluster';
 
       /**
-       * Escape closes the station card, and only that.
+       * Escape leaves the radio page.
        *
-       * It used to step the scene back a level, which made the key mean one
-       * thing in the hole and another in the nebula. The way out is the hold —
-       * the way in, reversed — so Escape is free to mean the same thing at
-       * every depth: let go of the card the pointer opened.
+       * It is not a level step: the way back through the three spaces is the
+       * right-button hold, reversed. Escape means one thing at every depth —
+       * leave the plugin, back to whatever page the hole was opened from — and
+       * it is the only key that does that.
        */
       useEffect(() => {
         const onKey = (event) => {
           if (event.key !== 'Escape') return;
-          if (!hoverCardRef.current) return;
+          const target = event.target;
+          // A text field keeps its own Escape (clear the query, close its list).
+          if (
+            target &&
+            (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+          ) {
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
-          if (hoverCardTimer.current) {
-            clearTimeout(hoverCardTimer.current);
-            hoverCardTimer.current = 0;
-          }
-          hoverCardPending.current = null;
-          applyHoverCard(null);
           const handle = stageRef.current;
           if (handle && typeof handle.dismissHover === 'function') handle.dismissHover();
+          try {
+            if (layoutSvc && typeof layoutSvc.selectPanel === 'function') layoutSvc.selectPanel(null);
+          } catch {
+            /* no keyed main entry in this composition — nothing to leave */
+          }
         };
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);
-      }, []);
+      }, [layoutSvc]);
 
       actionsRef.current = {
         enterNebula: enterNebulaView,
@@ -3064,73 +3077,10 @@ window.__ModuleLoader__.load({
             : hoverCardStation.language.zh || hoverCardStation.language.en
           : '';
 
-      const hoverCardNode = hoverCardStation
-        ? h(
-            'div',
-            {
-              className: 'bhrl-hovercard',
-              'data-live': hoverCardLive ? 'true' : 'false',
-              'data-fav': hoverCardFavourite ? 'true' : 'false',
-              'data-touch': hoverCard.touch ? 'true' : 'false',
-              style: {
-                left: `${hoverCard.x}px`,
-                top: `${hoverCard.y}px`,
-                transform: hoverCard.flip
-                  ? 'translate(calc(-100% - 14px), -50%)'
-                  : 'translate(14px, -50%)',
-              },
-              // The card is part of the hover, not a new target: entering it keeps
-              // the hover alive, leaving it is what ends it.
-              onMouseEnter: hoverCardKeep,
-              onMouseLeave: () => hoverCardIn(null),
-              onPointerDown: (event) => event.stopPropagation(),
-              onContextMenu: (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                favouriteFromCard();
-              },
-            },
-            h('span', { className: 'bhrl-hovercard__name' }, hoverCardStation.name),
-            hoverCardCountry || hoverCardLanguage
-              ? h(
-                  'span',
-                  { className: 'bhrl-hovercard__meta' },
-                  [hoverCardCountry, hoverCardLanguage].filter(Boolean).join(' · '),
-                )
-              : null,
-            h(
-              'span',
-              { className: 'bhrl-hovercard__genre' },
-              h(CategoryDot, { color: genreCssOf(hoverCardStation.genre || 'other') }),
-              h('span', null, genreLabelOf(hoverCardStation.genre || 'other')),
-            ),
-            hoverCardLive ? h('span', { className: 'bhrl-hovercard__live' }, t('hoverLiveBadge')) : null,
-            h(
-              'span',
-              { className: 'bhrl-hovercard__hint' },
-              hoverCard.touch
-                ? t('hoverTouchHint')
-                : hoverCardPlaying
-                  ? t('hoverPauseHint')
-                  : t('hoverPlayHint'),
-            ),
-            // Touch has no context menu, so the action is a real button too.
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'bhrl-hovercard__fav',
-                'data-active': hoverCardFavourite ? 'true' : 'false',
-                'aria-pressed': hoverCardFavourite ? 'true' : 'false',
-                onClick: (event) => {
-                  event.stopPropagation();
-                  favouriteFromCard();
-                },
-              },
-              hoverCardFavourite ? t('unfavouriteAction') : t('favouriteAction'),
-            ),
-          )
-        : null;
+      // The scene names the hovered station in place (name + genre), so this
+      // page draws no hover card at all. Kept as a null so the render tree
+      // stays unchanged around it.
+      const hoverCardNode = null;
 
       return h(
         'div',
@@ -3172,62 +3122,11 @@ window.__ModuleLoader__.load({
            */
 
           /**
-           * The open berth's surfaces: its tag shelves and, under them, the
-           * stations of whichever shelf is open.
-           *
-           * `modeState.expanded` is the scene's own answer to "is a berth
-           * open", so the chrome follows the scene rather than a second local
-           * idea of it. There is no third page — this all belongs to the
-           * cluster field, and the field is still behind it.
+           * Nothing is drawn over the scene. The berth's shelves, the tag
+           * names, the station names and the per-label counts all live inside
+           * the three.js field now: this page has no chrome of its own, and
+           * the corner hint that explains each space fades out on its own.
            */
-          h(
-            'div',
-            { className: 'bhrl-nebulabar', 'data-open': modeState && modeState.expanded ? 'true' : 'false' },
-            h(
-              'div',
-              { className: 'bhrl-clusterbar__title' },
-              h('strong', null, modeState && modeState.expanded ? genreLabelOf(modeState.expanded) : t('nebulaTitle')),
-              h('span', null, `${shelfTags.length} ${t('shelfTags')}`),
-            ),
-          ),
-
-          modeState && modeState.expanded
-            ? h(
-                'div',
-                { className: 'bhrl-nebulacats', 'aria-label': t('shelfTags') },
-                shelfTags.map(([tag, members]) =>
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      key: tag,
-                      className: 'bhrl-cat bhrl-genrecat',
-                      'data-open': nebulaGenreId === tag ? 'true' : 'false',
-                      onClick: () => (nebulaGenreId === tag ? closeNebulaGenre() : openNebulaGenre(tag)),
-                    },
-                    h('span', { className: 'bhrl-cat__name' }, tag),
-                    h('span', { className: 'bhrl-cat__n' }, String(members.length)),
-                  ),
-                ),
-              )
-            : null,
-
-          modeState && modeState.expanded
-            ? h(NebulaStationList, {
-                genreId: nebulaGenreId || modeState.expanded,
-                title: nebulaGenreId || genreLabelOf(modeState.expanded),
-                subtitle: genreLabelOf(modeState.expanded),
-                color: genreCssOf(modeState.expanded),
-                stations: nebulaStations,
-                genreLabelOf,
-                genreColorOf: genreCssOf,
-                selectedKey,
-                shared,
-                t,
-                onClose: closeNebulaGenre,
-                onFocus: (station) => locatePlaying(station && station.id),
-              })
-            : null,
         ),
       );
     }
@@ -3962,7 +3861,10 @@ window.__ModuleLoader__.load({
           }),
         );
 
-        claim({ name: 'main', key: PANEL_ID }, () => h(Panel, { localeSvc, requireAsync: require.async, shared }));
+        claim(
+          { name: 'main', key: PANEL_ID },
+          () => h(Panel, { localeSvc, requireAsync: require.async, shared, layoutSvc }),
+        );
 
         ctx.effect(
           () => () => {

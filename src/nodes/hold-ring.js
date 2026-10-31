@@ -92,6 +92,7 @@ export function createHoldRing(container) {
     visible = false;
     progress = 0;
     arc.setAttribute('stroke-dashoffset', String(CIRCUMFERENCE));
+    root.style.transition = 'opacity 140ms linear';
     root.style.opacity = '0';
     root.style.transform = root.style.transform.replace(/scale\([^)]*\)/, 'scale(1)');
   };
@@ -109,6 +110,8 @@ export function createHoldRing(container) {
         hiddenTimer = 0;
       }
       move(x, y);
+      // Appearance belongs to the first moving frame, not a CSS fade clock.
+      root.style.transition = 'none';
       root.style.opacity = '1';
       visible = true;
     },
@@ -120,6 +123,7 @@ export function createHoldRing(container) {
       arc.setAttribute('stroke-dashoffset', String(CIRCUMFERENCE * (1 - value)));
       if (!visible) {
         visible = true;
+        root.style.transition = 'none';
         root.style.opacity = '1';
       }
     },
@@ -129,6 +133,9 @@ export function createHoldRing(container) {
      */
     complete() {
       arc.setAttribute('stroke-dashoffset', '0');
+      // A delayed first frame can also be the last. Commit its visible style
+      // before fading, or the browser can coalesce show + complete into 0 → 0.
+      root.getBoundingClientRect();
       root.style.transition = 'opacity 220ms linear, transform 220ms ease-out';
       root.style.transform = `${root.style.transform} scale(1.22)`;
       root.style.opacity = '0';

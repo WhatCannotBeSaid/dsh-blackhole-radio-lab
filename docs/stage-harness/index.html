@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>Black Hole Radio — full stage acceptance harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #030408;
+        overflow: hidden;
+      }
+      #stage {
+        position: relative;
+        width: 1280px;
+        height: 720px;
+        overflow: hidden;
+      }
+      #readout {
+        position: fixed;
+        right: 8px;
+        top: 8px;
+        z-index: 9;
+        font: 11px/1.4 ui-monospace, monospace;
+        color: #cfd6e4;
+        background: rgba(3, 4, 8, 0.82);
+        border: 1px solid rgba(120, 140, 180, 0.35);
+        padding: 6px 8px;
+        white-space: pre;
+        pointer-events: none;
+      }
+      body.shot #readout {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <pre id="readout">booting…</pre>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module" src="./harness.js"></script>
+  </body>
+</html>
