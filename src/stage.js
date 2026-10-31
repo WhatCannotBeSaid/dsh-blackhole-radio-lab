@@ -740,41 +740,11 @@ export function mountStage(container, options) {
       }
       frameTimes.push(performance.now() - started);
       if (frameTimes.length > 120) frameTimes.shift();
-      const labelReveal = machine.progress;
-      // The labels are their own 2D canvas stacked above the WebGL one, so the
-      // wormhole mask can never cover them. They now ride the same scalar as
-      // the space they name: the cover is opaque black and the names fade with
-      // it, because the deck no longer drives an alpha of its own.
-      if (layer) {
-        const info = layer.filterInfo();
-        // The label overlay follows the same rule: black-hole mode draws none.
-        // It is still created, resized and disposed exactly as before.
-        if (labelReveal > 0.02) {
-          labels.draw({
-            camera,
-            lod: currentLod,
-            stations,
-            categories: labelCategories,
-            selectedIndex,
-            // The keep-out belongs to the hole. Once the crossing has landed the
-            // disc is gone, so a berth near the centre keeps its name instead of
-            // being pushed aside by a silhouette nobody can see.
-            hole: machine.progress > 0.05 ? null : silhouette(),
-            visibilityAt: (index) => layer.labelVisibility(index),
-            positionAt: positionOf,
-            clouds: revealedClouds(),
-            cloudStrength: machine.progress > 0.5 ? 1 : info.strength,
-            cluster: machine.progress,
-            // The panel's own card names the hovered station now, so the sky
-            // keeps one caption per station: the hovered one is simply skipped.
-            suppressedIndex: hoverIndex,
-          });
-        } else {
-          labels.clear();
-        }
-      } else {
-        labels.clear();
-      }
+      // The sky carries no canvas text: no category names, no station names. The
+      // panel's own card is the only caption it has, and it speaks only for the
+      // station under the pointer. The overlay is still created, resized and
+      // disposed as before — it simply has nothing to draw.
+      labels.clear();
       // Fixture labels last: they sit above the station names by design, but
       // only in the space they belong to. The cluster frame carries no fixtures.
       if (machine.progress > 0.02) {
