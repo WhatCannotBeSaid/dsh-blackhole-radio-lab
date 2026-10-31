@@ -1317,16 +1317,6 @@ export function createStationsLayer(stations, options) {
       return 1 - filterActive * (1 - matchCur[index]) > 0.25;
     },
 
-    /** How strongly a station may carry a text label right now. */
-    labelVisibility(index) {
-      if (index < 0 || index >= count) return 0;
-      if (holeOnly > 0.5) return 0;
-      if (clusterAmount > 0.55) {
-        return clusterMembers[index] === 1 ? clamp01(clusterBlend[index]) : 0;
-      }
-      return 1 - filterActive * (1 - matchCur[index]);
-    },
-
     /** Current world position, without allocating. */
     positionInto(index, target) {
       if (index < 0 || index >= count) return target;

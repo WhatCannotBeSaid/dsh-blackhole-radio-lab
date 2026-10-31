@@ -63,9 +63,7 @@ import {
   maxOrbitRadiusForShadow,
   shadowAngularRadius,
 } from './scene/dimensions.js';
-import { categoryLabel } from './radio/taxonomy.js';
 import { createStationsLayer } from './nodes/stations-layer.js';
-import { createLabelOverlay } from './nodes/label-overlay.js';
 import { createHoldRing } from './nodes/hold-ring.js';
 import { createRadioOverlay } from './nodes/radio-overlay.js';
 import {
@@ -73,8 +71,8 @@ import {
   selectRadioFixtures,
   shaderFixtures,
 } from './scene/radio-fixtures.js';
-import { buildClusterLayout, pickGroup, projectedDiameter, scatterStations } from './cluster/layout.js';
-import { GENRE_IDS, genreLabel } from './radio/genres.js';
+import { buildClusterLayout, projectedDiameter, scatterStations } from './cluster/layout.js';
+import { GENRE_IDS } from './radio/genres.js';
 
 /** Surface this module's phase honestly, in one place. */
 export const STAGE_PHASE = 'phase-5';
@@ -295,9 +293,6 @@ export function mountStage(container, options) {
     };
     rebuildStationField();
 
-    const labels = createLabelOverlay(container);
-    disposers.push(() => labels.dispose());
-
     // The ring that feeds the hold. The transition itself is the matter layer
     // reorganising, so there is no extra pass and no extra DOM besides this one
     // indicator: with `wormhole: false` the mount is the old stage byte for byte.
@@ -348,7 +343,6 @@ export function mountStage(container, options) {
     const focusTarget = new Vector3();
     const selectedStation = () => (selectedIndex >= 0 ? stations[selectedIndex] : null);
 
-    let labelCategories = buildLabelCategories(categories, language);
     let labelLanguage = language;
     const labelPoint = new Vector3();
 
@@ -385,54 +379,10 @@ export function mountStage(container, options) {
     let lastModeKey = '';
     let transitioning = false;
 
-    /**
-     * The group under a pointer, in the cluster space.
-     *
-     * Groups are the only control there — the station points themselves are
-     * decoration — so the hit test is one padded sphere per group, with a
-     * screen-space floor so a far berth stays clickable.
-     */
-    const pickClusterGroupAt = (clientX, clientY) => {
-      if (!layer || machine.mode !== 'cluster' || !machine.layout) return null;
-      const rect = canvas.getBoundingClientRect();
-      const px = clientX - rect.left;
-      const py = clientY - rect.top;
-      if (px < 0 || py < 0 || px > viewport.w || py > viewport.h) return null;
-      camera.updateMatrixWorld();
-      const origin = camera.position;
-      const dir = new Vector3((px / viewport.w) * 2 - 1, 1 - (py / viewport.h) * 2, 0.5)
-        .unproject(camera)
-        .sub(origin)
-        .normalize();
-      // 24 CSS px is the smallest hit the eye can aim at; turn it into the world
-      // radius that covers it at this camera distance.
-      const tan = Math.tan((Math.max(1, camera.fov) * Math.PI) / 360);
-      const floor = ((24 / Math.max(1, viewport.h)) * 2 * tan) * Math.max(0.001, origin.length());
-      return pickGroup(machine.layout, origin, dir, floor);
-    };
-
-    let hoverGroupId = null;
-
     // Where each berth was left. Coming back to a category the user has already
     // opened returns to the bearing and zoom they left it at, not to the default
     // framing — the scene is one place, and a place remembers where you stood.
     const berthCameras = new Map();
-
-    /**
-     * Hover a berth: the berth is named and counts its stations, and that is the
-     * whole of it. It used to ride on the station layer's category filter to
-     * brighten the members and recede every other berth, which read as the rest of
-     * the field switching off for nothing more than a pointer crossing it — and it
-     * fought with search narrowing over the same attribute.
-     */
-    const setGroupHover = (id) => {
-      const next = typeof id === 'string' && id ? id : null;
-      if (next === hoverGroupId) return;
-      hoverGroupId = next;
-      canvas.style.cursor = next ? 'pointer' : 'grab';
-      dirty = true;
-      requestFrame();
-    };
 
     const positionOf = (index) => {
       if (layer) layer.positionInto(index, labelPoint);
@@ -460,50 +410,6 @@ export function mountStage(container, options) {
       };
     };
 
-    const revealedClouds = () => {
-      if (!layer) return [];
-      if (machine.progress > 0.05) {
-        // The cluster space is the vocabulary field: thirteen berths, one per
-        // category. A berth is named only while the pointer is on it, so the
-        // default view is a field of lights instead of a legend, and the
-        // hovered berth is the only one counting down its stations.
-        if (!hoverGroupId) return [];
-        const groups = (machine.layout && machine.layout.groups) || [];
-        let group = null;
-        for (const entry of groups) {
-          if (entry.id === hoverGroupId) {
-            group = entry;
-            break;
-          }
-        }
-        if (!group || !group.count) return [];
-        return [
-          {
-            id: group.id,
-            label: genreLabel(group.id, labelLanguage) || group.id,
-            count: group.count,
-            position: group.center,
-            occluded: false,
-          },
-        ];
-      }
-      const info = layer.filterInfo();
-      if (!info.active || info.clouds.length === 0) return [];
-      const seen = new Set();
-      const out = [];
-      for (const cloud of info.clouds) {
-        if (seen.has(cloud.categoryId)) continue;
-        seen.add(cloud.categoryId);
-        out.push({
-          id: cloud.id,
-          label: categoryLabel(cloud.categoryId, labelLanguage),
-          count: cloud.count,
-          position: cloud.position,
-        });
-      }
-      return out;
-    };
-
     const applySize = () => {
       const rect = container.getBoundingClientRect();
       const w = Math.max(1, Math.round(rect.width));
@@ -525,7 +431,6 @@ export function mountStage(container, options) {
         layer.setPixelRatio(renderer.getPixelRatio());
         layer.setViewport(w, h, camera.fov);
       }
-      labels.resize(w, h, renderer.getPixelRatio());
       if (radio) radio.resize(w, h, renderer.getPixelRatio());
       // The hole's far limit is a property of the box, not a constant: opening
       // the sidebar narrows the canvas, and a ceiling authored for the full
@@ -740,13 +645,8 @@ export function mountStage(container, options) {
       }
       frameTimes.push(performance.now() - started);
       if (frameTimes.length > 120) frameTimes.shift();
-      // The sky carries no canvas text: no category names, no station names. The
-      // panel's own card is the only caption it has, and it speaks only for the
-      // station under the pointer. The overlay is still created, resized and
-      // disposed as before — it simply has nothing to draw.
-      labels.clear();
-      // Fixture labels last: they sit above the station names by design, but
-      // only in the space they belong to. The cluster frame carries no fixtures.
+      // Fixture labels are the only text the stage paints. They belong to the
+      // hole's own picture; the cluster frame carries no fixtures and no names.
       if (machine.progress > 0.02) {
         if (radio) radio.clear();
       } else {
@@ -1762,10 +1662,6 @@ export function mountStage(container, options) {
       }
       clearTimers();
       clearSelection(false);
-      // The berth filter used the disk's category filter. Leaving the field
-      // must drop it here: the pointer is still down on the canvas during a
-      // right-hold, so pointerleave will not come round to do it.
-      if (hoverGroupId) setGroupHover(null);
       machine.pendingFocus = opts.focusId ? String(opts.focusId) : null;
       machine.target = 0;
       if (machine.progress < 0.001) machine.progress = 0.001;
@@ -1807,9 +1703,6 @@ export function mountStage(container, options) {
         machine.categoryId = null;
         machine.layout = null;
         machine.ui = 'black-hole';
-        // A berth hover belongs to the field that is now gone: drop the filter
-        // with it, or the disk comes back narrowed to one category.
-        if (hoverGroupId) setGroupHover(null);
         const pending = machine.pendingFocus;
         machine.pendingFocus = null;
         if (pending) {
@@ -1968,33 +1861,27 @@ export function mountStage(container, options) {
       // old long press to do whatever it did. Checked before the recoil is
       // dropped, so a refused start leaves nothing half cleared behind it.
       if (kind === 'enter' && !layer) return;
+      // A recoil keeps its direction and preparation. Resume the same geometry
+      // clock, even after an exit has crossed the halfway point.
+      const resuming = worm.kind === 'recoil';
+      if (resuming && (kind === 'exit') !== (worm.recoilTarget === 1)) return false;
       if (kind === 'enter' && !prepareDiscTransfer()) return false;
-      // Taking a cancelled wind-up back up resumes from where the disc was
-      // left, not from zero: the press picks the swell up mid-way, so the disc
-      // neither snaps back to rest nor jumps ahead to the commit.
-      let resumeAt = 0;
-      if (worm.kind === 'recoil' && kind === 'enter' && !reducedMotion) {
-        // Invert the same smoothstep used by the flight, not the old charge clock.
-        const p = clamp01(machine.progress);
-        resumeAt = (0.5 - Math.sin(Math.asin(1 - 2 * p) / 3)) * (WORM_END_S - 0.18);
-      }
-      if (worm.kind === 'recoil') {
-        worm.charge = 0;
-        // An exit released mid-retreat has to finish coming home before the
-        // next one starts, or the cluster would jump from half scattered to
-        // whole on the first frame.
-        if (worm.recoilTarget === 1) {
-          restoreClusterAfterCancel();
-        }
-      }
+      const duration = kind === 'enter'
+        ? (reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S - 0.18)
+        : (reducedMotion ? 1 / TRANSITION_RATE : WORM_OUT_END_S - WORM_OUT_RING_S);
+      const progress = kind === 'enter' ? clamp01(machine.progress) : 1 - clamp01(machine.progress);
+      const phase = reducedMotion && kind === 'exit'
+        ? progress
+        : 0.5 - Math.sin(Math.asin(1 - 2 * progress) / 3);
+      const resumeAt = resuming ? phase * duration : 0;
       const p = ringPoint(event);
       worm.kind = kind;
       if (kind === 'enter') worm.target = 'cluster';
       worm.landed = false;
       worm.locked = false;
-      worm.covered = false;
-      worm.veiled = false;
-      worm.armed = false;
+      worm.covered = resuming && worm.covered;
+      worm.veiled = resuming && worm.veiled;
+      worm.armed = resuming && worm.armed;
       worm.ringFull = false;
       worm.phase = null;
       worm.from = null;
@@ -2003,17 +1890,20 @@ export function mountStage(container, options) {
       worm.hiddenAt = 0;
       worm.pointerId = event.pointerId;
       worm.button = event.button === 2 ? 2 : 0;
+      // Capture once before starting the clock, just as entry does.
+      if (kind === 'exit' && !worm.armed) {
+        armExit();
+        if (!worm.kind) return false;
+      }
       worm.startedAt = performance.now() - resumeAt * 1000;
       worm.downX = event.clientX;
       worm.downY = event.clientY;
       worm.cursorX = p.x;
       worm.cursorY = p.y;
-      // The ring starts with motion, not with an idle hold threshold. Entry
-      // moves immediately except under reduced motion; exit starts at 0.55 s.
-      const clusterExit = kind === 'exit' && machine.progress > 0.5;
-      if (holdRing && (kind === 'enter' ? !reducedMotion : !clusterExit)) {
+      // The arc reads the very same geometry scalar in either direction.
+      if (holdRing) {
         holdRing.show(p.x, p.y);
-        holdRing.setProgress(smoothstep01(clamp01(resumeAt / (WORM_END_S - 0.18))), p.x, p.y);
+        holdRing.setProgress(Math.min(0.999, progress), p.x, p.y);
       }
       dirty = true;
       requestFrame();
@@ -2045,7 +1935,6 @@ export function mountStage(container, options) {
       worm.hiddenAt = 0;
       worm.pointerId = -1;
       worm.button = 0;
-      if (holdRing) holdRing.hide();
       if (recoiling) {
         // Retreated from the swell that is on screen right now, so the release
         // starts where the eye left it rather than unwinding a fixed 1 s. An
@@ -2053,9 +1942,11 @@ export function mountStage(container, options) {
         worm.kind = 'recoil';
         worm.charge = machine.wormCharge;
         worm.recoilTarget = wasExit ? 1 : 0;
-        worm.recoilBlend = wasExit ? clamp01(machine.progress) : (worm.blend || 0);
+        worm.recoilBlend = clamp01(machine.progress);
+        worm.blend = machine.progress;
         worm.startedAt = performance.now();
       } else {
+        if (holdRing) holdRing.hide();
         worm.kind = null;
         worm.phase = null;
         worm.from = null;
@@ -2368,9 +2259,11 @@ export function mountStage(container, options) {
         const blend = targetBlend + (startBlend - targetBlend) * e;
         driveCharge(start * e);
         driveCluster(blend);
+        if (holdRing) holdRing.setProgress(Math.min(0.999, targetBlend === 1 ? 1 - blend : blend), worm.cursorX, worm.cursorY);
         if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
         dirty = true;
         if (t >= span) {
+          if (holdRing) holdRing.hide();
           if (targetBlend === 1) {
             restoreClusterAfterCancel();
             return true;
@@ -2431,14 +2324,12 @@ export function mountStage(container, options) {
         if (layer && !worm.layoutReady) prepareDiscTransfer();
         // Preserve the existing geometry curve and arrival; the hold ends on
         // that very frame, without the former 0.18 s (calm: 0.03 s) idle tail.
-        const arrival = reducedMotion ? WORM_RING_S + 1 / WORM_CALM_RATE - 0.03 : WORM_END_S - 0.18;
-        const travel = reducedMotion
-          ? smoothstep01(clamp01((t - WORM_RING_S) / (arrival - WORM_RING_S)))
-          : smoothstep01(clamp01(t / arrival));
+        const arrival = reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S - 0.18;
+        const travel = smoothstep01(clamp01(t / arrival));
         // The visual hand-over stays at the old 1 s mark: the cluster is
         // installed and the camera starts its dolly there, so the frame is
         // already moving while the ring keeps filling.
-        if (t >= WORM_RING_S && !worm.covered) {
+        if (t >= (reducedMotion ? 0 : WORM_RING_S) && !worm.covered) {
           worm.covered = true;
           beginCover();
         }
@@ -2450,7 +2341,7 @@ export function mountStage(container, options) {
         driveCluster(travel);
         if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(travel));
         driveDark(0);
-        if (holdRing && (!reducedMotion || t >= WORM_RING_S)) {
+        if (holdRing) {
           // Keep the arc below full until the endpoint has actually been drawn.
           holdRing.setProgress(Math.min(0.999, travel), worm.cursorX, worm.cursorY);
         }
@@ -2463,29 +2354,18 @@ export function mountStage(container, options) {
       // clock. Nothing here is a second choreography — the cluster comes apart
       // first and the cones reassemble last because that is what the forward
       // passage looks like from the other end.
-      // Resolve the destination before its ring: a previous hold may have left
-      // a different target. Neither geometry nor ring moves during the threshold.
-      if (t < WORM_OUT_RING_S) {
-        if (holdRing && machine.progress <= 0.5) {
-          holdRing.setProgress(clamp01(t / WORM_OUT_END_S), worm.cursorX, worm.cursorY);
-        }
-        return true;
-      }
-      if (!worm.armed) {
-        armExit();
-        if (!worm.kind) return false;
-      }
+      // No hold threshold: preserve the old moving segment, starting at press.
       const end = reducedMotion && worm.target === 'cluster'
-        ? WORM_OUT_RING_S + 1 / TRANSITION_RATE
-        : WORM_OUT_END_S;
+        ? 1 / TRANSITION_RATE
+        : WORM_OUT_END_S - WORM_OUT_RING_S;
       // The mask is opaque at the end of the veil: drop the cover behind it.
       if (t >= WORM_OUT_VEIL_S - 0.02 && !worm.veiled) {
         worm.veiled = true;
         machine.wormCover = 0;
         applyTransition();
       }
-      if (t >= WORM_OUT_RING_S && worm.target !== 'field') {
-        const u = clamp01((t - WORM_OUT_RING_S) / (end - WORM_OUT_RING_S));
+      if (worm.target !== 'field') {
+        const u = clamp01(t / end);
         const blend = reducedMotion ? 1 - u : smoothstep01(1 - u);
         driveCluster(blend);
         if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
@@ -2501,8 +2381,6 @@ export function mountStage(container, options) {
         holdRing.setProgress(Math.min(0.999, exitRing), worm.cursorX, worm.cursorY);
       }
       if (t >= end) {
-        // The ring is full: from here the exit cannot be cancelled.
-        lockHold();
         // Restore the real normal-disc owner BEFORE the final draw. Completion
         // after that draw must not acknowledge a still-captured image instead.
         if (worm.target === 'cluster') {
@@ -2513,6 +2391,7 @@ export function mountStage(container, options) {
         // Material and camera share the completion boundary. The rig keeps its
         // authored damping; do not fill the last arc while it is still homing.
         worm.landed = worm.target !== 'cluster' || rig.isSettled;
+        if (worm.landed) lockHold();
       }
       dirty = true;
       return true;
@@ -2621,7 +2500,7 @@ export function mountStage(container, options) {
         menuPress.at = performance.now();
         menuPress.downX = event.clientX;
         menuPress.downY = event.clientY;
-        if (machine.mode === 'cluster' || machine.progress > 0.05) {
+        if (machine.mode === 'cluster' || machine.progress > 0.05 || (worm.kind === 'recoil' && worm.recoilTarget === 1)) {
           event.preventDefault();
           startHold('exit', event);
         }
@@ -2646,7 +2525,7 @@ export function mountStage(container, options) {
       press.moved = false;
       // The centre is entered by holding it. A press and release there is a
       // press on the hole itself, which is not a button and does nothing.
-      if (canOpenCenter() && (!worm.kind || worm.kind === 'recoil') && centerAt(event.clientX, event.clientY).inside) {
+      if ((canOpenCenter() || (worm.kind === 'recoil' && worm.recoilTarget === 0)) && (!worm.kind || worm.kind === 'recoil') && centerAt(event.clientX, event.clientY).inside) {
         if (wormholeEnabled) {
           // The hold draws its own ring, so the press is consumed now: the
           // release must not also select something.
@@ -2723,17 +2602,13 @@ export function mountStage(container, options) {
       lastHover = now;
 
       if (machine.mode === 'cluster' && machine.progress > 0.5) {
-        // The same order as the shelves: a star first, the berth behind it second.
         const index = pick(event.clientX, event.clientY);
         if (index >= 0) {
-          setGroupHover(null);
           canvas.style.cursor = 'pointer';
           emitHover(index, event.clientX, event.clientY);
           return;
         }
         clearHover();
-        const group = pickClusterGroupAt(event.clientX, event.clientY);
-        setGroupHover(group ? group.id : null);
         return;
       }
 
@@ -2907,9 +2782,6 @@ export function mountStage(container, options) {
       // there is nothing left in it, so the record may turn again. The card the
       // hover just opened can still ask for the freeze back through the panel.
       holdSpin(false);
-      // The berth and the volume hovers are not sticky either: with the pointer
-      // gone from the sky, no name should still be counting stations.
-      if (hoverGroupId) setGroupHover(null);
     };
 
     const onKeyDown = (event) => {
@@ -3202,7 +3074,6 @@ export function mountStage(container, options) {
 
       setLanguage(next) {
         const lang = next === 'en' ? 'en' : 'zh';
-        labelCategories = buildLabelCategories(categories, lang);
         labelLanguage = lang;
         dirty = true;
         requestFrame();
@@ -3338,7 +3209,7 @@ export function mountStage(container, options) {
        * reads it, and it is removed when the investigation closes.
        */
       handles() {
-        return { scene, camera, rig, renderer, canvas, parts: { starfield, disk, layer, labels, discTransfer } };
+        return { scene, camera, rig, renderer, canvas, parts: { starfield, disk, layer, discTransfer } };
       },
       /** TEMPORARY DIAGNOSTIC: synchronously draw and read the frame back. */
       renderNow() {
@@ -3832,15 +3703,6 @@ function summarizeStations(stations) {
       y: bucket.y / bucket.count,
       z: bucket.z / bucket.count,
     },
-  }));
-}
-
-function buildLabelCategories(categories, language) {
-  return (categories || []).map((category) => ({
-    id: category.id,
-    count: category.count || 0,
-    label: categoryLabel(category.id, language),
-    position: category.position || { x: 0, y: 0, z: 0 },
   }));
 }
 
