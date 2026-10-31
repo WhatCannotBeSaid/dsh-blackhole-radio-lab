@@ -91,6 +91,9 @@ const VERTEX_SHADER = /* glsl */ `
   attribute float aPresence;
   attribute float aCluster;
   attribute float aMember;
+  // Which berth the station stands in, as the cluster layout numbered it, or -1
+  // for a station that belongs to none. Read by the hover recede only.
+  attribute float aGroup;
   attribute float aVeil;
   // Favourite is a property of the station, not of the scene: it survives every
   // transition and drives colour temperature only (never size or a second ring).
@@ -129,6 +132,10 @@ const VERTEX_SHADER = /* glsl */ `
   // sprite and lifts this one, and it is cleared the moment the pointer leaves.
   uniform float uHover;
   uniform float uHoverActive;
+  // The berth the hovered station stands in, or -2 when the whole field should
+  // recede: the hole has no berths, and a station outside every berth is read
+  // against all of them.
+  uniform float uHoverGroup;
 
   varying vec3 vColor;
   varying float vAlpha;
@@ -217,11 +224,14 @@ const VERTEX_SHADER = /* glsl */ `
     float selected = step(abs(aStation - uSelected), 0.5);
     vSelected = selected;
 
-    // Hover belongs to one station at a time. The others step back so the name
-    // being read has a quiet field around it; the hovered one lifts slightly,
-    // which is enough to connect the label to the speck it names.
+    // Hover belongs to one station at a time, but only the berths the pointer is
+    // not reading step back: the star being named keeps its own constellation at
+    // full brightness, or the field would read as a lone dot in an empty room.
+    // The hovered one lifts slightly, which is enough to connect the label to the
+    // speck it names.
     float hovered = step(abs(aStation - uHover), 0.5);
-    float hoverMask = mix(1.0, 0.20, uHoverActive * (1.0 - hovered));
+    float inGroup = step(abs(aGroup - uHoverGroup), 0.5);
+    float hoverMask = mix(1.0, 0.20, uHoverActive * (1.0 - hovered) * (1.0 - inGroup));
     float hoverBoost = mix(1.0, 1.30, uHoverActive * hovered);
 
     float dim = mix(1.0, 0.13, uFilterActive * (1.0 - aMatch));
@@ -463,6 +473,13 @@ export function createStationsLayer(stations, options) {
   const clusterGoal = new Float32Array(count);
   const clusterHold = new Float32Array(count);
   const clusterMembers = new Uint8Array(count);
+  /**
+   * The berth each station stands in, numbered the way the cluster layout
+   * numbered its groups, or -1 when it belongs to none. Membership alone cannot
+   * answer a hover: "which constellation is this star in" needs the berth's
+   * identity, not a flag.
+   */
+  const stationGroup = new Int16Array(count).fill(-1);
   const clusterSwirl = new Float32Array(count);
   /**
    * Which face of the disc a station is thrown from. Fixed per station and
@@ -510,6 +527,7 @@ export function createStationsLayer(stations, options) {
   const presences = new Float32Array(particleTotal);
   const clusterMix = new Float32Array(particleTotal);
   const memberFlags = new Float32Array(particleTotal);
+  const groupFlags = new Float32Array(particleTotal).fill(-1);
   const veilFlags = new Float32Array(particleTotal);
   // Favourite, per sprite: one buffer so a store change is one upload, not a
   // material rebuild.
@@ -595,6 +613,7 @@ export function createStationsLayer(stations, options) {
   geometry.setAttribute('aPresence', new BufferAttribute(presences, 1));
   geometry.setAttribute('aCluster', new BufferAttribute(clusterMix, 1));
   geometry.setAttribute('aMember', new BufferAttribute(memberFlags, 1));
+  geometry.setAttribute('aGroup', new BufferAttribute(groupFlags, 1));
   geometry.setAttribute('aVeil', new BufferAttribute(veilFlags, 1));
   geometry.setAttribute('aFav', new BufferAttribute(favouriteFlags, 1));
   // The field is animated within a known band; culling per frame would only
@@ -631,6 +650,7 @@ export function createStationsLayer(stations, options) {
     uPlaying: { value: -1 },
     uHover: { value: -1 },
     uHoverActive: { value: 0 },
+    uHoverGroup: { value: -2 },
   };
 
   const material = new ShaderMaterial({
@@ -820,12 +840,14 @@ export function createStationsLayer(stations, options) {
         matches[p + k] = matchCur[i];
         clusterMix[p + k] = clusterBlend[i];
         memberFlags[p + k] = clusterMembers[i];
+        groupFlags[p + k] = stationGroup[i];
       }
       p += n;
     }
     geometry.attributes.aMatch.needsUpdate = true;
     geometry.attributes.aCluster.needsUpdate = true;
     geometry.attributes.aMember.needsUpdate = true;
+    geometry.attributes.aGroup.needsUpdate = true;
     writeStationAnchors(0, count);
     dirtyBuffers = false;
     layoutVersion += 1;
@@ -972,6 +994,10 @@ export function createStationsLayer(stations, options) {
       const next = Number.isInteger(index) && index >= 0 && index < count ? index : -1;
       uniforms.uHover.value = next;
       uniforms.uHoverActive.value = next >= 0 ? 1 : 0;
+      // Only the cluster has berths to spare. Anywhere else the field is one
+      // place, so a hover still quiets all of it, exactly as before.
+      const berth = next >= 0 && clusterAmount > 0.55 ? stationGroup[next] : -1;
+      uniforms.uHoverGroup.value = berth >= 0 ? berth : -2;
     },
 
     setSelectedIndex(index) {
@@ -1053,6 +1079,18 @@ export function createStationsLayer(stations, options) {
         clusterRadius = layout.radius || 3;
         knotScale = clusterRadius * 0.02;
         uniforms.uClusterRadius.value = clusterRadius;
+        // The hover recede asks which berth a station stands in, and membership
+        // alone cannot answer that. The layout already knows, so its buckets are
+        // folded down into one berth number per station here, once per install.
+        stationGroup.fill(-1);
+        const berths = Array.isArray(layout.groups) ? layout.groups : [];
+        for (const berth of berths) {
+          const slot = Number(berth && berth.index);
+          if (!Number.isFinite(slot) || !Array.isArray(berth.stations)) continue;
+          for (const memberIndex of berth.stations) {
+            if (memberIndex >= 0 && memberIndex < count) stationGroup[memberIndex] = slot;
+          }
+        }
         for (let i = 0; i < count; i += 1) {
           const member = layout.members[i] === 1;
           clusterMembers[i] = member ? 1 : 0;
@@ -1067,6 +1105,7 @@ export function createStationsLayer(stations, options) {
             : 0;
         }
       } else {
+        stationGroup.fill(-1);
         for (let i = 0; i < count; i += 1) {
           clusterGoal[i] = 0;
           clusterHold[i] = (hash32(seed, i, 'clusterExit') % 1000) / 1000 * 0.08;

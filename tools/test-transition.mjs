@@ -127,7 +127,7 @@ function harness(reducedMotion = false) {
     settings: { onCenterClick() {} }, renderer: { toneMappingExposure: 1.15 },
     starfield: { setDim() {} },
     container: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
-    rig: { isSettled: true, framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {}, setAnchorZoom() {} },
+    rig: { isSettled: true, framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {} },
     hoverGroupId: null, setGroupHover() {}, showHint() {}, hintFor: (key) => key,
     WORM_RING_S: 1, WORM_END_S: 2.5, WORM_OUT_RING_S: 0.55,
     WORM_OUT_VEIL_S: 1.15, WORM_OUT_END_S: 1.75, WORM_RECOIL_S: 0.22,

@@ -1800,8 +1800,6 @@ export function mountStage(container, options) {
         minRadius: Math.min(layout.minRadius, here),
         maxRadius: Math.max(layout.maxRadius, here * 2),
       });
-      // A browsing space takes the wheel as "look at that part", not "step back".
-      rig.setAnchorZoom(true);
       showHint(hintFor('cluster'));
       applyTransition();
       dirty = true;
@@ -1842,7 +1840,6 @@ export function mountStage(container, options) {
         minRadius: limits.minRadius,
         maxRadius: limits.maxRadius,
       });
-      rig.setAnchorZoom(false);
       showHint(hintFor('hole'));
       applyTransition();
       dirty = true;
