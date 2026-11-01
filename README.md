@@ -1,87 +1,84 @@
-# Black Hole Radio
+<div align="center">
 
-DSH 的独立电台页面插件。最终形态是一块可旋转、可缩放的 3D 黑洞舞台：全球网络电台分布在吸积盘、光子环与外围空间。
+<img src="assets/demo.gif" alt="黑洞电台：拖动环绕黑洞、按住左键穿过虫洞进入星团、悬停显示电台卡片" width="820">
 
-**当前进度：第四阶段（黑洞交互入口与三维星团模式）已完成。** 默认是一整块可环绕、可缩放的黑洞系统，2,400 条模拟电台嵌在吸积盘里，页面上没有常驻搜索栏或分类侧栏：点击黑洞中心进入搜索，停留约 600 ms 展开分类面板，选择分类后黑洞、光子环与吸积盘消隐，该分类的电台在同一个主页中央重组成具有真实三维体积的星团；`Esc` 或左上返回键平滑退回黑洞。仍是模拟数据，不含真实电台接口与播放功能。
+# 黑洞电台 · Black Hole Radio
 
-## 现在有什么
+一块给网络电台用的 3D 黑洞舞台：两万多台真实电台绕着一颗可以环绕、可以播放的黑洞运行。
 
-- 侧栏一个独立入口「黑洞电台」，带自绘图标，跟随应用语言。
-- 一个占满 `main` 区域的深色页面，中间是黑体、光子环与吸积盘；没有常驻搜索栏、分类侧栏或大型悬浮面板。
-- 左键拖动围绕黑洞旋转、滚轮以黑洞为中心缩放，阻尼收敛；右键平移已禁用，可一键回到默认视角。镜头焦点固定在黑洞核心，电台聚焦只是临时模式，拖动或取消即回到黑洞中心。
-- 点击黑洞中心打开搜索框（自动聚焦），支持名称 / 国家地区 / 语言 / 分类；`Esc` 或点击遮罩关闭。搜索与分类筛选互相独立，输入搜索词不会进入星团。
-- 指针在黑洞中心停留 600 ms 展开分类面板（渐显 240 ms），面板位于黑洞右侧、不遮挡中心点击区；指针移入面板不会关闭，离开后 320 ms 收起。触屏用长按 560 ms 等价打开，键盘可聚焦中心按钮后按 Enter 搜索。
-- 黑洞与星云之间用一段约 1.7 s 的虫洞衔接：在黑洞上按住左键，指针旁出现环形进度（约 1.2 s 走满），而阴影扩张吞没全屏从按下的第一帧就开始了，吸积盘被拉成贴着阴影的径向条纹；环走满即已全黑，之后星云从黑里浮现。进度走满前松手即取消，阴影与条纹在 220 ms 内阻尼回抽、退回黑洞原状。在星云里按住右键约 0.7 s，同一段倒放回黑洞，总长约 1.6 s；右键短按不再退出，转场途中再按一次右键则直接跳到结束。
-- 选择分类后进入星团模式：黑洞核心、光子环与吸积盘在 0.8–1.5 s 内消隐，该分类的电台沿三维路径收拢成中心致密、外围稀疏的星团，未命中分类的电台淡出；相机目标平滑移到星团中心，可继续环绕与缩放。
-- 星团是真实三维体积（径向密度 `u^1.9`、三条种子纤维、垂直压扁 0.82），每站 5 个微 sprite 在目标处散成 2–5 px 的小星结，因此 300–600 台也能形成颗粒感；电台 ID 仍是 `mock-####`。
-- 星团里点击星点选中并显示左下详情卡（演示数据标注、稳定 ID、国家、语言、分类、简介），可聚焦或取消；`Esc` 与左上「黑洞」返回，返回时电台沿同一曲线散回吸积盘，相机回到黑洞默认视角。
-- 2,400 条确定性模拟电台（种子固定）：全部落在 1.54–3.65 R 的盘带内，18 条精选位于 1.66–1.79 R 的内环弧上；默认不按分类分区。
-- 单个 `Points` + 一个自定义 `ShaderMaterial` 承载全部节点；节点颜色、大小、透明度都是实例属性，不做逐电台 Mesh。
-- 搜索跨模式工作：在星团内搜索其他分类的电台时，先平滑切到该分类的星团，再聚焦目标；稳定 ID 与坐标映射不变。
-- 远中近三级 LOD：远看是连续的环状亮带与局部密度起伏，中距能分辨盘面亮结与微云块，近距才看清单个电台与附近名称。标签画在一张 2D canvas 上，不进 DOM。
-- 面板左上显示词标、阶段与演示数据标记，右下角一行克制的操作提示；没有读数侧栏。
-- 全部 3D 代码打成 `client.stage.js`，模拟数据与检索打成 `client.radio.js`，**只在打开面板时才下载**；关闭面板即停循环、丢上下文、清资源。
+[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · v1.0.0
 
-## 目录
+</div>
 
-| 文件 | 作用 |
-| --- | --- |
-| `index.js` | Host 半。加载入口 + 配置校验 + 配置路由 + 卸载清理。 |
-| `client.js` | 浏览器半。React 组件、样式、槽位注册、字典注册、搜索/过滤/详情 UI、懒加载入口、卸载清理。 |
-| `src/stage.js` | 渲染模块入口：建 renderer/场景/相机，串起各部件，管理 rAF、指针拾取与释放。 |
-| `src/scene/dimensions.js` | 全套尺寸常量（阴影、光子环、盘内外径、相机归宿点）。 |
-| `src/scene/glsl.js` | 共用 GLSL 噪声与色调映射 include。 |
-| `src/scene/black-hole.js` | 事件视界：纯黑球，负责遮住背后的东西。 |
-| `src/scene/photon-ring.js` | 光子环：朝向相机的面片 + 径向剖面着色器。 |
-| `src/scene/accretion-disk.js` | 吸积盘：极坐标网格 + 噪声条纹 + 远侧内缘抬升。 |
-| `src/scene/starfield.js` | 三层球壳星点，带视差、闪烁与色温差异。 |
-| `src/scene/camera-rig.js` | 手写黑洞中心轨道相机：固定焦点、环绕/缩放、阻尼、夹取、重置、临时电台聚焦与退出。 |
-| `src/nodes/stations-layer.js` | 电台微结构层：单 Points、盘面剪切场着色、柱坐标云团形变、星团形态与稳定命中、选中环。 |
-| `src/cluster/layout.js` | 星团布局：按分类取成员、径向密度、纤维拉偏、相机取景与离线投影测量。 |
-| `src/nodes/label-overlay.js` | 2D canvas 标签层：选中环、近处电台名、显影云团名，屏幕空间避让。 |
-| `src/radio/random.js` | `mulberry32` 与字符串哈希，确定性随机。 |
-| `src/radio/taxonomy.js` | 八类分类、国家/语言池、展示色。 |
-| `src/radio/names.js` | 电台名与简介的拼装词表。 |
-| `src/radio/station.js` | 规范化 `RadioStation` 模型、逐条确定性生成与 `generateCatalog`。 |
-| `src/radio/distribution.js` | 稳定空间分布：单一混合盘场 + 密度结 + 内环精选弧 + 分类云心。 |
-| `src/radio/repository.js` | `RadioStationRepository` 接口 + `MockRadioRepository` 实现（列表、按 ID、搜索、分类计数）。 |
-| `src/radio/index.js` | 数据层对外入口，`client.radio.js` 的打包入口。 |
-| `tools/build-stage.mjs` | 用 esbuild 把两个入口分别打成自包含 chunk。 |
-| `client.stage.js` / `client.radio.js` | **构建产物**，不要手改。 |
-| `cordis.patch.yml` | bundle 补丁层，一行 loader 条目。 |
-| `locale/zh.json` / `locale/en.json` | 插件显示名与描述。 |
-| `icon.svg` | 侧边栏与插件列表图标，`currentColor` 跟随主题。 |
+---
 
-## 构建
+## 这是什么
+
+DSH（DeepSeek Harness）的插件。装上之后左栏底部多一张电台卡片，点卡片上的黑洞图标进入全屏舞台：
+
+- 中央是事件视界、光子环与吸积盘，外围是三层视差星场；
+- 2.4 万台真实网络电台嵌在吸积盘里，远看是一条亮带，靠近才认得出单个电台；
+- 按住不放会穿过一段虫洞落进星团，星团里每台电台是三维体积中的一个星点；
+- 点一下星点就播放，悬停出卡片，曲目信息直接来自电台流里的 ICY 元数据。
+
+页面没有常驻搜索栏、分类侧栏或读数面板。搜索和分类只在你主动去点的时候出现。
+
+## 功能
+
+**舞台**
+
+- 手写轨道相机：左键拖动环绕、滚轮缩放、阻尼收敛，镜头焦点锁在黑洞核心。
+- 原生 Three.js，单个 `Points` + 自定义着色器承载全部电台，不为每台电台建 Mesh。
+- 远中近三级 LOD：远看连续亮带与密度起伏，中距分辨盘面亮结，近距才显示单个电台与附近台名（台名画在 2D canvas 上，不进 DOM）。
+- 星团是真实三维体积：径向密度 `u^1.9`、三条种子纤维、垂直压扁 0.82，每台电台 5 个微 sprite 在目标处散成 2–5 px 的星结。
+- 黑洞与星团之间是虫洞转场：环形进度与阴影扩张共用同一个时钟，按下第一帧就开始动；松手时画面与环一起阻尼回抽；回弹途中再按一次从当前进度续接，不跳变。
+
+**电台**
+
+- 2.4 万台以内置快照启动（构建时已逐条探活），缺快照时回落实时抓取。
+- 搜索覆盖台名、国家地区、语言、分类；分类面板分 13 个流派。
+- 播放 / 暂停、上一台 / 随机下一台、音量；坏流自动进黑名单，不再浪费时间重连。
+- 悬停卡片：点击播放、右键或星标收藏、显示流派与 `LIVE` 徽标。
+- 正在播放的曲目取自流内 `icy-metaint` 元数据块；点歌名可在 Spotify / 网易云音乐 / QQ 音乐 / Apple Music / YouTube 中搜索该曲（平台可右键切换）。
+- 收藏的电台与喜欢的歌曲持久保存在本机，不联网同步。
+- 中文 / English 跟随应用语言。
+
+## 安装
+
+先决条件：Node.js ≥ 20，DSH（已验证 0.2.1-rc.2）。
 
 ```bash
-npm install        # 首次：three + esbuild
-npm run build      # 产出 client.stage.js 与 client.radio.js
+# 从 npm（发布版）
+dsh plugin --profile <profile> add dsh-blackhole-radio-lab
+
+# 从本地源码
+git clone https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab.git
+dsh plugin --profile <profile> add "C:/path/to/dsh-blackhole-radio-lab"
 ```
 
-产物是 DSH 包内动态 chunk：
+装完**必须重启 DSH**。桌面端进程不会自己发现新 bundle，重建 chunk 之后同理——revision 是启动时算的。
 
-```js
-window.__ModuleLoader__.load({
-  id: '@local/dsh-blackhole-radio-lab',
-  chunk: 'client.stage.js',
-  factory(require) { /* three 已被内联，无裸模块请求 */ },
-});
+卸载：
+
+```bash
+dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 ```
 
-`client.js` 通过 `require.async('./client.stage.js')` 与 `require.async('./client.radio.js')` 按需拉取。构建脚本会顶一下 `client.js` 的 mtime，因为 chunk 的 URL 取自入口包的 revision——不顶这一下，浏览器会拿 immutable 缓存里的旧 chunk。
+## 上手
 
-**只改 `src/` 里的文件，然后 `npm run build`。** 不要在 `client.js` 里 `import 'three'`：浏览器侧没有 `three` 的基座模块，解析会直接失败。
+| 操作 | 结果 |
+| --- | --- |
+| 左键拖动 | 绕黑洞旋转 |
+| 滚轮 | 以黑洞为中心缩放 |
+| 点击黑洞中心 / 回车 | 打开搜索 |
+| 指针在中心停留 600 ms | 展开分类面板（触屏长按 560 ms） |
+| 黑洞上按住左键 ≈2.3 s | 穿过虫洞进入星团；松手 0.22 s 回抽 |
+| 星团中按住右键 ≈1.2 s | 倒放回黑洞；短按只撤销不回弹 |
+| 转场途中再按同一键 | 从当前进度续接，不重头再来 |
+| 星点上悬停 / 点击 / 右键 | 悬停卡片 / 播放暂停 / 收藏 |
+| `Esc` | 关闭浮层或退回黑洞 |
 
-### 目录快照
-
-`npm run build:catalog` 拉取更大范围的真实电台，逐条探测流地址，按国家与流派保底挑台，写出 `data/catalog.v1.json` 及其 `.gz`。Host 半通过 `/blackhole-radio-lab/catalog` 提供该文件；浏览器半的取数顺序是 IndexedDB 缓存（24 小时内）→ 目录快照 → 实时 Radio Browser，前一环缺失或过期才落到下一环。发布包只带 `.gz`，Host 会解压一次并缓存。
-
-参数全部走环境变量：`CATALOG_TARGET`、`CATALOG_FETCH`、`CATALOG_CHECK`、`CATALOG_CHECK_CONCURRENCY`、`CATALOG_CHECK_TIMEOUT`、`CATALOG_COUNTRY_FLOOR`、`CATALOG_GENRE_FLOOR`。探测第三方流需要数分钟到数十分钟，所以不放进 `npm run build`。
-
-**用户侧每周自动刷新。** 发布包里的快照只代表作者构建那一刻，用户不该等新版本才能拿到新电台。Host 半在启动两分钟后检查 `~/.dsh/cache/blackhole-radio-lab/catalog.v1.json.gz`，文件超过 `catalogRefreshDays` 天就在后台跑一次同样的构建（`src/host/catalog-builder.js`，CLI 与 Host 共用），写完用一次 rename 原子替换。`/catalog` 优先返回这份缓存；缓存缺失、超过 30 天，或台数不到包内快照的一半（用户网络差导致健康率低）时，回落到包内快照。刷新失败只记日志，六小时后再试。
-
-默认目标与包内快照一致（30000 台上限、候选 50000），刷新不会把目录变小；探测并发 48、单条超时 2800 ms、单次构建最长 120 分钟，超时或失败只记日志，六小时后再试。后台构建只在 DSH 运行时进行，DSH 没开就不跑。
+底部卡片独占：站名、曲目行、收藏星标、喜欢心标、播放 / 上一 / 下一 / 音量。
 
 ## 配置
 
@@ -90,86 +87,113 @@ window.__ModuleLoader__.load({
 ```yaml
 - insert:
     - id: blackhole-radio-lab
-      name: '@local/dsh-blackhole-radio-lab'
+      name: 'dsh-blackhole-radio-lab'
       config:
-        antialias: true        # WebGL 抗锯齿
-        pixelRatioCap: 2       # 渲染倍率上限，1–4
-        reducedMotion: false   # 关闭动画，只渲染单帧
-        wormhole: true         # 黑洞与星云之间的虫洞转场，false 恢复瞬时切换
-        showHints: true        # 显示提示文字
-        stationCount: 2400     # 模拟电台数量，200–20000
-        seed: 20261022         # 数据与空间分布随机种子
-        featuredCount: 18      # 精选电台数量，4–40
-        catalogAutoRefresh: true   # 是否每周在后台刷新目录快照
-        catalogRefreshDays: 7      # 缓存超过多少天算过期，1–90
-        catalogTarget: 30000       # 用户侧快照保留台数，1000–60000
-        catalogFetch: 50000        # 探测前抓取的候选数，1000–60000，须 ≥ catalogTarget
-        catalogConcurrency: 48     # 探测并发，1–64
-        catalogTimeoutMs: 2800     # 单条探测超时，500–15000
+        antialias: true
+        pixelRatioCap: 2
+        reducedMotion: false
+        wormhole: true
+        showHints: true
+        stationCount: 2400
+        seed: 20261022
+        featuredCount: 18
+        catalogAutoRefresh: true
+        catalogRefreshDays: 7
+        catalogTarget: 30000
+        catalogFetch: 50000
+        catalogConcurrency: 48
+        catalogTimeoutMs: 2800
 ```
 
-未提供的键回落到 `index.js` 里的 `DEFAULTS`。调试时也可以给面板 URL 加 `?bhrlStations=5000` 临时覆盖数量，加 `?bhrlWormhole=0` 关掉虫洞转场做 A/B。
+| 键 | 默认 | 范围 | 作用 |
+| --- | --- | --- | --- |
+| `antialias` | `true` | 布尔 | WebGL 抗锯齿 |
+| `pixelRatioCap` | `2` | 1–4 | 渲染倍率上限 |
+| `reducedMotion` | `false` | 布尔 | 关闭动画，只渲染单帧；转场也更快 |
+| `wormhole` | `true` | 布尔 | 虫洞转场；`false` 恢复瞬时切换 |
+| `showHints` | `true` | 布尔 | 显示操作提示 |
+| `stationCount` | `2400` | 200–20000 | 模拟数据台数（`sourceMode=mock` 时生效） |
+| `seed` | `20261022` | 0–4294967295 | 数据与空间分布随机种子 |
+| `featuredCount` | `18` | 4–40 | 内环精选台数 |
+| `catalogAutoRefresh` | `true` | 布尔 | 是否每周在后台刷新目录快照 |
+| `catalogRefreshDays` | `7` | 1–90 | 缓存超过多少天算过期 |
+| `catalogTarget` | `30000` | 1000–60000 | 用户侧快照保留台数 |
+| `catalogFetch` | `50000` | 1000–60000 | 探测前抓取的候选数，须 ≥ `catalogTarget` |
+| `catalogConcurrency` | `48` | 1–64 | 探测并发 |
+| `catalogTimeoutMs` | `2800` | 500–15000 | 单条探测超时 |
 
-## 数据接口
+未给的键回落到 `index.js` 里的 `DEFAULTS`。调试时也可以给页面加 `?bhrlStations=5000` 临时覆盖台数，加 `?bhrlWormhole=0` 关掉虫洞做 A/B。
+
+## 数据来源与隐私
+
+- 电台目录来自 [Radio Browser](https://www.radio-browser.info) 的公开 API。发布包里的快照由 `tools/build-catalog.mjs` 抓取、逐条探活、按国家与流派保底筛洗而成，构建时间与台数写在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+- 用户侧每周在 DSH 运行期间后台重建一次快照，写入 `$DSH_HOME/cache/blackhole-radio-lab/`；DSH 没开就不跑，失败只记日志、六小时后再试。
+- 播放时浏览器直接连电台的流地址，曲目信息来自该流的 ICY 元数据块（Host 只取一个块即断开）。这些连接会把你的 IP 暴露给对应电台，作者服务器不参与、也看不到。
+- 收藏、喜欢的歌曲、坏流黑名单只写本机 `$DSH_HOME/blackhole-radio-lab/library.json`，不上传任何地方。
+- 插件不加载远端脚本，不引 CDN，Three.js 是包内私有依赖。
+
+## 架构
+
+插件分两半：Host 半（`index.js` + `src/host/`）只做配置、静态路由、目录刷新与曲目探测，零运行时依赖；浏览器半被打成两个按需下载的 chunk。
+
+| 路径 | 作用 |
+| --- | --- |
+| `index.js` | Host 入口：配置校验（标准 schema）、路由、卸载清理 |
+| `src/host/library.js` | 收藏与黑名单的本机记录（原子写） |
+| `src/host/catalog-builder.js` | 目录构建：抓取、探活、保底筛洗（CLI 与 Host 共用） |
+| `src/host/catalog-refresh.js` | 每周后台刷新调度与回落规则 |
+| `src/host/now-playing.js` | ICY 元数据探测（只读一个元数据块） |
+| `client.js` | 浏览器入口：React 组件、样式、槽位注册、懒加载、卸载清理 |
+| `src/stage.js` | 渲染入口：renderer / 场景 / 相机、rAF、指针状态机、虫洞转场 |
+| `src/scene/` | 黑体、光子环、吸积盘、星场、轨道相机、共用 GLSL |
+| `src/nodes/` | 电台微结构层、星团层、2D canvas 标签层 |
+| `src/cluster/` | 星团布局与离线投影测量 |
+| `client.stage.js` / `client.radio.js` | **构建产物**，不要手改 |
+| `cordis.patch.yml` | bundle 补丁层，一行 loader 条目 |
+
+两个 chunk 只在需要时才下载：
 
 ```js
-import { createMockRadioRepository } from './src/radio/index.js';
-
-const repo = createMockRadioRepository({ count: 2400, seed: 20261022, featuredCount: 18 });
-repo.list();                    // RadioStation[]
-repo.byId('mock-0161');         // RadioStation | null
-repo.search('东京', { limit: 8 }); // 名称 / 国家 / 语言 / 分类
-repo.categories();              // [{ id, label, count, color }]
-repo.anchors();                 // 分类计数与云心（3D 只用于标签定位）
+window.__ModuleLoader__.load({
+  id: 'dsh-blackhole-radio-lab',
+  chunk: 'client.stage.js',
+  factory(require) { /* three 已内联，没有裸模块请求 */ },
+});
 ```
 
-第四阶段已接真实数据：`createRadioRepository` 从 Radio Browser 拉取并映射，`createRepositoryFromRows` 负责把快照或缓存里的原始行重新映射，`openRadioCache` 提供 IndexedDB 目录缓存与坏流黑名单。舞台只消费 `list()`（含 `position` 与 `metadata.layout/clouds`）与 `anchors()`，不读生成逻辑。
+chunk 的 URL 取自**入口包**的 revision，所以构建脚本会在产物真的变化时顶一下 `client.js` 的 mtime——不顶这一下，浏览器会拿 immutable 缓存里的旧 chunk。
 
-## 安装
+## 本地开发
 
 ```bash
-cd "$DSH_HOME/profiles/<profile>"
-dsh plugin --profile <profile> add "C:/Yu/dsh-blackhole-radio-lab"
+npm install      # three + esbuild
+npm run build    # 重建 client.stage.js 与 client.radio.js
+npm test         # 转场与产物的契约测试
 ```
 
-装完必须重启 DSH。桌面端进程没有 profile 监听器，不会自己发现新 bundle；重建 chunk 之后同理——revision 是启动时算的。
+- **只改 `src/`，然后 `npm run build`。** 两个 `client.*.js` 是产物。
+- 不要在 `client.js` 里 `import 'three'`：浏览器侧没有 `three` 的基座模块，解析会直接失败。
+- `client.js` 本身不是构建产物，直接改；但改完必须求值一次真实的模块加载路径（`npm test` 会做：在 vm 里提供 `window.__ModuleLoader__.load`，断言 `factory` 返回 `apply` / `inject`）。
+- 重建目录快照：`npm run build:catalog`（`CATALOG_TARGET`、`CATALOG_FETCH`、`CATALOG_CHECK_CONCURRENCY` 等环境变量控制，探测两万台第三方流要几分钟到几十分钟，所以不放进 `npm run build`）。
 
-## 卸载
+### 测试覆盖到哪
 
-```bash
-dsh plugin --profile <profile> remove @local/dsh-blackhole-radio-lab
-```
+`npm test` 是纯 Node 的契约测试，不需要浏览器：39 个转场用例（含按下即动、松手回抽、回弹复按不跳变、一次长按只跨越一次）、89 组真实源码取色与投影映射、真实 SVG 环的时序、以及两个产物 chunk 的 loader 注册冒烟。
 
-或直接从 profile 的 `package.json` 中删掉 `dependencies` 里的这一项和 `dsh.profile.bundles` 里的这一行，再重启。两边都会清掉：Host 路由随插件 fiber 释放，客户端槽位条目与 `<style id="bhrl-styles">` 一起移除。
+它**不**覆盖 GPU 与浏览器观感：着色器编译、实际帧率、HDR 色调映射的观感只能靠人眼在真机上看。
 
-## 架构约束
+## 已知限制
 
-- 原生 Three.js，不用 React Three Fiber。
-- 面板是注册进 `main` 槽的 React 组件，**不是 iframe**：iframe 会丢掉主题变量和语言。
-- Host 半零运行时依赖，`link:` 进 profile 即可；重活全在浏览器侧的 chunk 里。
-- 不碰 DSH 核心文件、不改原生布局、不覆盖其他插件。
-- 不要求任何 `@deepseek-ai/dsh-client-*` 包作为模块；那会让槽位直接崩掉。
-- 不改 Host 静态路由，不引 CDN：Three.js 是插件自己的私有依赖。
-- chunk 必须自包含，不能同步 `require` 另一个相对路径的 `client*.js`。
-- 电台 ID 与 Three.js 实例索引分离：`idToIndex` 映射由舞台维护，过滤与排序不改基础位置。
-- 数据层（`src/radio/`）不 import three；渲染层（`src/nodes/`）不生成数据。
+- 无账号、无云同步、无歌单：收藏与喜欢只在本机。
+- 部分电台会 404、断流或只在特定地区可用；坏流进黑名单后不再重试。
+- 实时抓取路径每次最多取 5,000 台（分页 + 时间预算），内置快照远大于此；快照过期 30 天或台数骤减时会回落实时抓取。
+- `reducedMotion` 下转场时间更短，不是完全无动画。
+- 缩放到最近处时，密集区域的台名仍会互相让位，极端密度下会有标签不显示。
 
-## 渲染模块接口
+## 贡献
 
-`mountStage(container, settings)` 返回 `{ info, resetView, selectById, focusById, clearSelection, locateStation, setInteraction, enterCluster, exitCluster, setCategoryFilter, setLanguage, state, holeScreen, selection, dispose }`：
+Issue 与 PR 都欢迎。提交前请跑 `npm run build && npm test`，并且**不要手改** `client.*.js` 或 `data/catalog*.json.gz`。
 
-- `info`：`{ phase, antialias, pixelRatio, triangles, stars, stations, featured, categories, animated }`，给面板读数用。
-- `state()`：`{ state, mode, ui, categoryId, progress, transitioning, stations }`，`state` 为 `black-hole / search / category-panel / transition-to-cluster / cluster / transition-to-black-hole` 之一。
-- `setInteraction(ui)`：面板把 `search` / `category-panel` / `black-hole` 写回舞台，用于统一 hover、点击与 Esc 的优先级。
-- `enterCluster(categoryId)` / `exitCluster()`：启动形态转换；重复调用会从当前进度反向或改道，不并行改同一批对象。
-- `locateStation(id)`：跨模式定位——目标在当前场景直接聚焦，否则先平滑进入其分类星团再聚焦。
-- `selectById(id, { focus, notify })`：按稳定 ID 选中，可选聚焦与回调；`notify` 默认 `false`，避免搜索选择回灌成点击事件。
-- `setCategoryFilter(ids)`：传空数组恢复全部；返回是否有变化。星团模式下忽略。
-- `dispose()`：幂等。停 rAF、断开 `ResizeObserver`、摘掉网格、dispose 几何/材质/renderer、`forceContextLoss()`、移除两根 canvas。
-- `settings`：`{ antialias, pixelRatioCap, reducedMotion, stations, seed, categories, language, onSelect, onMode, onCenterClick, onHoverChange }`，同一对象复用，避免 effect 重启。
+## 许可
 
-## 第五阶段前置
-
-1. Radio Browser API 的 Host 侧代理与缓存，实现 `RadioStationRepository` 的真实版本。
-2. 音频播放与电台在 3D 空间中的锚定（`mountStage` 的 `stations[].position` 已是稳定坐标）。
-3. 真实播放状态、收藏与账号——前四阶段全部未做。
+代码以 [MIT](LICENSE) 发布。第三方组件与数据的来源、许可与义务见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

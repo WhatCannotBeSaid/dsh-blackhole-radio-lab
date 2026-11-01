@@ -685,6 +685,10 @@ export function createStationsLayer(stations, options) {
   let time = 0;
   let disposed = false;
   let dirtyBuffers = false;
+  let dirtyPositions = false;
+  let dirtyMatches = false;
+  let dirtyCluster = false;
+  let dirtyMembers = false;
   // Bumped by flush(): anchors move on a filter reveal and during a transition
   // without the camera moving at all, so a screen-space cache cannot key on the
   // camera alone.
@@ -805,30 +809,34 @@ export function createStationsLayer(stations, options) {
     }
   }
 
-  /** Upload the particle positions and the per-particle blend attributes. */
+  /** Rebuild and upload only the changed categories, never individual stations. */
   function flush() {
-    let particle = 0;
-    for (let i = 0; i < count; i += 1) {
-      const n = perStation[i];
-      for (let k = 0; k < n; k += 1) writeParticle(particle + k, i, 1);
-      particle += n;
-    }
-    geometry.attributes.position.needsUpdate = true;
-    let p = 0;
-    for (let i = 0; i < count; i += 1) {
-      const n = perStation[i];
-      for (let k = 0; k < n; k += 1) {
-        matches[p + k] = matchCur[i];
-        clusterMix[p + k] = clusterBlend[i];
-        memberFlags[p + k] = clusterMembers[i];
+    if (dirtyPositions) {
+      let particle = 0;
+      for (let i = 0; i < count; i += 1) {
+        const n = perStation[i];
+        for (let k = 0; k < n; k += 1) writeParticle(particle + k, i, 1);
+        particle += n;
       }
-      p += n;
+      geometry.attributes.position.needsUpdate = true;
+      writeStationAnchors(0, count);
     }
-    geometry.attributes.aMatch.needsUpdate = true;
-    geometry.attributes.aCluster.needsUpdate = true;
-    geometry.attributes.aMember.needsUpdate = true;
-    writeStationAnchors(0, count);
+    if (dirtyMatches || dirtyCluster || dirtyMembers) {
+      let p = 0;
+      for (let i = 0; i < count; i += 1) {
+        const n = perStation[i];
+        if (dirtyMatches) matches.fill(matchCur[i], p, p + n);
+        if (dirtyCluster) clusterMix.fill(clusterBlend[i], p, p + n);
+        if (dirtyMembers) memberFlags.fill(clusterMembers[i], p, p + n);
+        p += n;
+      }
+      if (dirtyMatches) geometry.attributes.aMatch.needsUpdate = true;
+      if (dirtyCluster) geometry.attributes.aCluster.needsUpdate = true;
+      if (dirtyMembers) geometry.attributes.aMember.needsUpdate = true;
+    }
+    dirtyPositions = dirtyMatches = dirtyCluster = dirtyMembers = false;
     dirtyBuffers = false;
+    // Preserve the original pick-cache and marker refresh timing, including fades.
     layoutVersion += 1;
     syncMarker();
   }
@@ -1054,8 +1062,11 @@ export function createStationsLayer(stations, options) {
         clusterRadius = layout.radius || 3;
         knotScale = clusterRadius * 0.02;
         uniforms.uClusterRadius.value = clusterRadius;
+        // Destinations and knot size affect positions even if the blend is held.
+        dirtyPositions = true;
         for (let i = 0; i < count; i += 1) {
           const member = layout.members[i] === 1;
+          if (clusterMembers[i] !== (member ? 1 : 0)) dirtyMembers = true;
           clusterMembers[i] = member ? 1 : 0;
           if (member) {
             clusterX[i] = layout.positions[i * 3];
@@ -1204,9 +1215,11 @@ export function createStationsLayer(stations, options) {
       if (step > 0) {
         time += step;
         uniforms.uTime.value = time;
+        const previousFilter = filterActive;
         filterActive += (filterTarget - filterActive) * (1 - Math.exp(-step * 4.2));
         if (Math.abs(filterTarget - filterActive) < 0.002) filterActive = filterTarget;
         uniforms.uFilterActive.value = filterActive;
+        if (filterActive !== previousFilter) dirtyPositions = true;
         // The reveal strength is part of the geometry (the micro-cluster spreads
         // as it condenses), so keep stepping and re-uploading until it settles.
         const fadeMoving = Math.abs(filterTarget - filterActive) > 0.002;
@@ -1219,13 +1232,23 @@ export function createStationsLayer(stations, options) {
         if (Math.abs(dc) > 0.0006) {
           const rate = dc > 0 ? 9.5 : 15.0;
           charge += dc * (1 - Math.exp(-step * rate));
+          dirtyPositions = true;
           moving = true;
         } else if (charge !== chargeTarget) {
           charge = chargeTarget;
+          dirtyPositions = true;
           moving = true;
         }
 
-        for (let i = 0; i < count; i += 1) {
+        // Target setters wake the morph through animating/dirtyBuffers. Once it
+        // settles, skip the catalogue walk; shader time and marker motion still run.
+        const updateCount = animating || dirtyBuffers ? count : 0;
+        for (let i = 0; i < updateCount; i += 1) {
+          const previousR = curR[i];
+          const previousA = curA[i];
+          const previousY = curY[i];
+          const previousMatch = matchCur[i];
+          const previousBlend = clusterBlend[i];
           // Disk cloud target.
           if (hold[i] > 0) {
             hold[i] = Math.max(0, hold[i] - step);
@@ -1274,7 +1297,14 @@ export function createStationsLayer(stations, options) {
               clusterBlend[i] = clusterGoal[i];
             }
           }
+          if (matchCur[i] !== previousMatch) dirtyMatches = true;
+          if (clusterBlend[i] !== previousBlend) dirtyCluster = true;
+          if (curR[i] !== previousR || curA[i] !== previousA || curY[i] !== previousY ||
+              matchCur[i] !== previousMatch || clusterBlend[i] !== previousBlend) {
+            dirtyPositions = true;
+          }
         }
+        // Keep pending changes across the original no-flush snap frame.
         if (moving || fadeMoving) dirtyBuffers = true;
         animating = moving || fadeMoving;
         if (dirtyBuffers) flush();

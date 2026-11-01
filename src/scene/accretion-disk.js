@@ -208,13 +208,13 @@ export function createAccretionDisk(options = {}) {
   const camFwd = [0, 0, 0];
   const worldPos = { x: 0, y: 0, z: 0 };
 
-  function update(time, camera) {
+  function update(time, camera, frame) {
     if (disposed) return;
 
     // Camera basis in world space, then the same rotation applied to it, so the
     // shader's frame is the camera's frame and the projection is exact.
-    camera.updateMatrixWorld();
-    const e = camera.matrixWorld.elements;
+    if (!frame) camera.updateMatrixWorld();
+    const e = frame ? frame.elements : camera.matrixWorld.elements;
     toShader(e[0], e[1], e[2], camRight);
     toShader(e[4], e[5], e[6], camUp);
     // three.js cameras look down -Z in their own frame.
@@ -231,7 +231,7 @@ export function createAccretionDisk(options = {}) {
     uniforms.uCamRight.value = camRight;
     uniforms.uCamUp.value = camUp;
     uniforms.uCamForward.value = camFwd;
-    uniforms.uTanHalfFov.value = Math.tan((camera.fov * Math.PI) / 360);
+    uniforms.uTanHalfFov.value = frame ? frame.tanHalfFov : Math.tan((camera.fov * Math.PI) / 360);
     uniforms.uTime.value = time;
     uniforms.uOpacity.value = opacity;
 
@@ -244,8 +244,9 @@ export function createAccretionDisk(options = {}) {
     uniforms.uStationPhase.value = frozenAt === null ? phaseBase : phaseBase + Math.max(0, now - frozenAt);
 
     if (renderer) {
-      renderer.getDrawingBufferSize(drawBuffer);
-      uniforms.uViewport.value.set(drawBuffer.x, drawBuffer.y);
+      if (!frame) renderer.getDrawingBufferSize(drawBuffer);
+      const size = frame ? frame.viewport : drawBuffer;
+      uniforms.uViewport.value.set(size.x, size.y);
     }
   }
 

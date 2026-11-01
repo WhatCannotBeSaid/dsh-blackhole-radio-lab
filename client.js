@@ -26,7 +26,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: '@local/dsh-blackhole-radio-lab',
+  id: 'dsh-blackhole-radio-lab',
 
   factory(require) {
     const React = require('react');

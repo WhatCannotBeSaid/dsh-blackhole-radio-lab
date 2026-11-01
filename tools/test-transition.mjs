@@ -577,7 +577,7 @@ if (process.argv.includes('--bundles')) {
       console, setTimeout, clearTimeout, URL, URLSearchParams, TextDecoder, TextEncoder, AbortController,
     });
     vm.runInContext(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'), context, { filename: file });
-    assert.equal(registration.id, '@local/dsh-blackhole-radio-lab');
+    assert.equal(registration.id, 'dsh-blackhole-radio-lab');
     const exports = registration.factory((name) => { assert.equal(name, 'react'); return {}; });
     const keys = Object.keys(exports).sort();
     assert.deepEqual(keys, file === 'client.js' ? ['apply', 'inject'] : ['STAGE_PHASE', 'isSelectionGesture', 'mountStage']);

@@ -188,20 +188,21 @@ export function createSpaceHaze(options = {}) {
     return out;
   };
 
-  function update(time, camera) {
+  function update(time, camera, frame) {
     if (!camera) return;
-    camera.updateMatrixWorld();
-    const e = camera.matrixWorld.elements;
+    if (!frame) camera.updateMatrixWorld();
+    const e = frame ? frame.elements : camera.matrixWorld.elements;
     toShader(e[0], e[1], e[2], camRight);
     toShader(e[4], e[5], e[6], camUp);
     toShader(-e[8], -e[9], -e[10], camFwd);
     uniforms.uCamRight.value = camRight;
     uniforms.uCamUp.value = camUp;
     uniforms.uCamForward.value = camFwd;
-    uniforms.uTanHalfFov.value = Math.tan((camera.fov * Math.PI) / 360);
+    uniforms.uTanHalfFov.value = frame ? frame.tanHalfFov : Math.tan((camera.fov * Math.PI) / 360);
     if (renderer) {
-      renderer.getDrawingBufferSize(drawBuffer);
-      uniforms.uViewport.value.set(drawBuffer.x, drawBuffer.y);
+      if (!frame) renderer.getDrawingBufferSize(drawBuffer);
+      const size = frame ? frame.viewport : drawBuffer;
+      uniforms.uViewport.value.set(size.x, size.y);
     }
   }
 

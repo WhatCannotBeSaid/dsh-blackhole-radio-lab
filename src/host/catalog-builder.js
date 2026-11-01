@@ -20,7 +20,8 @@ export const RADIO_BROWSER_HOSTS = Object.freeze([
   'at1.api.radio-browser.info',
 ]);
 
-export const BUILDER_USER_AGENT = 'dsh-blackhole-radio-lab/0.6 (catalog build)';
+export const BUILDER_USER_AGENT =
+  'dsh-blackhole-radio-lab/1.0 (catalog build; +https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab)';
 
 /** Radio Browser caps a search page at 500 rows. */
 const PAGE_SIZE = 500;

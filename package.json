@@ -1,8 +1,7 @@
 {
-  "name": "@local/dsh-blackhole-radio-lab",
-  "version": "0.4.0-lab.1",
-  "private": true,
-  "description": "a standalone radio page for DSH: a 3D black-hole stage carrying thousands of simulated stations",
+  "name": "dsh-blackhole-radio-lab",
+  "version": "1.0.0",
+  "description": "A 3D black-hole radio stage for DeepSeek Harness: orbit, zoom and play 24,000+ internet radio stations",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -22,23 +21,43 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "README.en.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
     "src",
+    "data/catalog.v1.json",
     "data/catalog.v1.json.gz",
     "tools/build-stage.mjs",
     "tools/build-catalog.mjs"
   ],
   "scripts": {
     "build": "node tools/build-stage.mjs",
-    "build:catalog": "node tools/build-catalog.mjs"
+    "build:catalog": "node tools/build-catalog.mjs",
+    "test": "node tools/test-transition.mjs"
   },
   "keywords": [
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
     "radio",
-    "black-hole"
+    "internet-radio",
+    "black-hole",
+    "three-js",
+    "webgl"
   ],
   "license": "MIT",
+  "author": "WhatCannotBeSaid",
+  "homepage": "https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

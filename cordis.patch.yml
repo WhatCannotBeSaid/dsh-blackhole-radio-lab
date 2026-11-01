@@ -5,4 +5,4 @@
 # exactly like the shipped ui-* packages do, so nothing here names client.js.
 - insert:
     - id: blackhole-radio-lab
-      name: '@local/dsh-blackhole-radio-lab'
+      name: 'dsh-blackhole-radio-lab'

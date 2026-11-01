@@ -54,6 +54,7 @@ import { createAccretionDisk } from './scene/accretion-disk.js';
 import { createDiscTransfer, DISC_TRANSFER_LANDING, discTransferHandoff } from './scene/disc-transfer.js';
 import { buildStationField, rewriteStationBits } from './scene/station-field.js';
 import { createCameraRig } from './scene/camera-rig.js';
+import { createCameraFrame } from './scene/camera-frame.js';
 import { createSpaceHaze } from './scene/space-haze.js';
 import { createStarfield } from './scene/starfield.js';
 import {
@@ -250,6 +251,7 @@ export function mountStage(container, options) {
     // The shared sky goes in first and lowest: every form sees the same
     // background, and the hole's imaging quad (renderOrder -10, opaque) paints
     // its lensed copy straight over it.
+    const updateCameraFrame = createCameraFrame(renderer);
     const spaceHaze = add(createSpaceHaze({ renderer }));
     disposers.push(() => spaceHaze.dispose());
 
@@ -720,8 +722,9 @@ export function mountStage(container, options) {
         refreshPickable();
       }
 
-      disk.update(elapsed, camera);
-      spaceHaze.update(elapsed, camera);
+      const cameraFrame = updateCameraFrame(camera);
+      disk.update(elapsed, camera, cameraFrame);
+      spaceHaze.update(elapsed, camera, cameraFrame);
 
       // Adaptive density: the pickable budget drops before the frame rate does,
       // which keeps the disk clickable instead of turning laggy. One decision
