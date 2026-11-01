@@ -63,7 +63,7 @@
 
 ## 关联技能
 
-同一套流程已固化为技能 `dsh-dev-git-flow`（`<redacted>\.agents\skills\dsh-dev-git-flow\SKILL.md`），含首次初始化、敏感扫描、`.gitignore` 模板、验证矩阵、推送前三查与红线。做开发任务时先加载它。
+同一套流程已固化为技能 `dsh-dev-git-flow`（`%USERPROFILE%\.agents\skills\dsh-dev-git-flow\SKILL.md`），含首次初始化、敏感扫描、`.gitignore` 模板、验证矩阵、推送前三查与红线。做开发任务时先加载它。
 
 ## 提交前自检
 
@@ -77,7 +77,7 @@ gh repo view --json visibility                                                  
 
 - `git push --force`、`git reset --hard`、`git clean -fd`、删除历史。
 - 覆盖或改写已有远程仓库；擅自改仓库可见性。
-- 提交凭据；凭据只存 `<redacted>\.dsh\.env`（在全局 ignore 内）。
+- 提交凭据；凭据只存 `%USERPROFILE%\.dsh\.env`（在全局 ignore 内）。
 - 为版本管理而改黑洞渲染、电台逻辑或插件 UI。
 - 任何可能丢代码的操作：停下来报告，不自行执行。
 

@@ -6,7 +6,7 @@
 
 一块给网络电台用的 3D 黑洞舞台：两万多台真实电台绕着一颗可以环绕、可以播放的黑洞运行。
 
-[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · v1.0.0
+[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · [变更日志](CHANGELOG.md) · v1.2.0
 
 </div>
 
@@ -37,8 +37,10 @@ DSH（DeepSeek Harness）的插件。装上之后左栏底部多一张电台卡�
 
 - 2.4 万台以内置快照启动（构建时已逐条探活），缺快照时回落实时抓取。
 - 搜索覆盖台名、国家地区、语言、分类；分类面板分 13 个流派。
-- 播放 / 暂停、上一台 / 随机下一台、音量；坏流自动进黑名单，不再浪费时间重连。
+- 播放 / 暂停、上一台 / 随机下一台、音量；启动或卡顿超过 15 秒时，同台最多重连一次，不自动换台。
+- 记住音量与最后成功播放站，重开不自动出声；支持系统播放 / 暂停 / 停止控制。后台暂停曲目查询，回到前台立即刷新。
 - 悬停卡片：点击播放、右键或星标收藏、显示流派与 `LIVE` 徽标。
+- 转场按可用的帧时间让步：转场期间若连续出现慢帧，先按视口面积把渲染像素压到 70 万以内，仍然吃紧再逐次降到 0.8 倍，最低 0.5；空闲后自动爬回原倍率。星点尺寸跟随像素比，降精度不会把星星画大。
 - 正在播放的曲目取自流内 `icy-metaint` 元数据块；点歌名可在 Spotify / 网易云音乐 / QQ 音乐 / Apple Music / YouTube 中搜索该曲（平台可右键切换）。
 - 收藏的电台与喜欢的歌曲持久保存在本机，不联网同步。
 - 中文 / English 跟随应用语言。
@@ -73,7 +75,7 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 | 点击黑洞中心 / 回车 | 打开搜索 |
 | 指针在中心停留 600 ms | 展开分类面板（触屏长按 560 ms） |
 | 黑洞上按住左键 ≈2.3 s | 穿过虫洞进入星团；松手 0.22 s 回抽 |
-| 星团中按住右键 ≈1.2 s | 倒放回黑洞；短按只撤销不回弹 |
+| 星团中按住右键 ≈3 s | 星点沿同向旋卷内收、收拢成盘，再接回黑洞；短按只撤销不回弹 |
 | 转场途中再按同一键 | 从当前进度续接，不重头再来 |
 | 星点上悬停 / 点击 / 右键 | 悬停卡片 / 播放暂停 / 收藏 |
 | `Esc` | 关闭浮层或退回黑洞 |
@@ -129,7 +131,7 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 - 电台目录来自 [Radio Browser](https://www.radio-browser.info) 的公开 API。发布包里的快照由 `tools/build-catalog.mjs` 抓取、逐条探活、按国家与流派保底筛洗而成，构建时间与台数写在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 - 用户侧每周在 DSH 运行期间后台重建一次快照，写入 `$DSH_HOME/cache/blackhole-radio-lab/`；DSH 没开就不跑，失败只记日志、六小时后再试。
 - 播放时浏览器直接连电台的流地址，曲目信息来自该流的 ICY 元数据块（Host 只取一个块即断开）。这些连接会把你的 IP 暴露给对应电台，作者服务器不参与、也看不到。
-- 收藏、喜欢的歌曲、坏流黑名单只写本机 `$DSH_HOME/blackhole-radio-lab/library.json`，不上传任何地方。
+- 收藏、喜欢的歌曲、音量与最后成功播放站保存在本机 `$DSH_HOME/blackhole-radio-lab/library.json`；失效源记录保存在当前浏览器 IndexedDB，不上传。
 - 插件不加载远端脚本，不引 CDN，Three.js 是包内私有依赖。
 
 ## 架构
@@ -139,7 +141,7 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 | 路径 | 作用 |
 | --- | --- |
 | `index.js` | Host 入口：配置校验（标准 schema）、路由、卸载清理 |
-| `src/host/library.js` | 收藏与黑名单的本机记录（原子写） |
+| `src/host/library.js` | 收藏、歌曲与播放偏好的本机记录（原子写） |
 | `src/host/catalog-builder.js` | 目录构建：抓取、探活、保底筛洗（CLI 与 Host 共用） |
 | `src/host/catalog-refresh.js` | 每周后台刷新调度与回落规则 |
 | `src/host/now-playing.js` | ICY 元数据探测（只读一个元数据块） |
@@ -178,14 +180,16 @@ npm test         # 转场与产物的契约测试
 
 ### 测试覆盖到哪
 
-`npm test` 是纯 Node 的契约测试，不需要浏览器：39 个转场用例（含按下即动、松手回抽、回弹复按不跳变、一次长按只跨越一次）、89 组真实源码取色与投影映射、真实 SVG 环的时序、以及两个产物 chunk 的 loader 注册冒烟。
+`npm test` 是纯 Node 的契约测试，不需要浏览器：40 个转场用例（含按下即动、松手回抽、回弹复按不跳变、一次长按只跨越一次、回程单向旋卷与近零进度取消）、自适应像素比的预算与回落、89 组真实源码取色与投影映射、真实 SVG 环的时序、以及两个产物 chunk 的 loader 注册冒烟。
 
 它**不**覆盖 GPU 与浏览器观感：着色器编译、实际帧率、HDR 色调映射的观感只能靠人眼在真机上看。
 
 ## 已知限制
 
 - 无账号、无云同步、无歌单：收藏与喜欢只在本机。
-- 部分电台会 404、断流或只在特定地区可用；坏流进黑名单后不再重试。
+- 部分电台会 404、断流或只在特定地区可用。格式或解码失败的电台隔离 6 小时，下次初始化目录时重新放行；旧的无时间戳黑名单会释放。当前会话不会自动重建目录。
+- 关闭窗口时 `pagehide` 立即停止播放；最小化但仍出声时每 3 秒探活本机后端，连续 2 次未应答才停，单次探测 2.5 秒超时也算未应答。
+- 系统媒体控制以 metadata 身份避让其他播放器，无法识别只更换 handler 而不更新 metadata 的外部接管。
 - 实时抓取路径每次最多取 5,000 台（分页 + 时间预算），内置快照远大于此；快照过期 30 天或台数骤减时会回落实时抓取。
 - `reducedMotion` 下转场时间更短，不是完全无动画。
 - 缩放到最近处时，密集区域的台名仍会互相让位，极端密度下会有标签不显示。
@@ -193,6 +197,19 @@ npm test         # 转场与产物的契约测试
 ## 贡献
 
 Issue 与 PR 都欢迎。提交前请跑 `npm run build && npm test`，并且**不要手改** `client.*.js` 或 `data/catalog*.json.gz`。
+
+## 来源与致谢
+
+本站的所有代码与美术资源都是自研，没有从下列项目复制代码、样式或文案。它们在这个领域里先走了一步，本站的设计参考过它们的思路与交互：
+
+| 项目 | 许可 | 本站参考了它的什么能力 | 本站自己的做法 |
+| --- | --- | --- | --- |
+| [CXZAAA/dsh-radio](https://github.com/CXZAAA/dsh-radio) | MIT | 把电台做成 DSH 的常驻入口、切台不叠音、失败静默降级、曲目信息来自流内元数据、记忆上次收听与音量 | 入口放在左栏底部卡片，台源改用 2.4 万台内置快照；`icy-metaint` 由 Host 只读一个元数据块，失败按同台重连一次，偏好写入 `$DSH_HOME` 原子文件 |
+| [joeseesun/qiaomu-radio-dsh](https://github.com/joeseesun/qiaomu-radio-dsh) | GPL-3.0-or-later | 全球电台目录与分类浏览、按场景分组收听、本机口味记忆、系统媒体控制 | 目录改为构建期探活筛选的 Radio Browser 快照，分类收进黑洞舞台的 13 个流派形态；口味记在本机，不含任何 GPL 代码，因此本站仍以 MIT 发布 |
+| [ebruneton/black_hole_shader](https://github.com/ebruneton/black_hole_shader) | BSD-3-Clause | 实时黑洞渲染的参考实现 | 直接沿用它预计算的零测地线查找表与 `TraceRay` 结构（唯一真正复制代码的地方），盘面材质、背景与相机自研；细节见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)，BSD 全文随包分发于 [LICENSE-BLACK_HOLE_SHADER](LICENSE-BLACK_HOLE_SHADER) 并内联在 `client.stage.js` 顶部 |
+| [three.js](https://github.com/mrdoob/three.js) | MIT | 全部三维渲染的基座 | 构建期内联进 `client.stage.js` |
+
+性能目标与自适应精度策略（降分辨率优先于降帧率）是本站自己的工程约定，没有照搬任何项目；`@deepseek-ai/dsh-client-ui-sidebar` 只是宿主提供的注入点。
 
 ## 许可
 

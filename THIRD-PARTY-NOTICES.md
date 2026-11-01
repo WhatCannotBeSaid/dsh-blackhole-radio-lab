@@ -17,6 +17,15 @@
 - 许可：MIT，Copyright (c) 2020 Evan Wallace。
 - 上游：<https://github.com/evanw/esbuild>
 
+## Eric Bruneton · black_hole_shader（复制代码）
+
+- 用途：黑洞舞台的零测地线光线追踪——`src/scene/geodesic.glsl.js` 的 `TraceRay` 结构与纹理坐标映射、`src/scene/ray-tables.data.js` 的预计算查找表。
+- 版本：commit `e72b3f293409893a6fa25528b29572c96fc57f57`（2020-11-11）。
+- 许可：BSD-3-Clause，Copyright (c) 2020 Eric Bruneton。
+- 上游：<https://github.com/ebruneton/black_hole_shader>
+- 义务：`geodesic.glsl.js` 与 `ray-tables.data.js` 顶部保留版权与许可说明行；BSD-3-Clause 要求再分发时保留版权声明、条件列表与免责声明全文。全文随包分发于 [LICENSE-BLACK_HOLE_SHADER](LICENSE-BLACK_HOLE_SHADER)，同时在 `client.stage.js` 顶部 banner 内联一份，安装后即使不打开本文件也能读到。
+- 未复制部分：盘面材质（本仓库按温度分布与开普勒频率解析求值）、背景星图（程序化生成）、相机模型（本项目自有轨道相机），见 `src/scene/geodesic.glsl.js` 文件头。
+
 ## 电台目录数据（Radio Browser）
 
 - 文件：`data/catalog.v1.json`、`data/catalog.v1.json.gz`。

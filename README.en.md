@@ -6,7 +6,7 @@
 
 A 3-D black-hole stage for internet radio: over twenty thousand real stations orbit a hole you can orbit, zoom into and play.
 
-[中文](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md) · v1.0.0
+[中文](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Changelog](CHANGELOG.en.md) · v1.2.0
 
 </div>
 
@@ -37,8 +37,10 @@ There is no permanent search bar, category sidebar or readout panel. Search and 
 
 - Starts from a bundled snapshot of 24k stations, every one probed healthy at build time; falls back to a live fetch when the snapshot is missing.
 - Search across name, country/region, language and category; the category panel offers 13 genres.
-- Play/pause, previous, random next, volume; dead streams go to a blacklist instead of being retried forever.
+- Play/pause, previous, random next, volume; a stream that never starts or stalls for 15 seconds is retried once on the same station, never swapped silently.
+- Volume and the last successfully played station are remembered; playback restores paused, and system play/pause/stop controls work. Track metadata polling stops while the page is hidden and refreshes on return.
 - Hover card: click to play, right-click or the star to favourite, with the genre and a `LIVE` badge.
+- Transitions pay for themselves out of frame time: if slow frames pile up during a transition, the render is first capped at 700k pixels for the viewport area and then stepped down by 0.8 per round, never below 0.5, climbing back once idle. Sprite size follows the pixel ratio, so a lower resolution never draws bigger stars.
 - Now-playing comes from the stream's `icy-metaint` metadata block; clicking the title searches that song on Spotify, NetEase Cloud Music, QQ Music, Apple Music or YouTube (the platform is switchable with a right-click).
 - Favourite stations and liked songs persist locally, never synced.
 - Chinese / English follow the app language.
@@ -73,7 +75,7 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 | Click the centre / Enter | Open search |
 | Dwell 600 ms on the centre | Open the category panel (560 ms long-press on touch) |
 | Hold left on the hole ≈2.3 s | Fall through the wormhole into the cluster; release to recoil in 0.22 s |
-| Hold right in the cluster ≈1.2 s | Play the same crossing backwards; a short tap only cancels |
+| Hold right in the cluster ≈3 s | Stars spiral inward in one direction, gather into the disk, then hand over to the hole; a short tap only cancels |
 | Press again mid-transition | Continue from the current progress instead of restarting |
 | Hover / click / right-click a star | Hover card / play-pause / favourite |
 | `Esc` | Close the overlay or step back to the hole |
@@ -129,7 +131,7 @@ Anything omitted falls back to `DEFAULTS` in `index.js`. For debugging you can a
 - The catalogue comes from the public [Radio Browser](https://www.radio-browser.info) API. The bundled snapshot is fetched, probed and balanced per country and genre by `tools/build-catalog.mjs`; its build time and station count are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 - On the user side the snapshot is rebuilt once a week while DSH is running and written to `$DSH_HOME/cache/blackhole-radio-lab/`. Nothing runs when DSH is closed; a failure is logged and retried six hours later.
 - Playback connects the browser straight to the station's stream, and the track title comes from that stream's ICY block (the host reads exactly one block and disconnects). Those connections expose your IP to the station; the author's server is not involved and sees nothing.
-- Favourites, liked songs and the dead-stream blacklist are written only to `$DSH_HOME/blackhole-radio-lab/library.json` and never uploaded.
+- Favourites, liked songs, volume and the last successful station are written only to `$DSH_HOME/blackhole-radio-lab/library.json`; failed-stream records live in this browser's IndexedDB. Nothing is uploaded.
 - No remote scripts, no CDN: Three.js is the plugin's own private dependency.
 
 ## Architecture
@@ -139,7 +141,7 @@ The plugin has two halves: a dependency-free Host half (`index.js` + `src/host/`
 | Path | Role |
 | --- | --- |
 | `index.js` | Host entry: config validation (standard schema), routes, teardown |
-| `src/host/library.js` | Local record of favourites and blacklist (atomic writes) |
+| `src/host/library.js` | Local record of favourites, songs and playback preferences (atomic writes) |
 | `src/host/catalog-builder.js` | Catalogue builder: fetch, probe, balance (shared by CLI and host) |
 | `src/host/catalog-refresh.js` | Weekly background refresh and fallback rules |
 | `src/host/now-playing.js` | ICY metadata probe (a single block, then disconnect) |
@@ -178,14 +180,16 @@ npm test         # contract tests for the transition and the artifacts
 
 ### What the tests do and do not cover
 
-`npm test` is plain Node, no browser: 39 transition cases (immediate motion on press, recoil on release, re-press mid-recoil without a jump, one hold equals one crossing), 89 real source-cell and projection mappings, the real SVG ring's timing, and a loader smoke test for both chunk artifacts.
+`npm test` is plain Node, no browser: 40 transition cases (immediate motion on press, recoil on release, re-press mid-recoil without a jump, one hold equals one crossing, one-directional inward spiral on the way back, near-zero cancellation), the adaptive pixel-ratio budget and its fallback, 89 real source-cell and projection mappings, the real SVG ring's timing, and a loader smoke test for both chunk artifacts.
 
 It does **not** cover the GPU or the browser: shader compilation, real frame rate and the look of the HDR tone mapping still need a human on real hardware.
 
 ## Known limitations
 
 - No accounts, no cloud sync, no playlists: favourites and likes stay on the machine.
-- Some stations 404, drop the stream, or are region-locked; blacklisted ones are not retried.
+- Some stations 404, drop the stream, or are region-locked. A station that fails on format or decoding is quarantined for six hours and offered again on the next catalogue load; legacy blacklist entries without a timestamp are released. The catalogue is not rebuilt mid-session.
+- Closing the window silences playback on `pagehide`. While the window stays hidden and audible, the page probes the local host every three seconds and stops after two unanswered probes; a probe that times out at two and a half seconds counts as unanswered.
+- System media controls step aside for another player by metadata identity; an external takeover that only replaces handlers and leaves the metadata alone cannot be detected.
 - The live-fetch path takes at most 5,000 stations per run (paging plus a time budget); the bundled snapshot is far larger. A snapshot older than 30 days, or one that suddenly shrinks, falls back to live fetching.
 - `reducedMotion` shortens transitions rather than removing them entirely.
 - At the closest zoom, dense regions still hide some labels behind their neighbours.
@@ -193,6 +197,19 @@ It does **not** cover the GPU or the browser: shader compilation, real frame rat
 ## Contributing
 
 Issues and pull requests are welcome. Run `npm run build && npm test` before you open one, and **never hand-edit** `client.*.js` or `data/catalog*.json.gz`.
+
+## Sources and acknowledgement
+
+Every line of code and every asset here is written for this project: nothing was copied from the projects below. They got to this field first, and this plugin's design drew on their ideas and interaction patterns:
+
+| Project | Licence | Capability the design drew on | How this plugin does it |
+| --- | --- | --- | --- |
+| [CXZAAA/dsh-radio](https://github.com/CXZAAA/dsh-radio) | MIT | A persistent radio entry inside DSH, clean station switching without overlapping audio, silent fallback on failure, track names read from the stream itself, and remembering the last station and volume | The entry is the footer card in the left column and the source is a bundled 24k-station snapshot; the Host reads exactly one `icy-metaint` block, a failure retries the same station once, and preferences go to an atomic file under `$DSH_HOME` |
+| [joeseesun/qiaomu-radio-dsh](https://github.com/joeseesun/qiaomu-radio-dsh) | GPL-3.0-or-later | A global station directory with category browsing, listening grouped by mood, locally stored taste memory, and system media controls | The directory is a Radio Browser snapshot probed and filtered at build time, categories become the 13 genre shapes of the black-hole stage, and taste lives on the machine. No GPL code is included, so this plugin stays MIT |
+| [ebruneton/black_hole_shader](https://github.com/ebruneton/black_hole_shader) | BSD-3-Clause | The reference implementation for real-time black-hole rendering | Its precomputed null-geodesic tables and the structure of `TraceRay` are used directly — the only place where code really is copied; the disc material, background and camera are this project's own. Details in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the full BSD text ships in [LICENSE-BLACK_HOLE_SHADER](LICENSE-BLACK_HOLE_SHADER) and is inlined in the `client.stage.js` banner |
+| [three.js](https://github.com/mrdoob/three.js) | MIT | The base of all 3-D rendering | Inlined into `client.stage.js` at build time |
+
+The performance targets and the adaptive-precision policy (give up resolution before giving up frames) are this project's own engineering rules, taken from no one; `@deepseek-ai/dsh-client-ui-sidebar` is only a host-provided injection point.
 
 ## License
 
