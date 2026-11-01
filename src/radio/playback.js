@@ -57,6 +57,67 @@ export function createPlaybackCore(options) {
   /** The station id this element's handlers were bound for. */
   let boundHandlers = false;
   let disposed = false;
+  let generation = 0;
+  let timer = null;
+  let retries = 0;
+  const schedule = opts.setTimeout || setTimeout;
+  const cancel = opts.clearTimeout || clearTimeout;
+  const startupMs = Number.isFinite(opts.startupMs) ? opts.startupMs : 15000;
+  const stallMs = Number.isFinite(opts.stallMs) ? opts.stallMs : 15000;
+  const maxRetries = Number.isFinite(opts.maxRetries) ? Math.max(0, opts.maxRetries) : 1;
+
+  function clearTimer() {
+    if (timer !== null) cancel(timer);
+    timer = null;
+  }
+
+  function fail(reason) {
+    clearTimer();
+    generation += 1;
+    status = 'error';
+    error = reason;
+    try { if (audio) audio.pause(); } catch { /* detached */ }
+    emit();
+  }
+
+  function recover(reason) {
+    if (disposed || !url || (status !== 'loading' && status !== 'playing')) return;
+    clearTimer();
+    if (retries >= maxRetries) return fail(reason);
+    retries += 1;
+    startAttempt(true);
+  }
+
+  function arm(delay, reason) {
+    clearTimer();
+    const token = generation;
+    timer = schedule(() => {
+      timer = null;
+      if (token === generation) recover(reason);
+    }, delay);
+  }
+
+  function startAttempt(reload) {
+    clearTimer();
+    const token = ++generation;
+    status = 'loading';
+    error = null;
+    startedAt = now();
+    if (reload) {
+      try { audio.pause(); audio.src = url; } catch { return fail('bad-url'); }
+    }
+    emit();
+    arm(startupMs, 'startup-timeout');
+    const reject = (reason) => {
+      if (disposed || token !== generation) return;
+      const name = (reason && reason.name) || 'unknown';
+      if (name === 'NotAllowedError') return fail('blocked-by-browser');
+      if (name === 'AbortError') return fail('load-aborted');
+      if (name === 'NotSupportedError') return fail('play-failed:NotSupportedError');
+      recover(`play-failed:${name}`);
+    };
+    try { Promise.resolve(audio.play()).catch(reject); } catch (reason) { reject(reason); }
+  }
   /**
    * 0..1. It lives here, beside the element, because it is a property of the
    * audio output and not of whichever view happens to be on screen: a volume
@@ -129,21 +190,41 @@ export function createPlaybackCore(options) {
       boundHandlers = true;
       audio.addEventListener('playing', () => {
         if (disposed) return;
-        if (status === 'loading' || status === 'paused') transition('playing', { error: null });
+        if (status === 'loading' || status === 'playing') {
+          clearTimer();
+          transition('playing', { error: null });
+        } else {
+          try { audio.pause(); } catch { /* cancelled playback */ }
+        }
       });
       audio.addEventListener('pause', () => {
         // A pause the element reports on its own (a stream that ended, the OS
         // pausing media) is a real state change, not a no-op.
         if (disposed) return;
-        if (status === 'playing') transition('paused');
+        if (status === 'playing') {
+          clearTimer();
+          generation += 1;
+          transition('paused');
+        }
       });
       audio.addEventListener('error', () => {
         if (disposed) return;
-        if (status === 'idle') return;
-        transition('error', { error: describeMediaError(audio) });
+        if (status !== 'loading' && status !== 'playing') return;
+        const reason = describeMediaError(audio);
+        if (reason === 'network' || reason === 'unknown') recover(reason);
+        else fail(reason);
       });
-      audio.addEventListener('stalled', () => {
-        /* a stalled stream is not an error yet; the slow notice covers it */
+      const stalled = () => {
+        if (!disposed && status === 'playing' && timer === null) arm(stallMs, 'stall-timeout');
+      };
+      audio.addEventListener('stalled', stalled);
+      audio.addEventListener('waiting', stalled);
+      let lastTime = null;
+      audio.addEventListener('timeupdate', () => {
+        if (status === 'playing' && audio.currentTime !== lastTime) {
+          lastTime = audio.currentTime;
+          clearTimer();
+        }
       });
     }
     return audio;
@@ -197,85 +278,37 @@ export function createPlaybackCore(options) {
         return core.resume();
       }
 
+      clearTimer();
+      generation += 1;
+      // Set loading before pausing so our own pause event is not a user action.
+      status = 'loading';
       stationId = id;
       url = resolved;
-      error = null;
-      startedAt = now();
-      status = resolved ? 'loading' : 'error';
-      if (!resolved) error = 'no-stream';
-      emit();
-      if (!resolved) return core;
-
-      try {
-        if (typeof element.pause === 'function') element.pause();
-      } catch {
-        /* pausing a fresh element can throw in odd engines; ignore */
-      }
-      try {
-        element.src = resolved;
-      } catch {
-        status = 'error';
-        error = 'bad-url';
-        emit();
+      retries = 0;
+      if (!resolved) {
+        fail('no-stream');
         return core;
       }
-      try {
-        const attempt = element.play();
-        if (attempt && typeof attempt.catch === 'function') {
-          // Autoplay policy and network failures both land here. The `error`
-          // event usually follows; recording it now makes the state honest
-          // even when the element never emits one.
-          attempt.catch((reason) => {
-            if (disposed) return;
-            if (stationId !== id) return;
-            status = 'error';
-            error = reason && reason.name === 'NotAllowedError' ? 'blocked-by-browser' : `play-failed:${(reason && reason.name) || 'unknown'}`;
-            emit();
-          });
-        }
-      } catch (reason) {
-        status = 'error';
-        error = `play-failed:${(reason && reason.name) || 'unknown'}`;
-        emit();
-      }
+      startAttempt(true);
       return core;
     },
 
     pause() {
       if (disposed || !audio) return core;
-      try {
-        audio.pause();
-      } catch {
-        /* already detached */
-      }
-      if (status === 'playing' || status === 'loading') {
-        status = 'paused';
-        emit();
-      }
+      clearTimer();
+      generation += 1;
+      const active = status === 'playing' || status === 'loading';
+      if (active) status = 'paused';
+      try { audio.pause(); } catch { /* already detached */ }
+      if (active) emit();
       return core;
     },
 
     resume() {
       if (disposed || !audio || !stationId) return core;
-      status = 'loading';
-      error = null;
-      startedAt = now();
-      emit();
-      try {
-        const attempt = audio.play();
-        if (attempt && typeof attempt.catch === 'function') {
-          attempt.catch((reason) => {
-            if (disposed) return;
-            status = 'error';
-            error = reason && reason.name === 'NotAllowedError' ? 'blocked-by-browser' : `play-failed:${(reason && reason.name) || 'unknown'}`;
-            emit();
-          });
-        }
-      } catch (reason) {
-        status = 'error';
-        error = `play-failed:${(reason && reason.name) || 'unknown'}`;
-        emit();
-      }
+      if (!url || status === 'playing' || status === 'loading') return core;
+      retries = 0;
+      startAttempt(false);
       return core;
     },
 
@@ -291,6 +324,9 @@ export function createPlaybackCore(options) {
     /** Stop and release the current source; the element itself stays alive. */
     stop() {
       if (disposed) return core;
+      clearTimer();
+      generation += 1;
+      status = 'idle';
       if (audio) {
         try {
           audio.pause();
@@ -371,6 +407,8 @@ export function createPlaybackCore(options) {
     dispose() {
       if (disposed) return;
       disposed = true;
+      generation += 1;
+      clearTimer();
       if (audio) {
         try {
           audio.pause();

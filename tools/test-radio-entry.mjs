@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+let entry;
+const context = vm.createContext({ window: { __ModuleLoader__: { load(value) { entry = value; } } }, console });
+vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), context);
+assert.equal(typeof entry.id, 'string');
+const react = { createElement() {}, createContext() { return {}; }, memo(value) { return value; }, forwardRef(value) { return value; } };
+const requireStub = (id) => id === 'react' ? react : {};
+requireStub.async = async () => ({});
+const plugin = entry.factory(requireStub);
+assert.deepEqual(Object.keys(plugin).sort(), ['apply', 'inject']);
+let chunk;
+vm.runInNewContext(readFileSync(new URL('../client.radio.js', import.meta.url), 'utf8'), { window: { __ModuleLoader__: { load(value) { chunk = value; } } }, console, setTimeout, clearTimeout, AbortController });
+const exports = chunk.factory(requireStub);
+for (const name of ['createPlaybackCore', 'createRadioStore', 'bindMediaSession', 'pollMetadata', 'createHostWatch']) assert.equal(typeof exports[name], 'function', name);
+console.log('PASS entry top-level evaluation and factory inject/apply; built radio chunk exports');

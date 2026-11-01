@@ -130,7 +130,7 @@ ${body}
 const built = [];
 let changedAny = false;
 
-for (const spec of CHUNKS) {
+for (const spec of CHUNKS.filter((spec) => !process.argv.includes('--radio-only') || spec.chunk === 'client.radio.js')) {
   const output = join(ROOT, spec.chunk);
   const { artifact, bytes } = await buildChunk(spec);
   const previous = existsSync(output) ? readFileSync(output, 'utf8') : null;

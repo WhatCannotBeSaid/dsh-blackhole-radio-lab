@@ -172,6 +172,9 @@ export function createRadioStore(options) {
   /** station.id → key, so callers can address a station the way the UI does */
   let keyById = new Map();
   let selectedKey = null;
+  let playbackMemory = { volume: 1, lastPlayedKey: null };
+  let volumeTouched = false;
+  let playedTouched = false;
   let favorite = new Set();
   /** song key → song record, insertion-ordered so "newest last" is cheap */
   let songs = new Map();
@@ -214,6 +217,23 @@ export function createRadioStore(options) {
   }
 
   const store = {
+    playbackMemory() { return { ...playbackMemory }; },
+    rememberVolume(value) {
+      if (!Number.isFinite(value)) return;
+      volumeTouched = true;
+      const volume = Math.min(1, Math.max(0, value));
+      if (playbackMemory.volume === volume) return;
+      playbackMemory.volume = volume;
+      emit();
+    },
+    rememberPlayed(target) {
+      const key = resolve(target);
+      if (!key) return;
+      playedTouched = true;
+      if (playbackMemory.lastPlayedKey === key) return;
+      playbackMemory.lastPlayedKey = key;
+      emit();
+    },
     /**
      * Merge a station list into the index.
      *
@@ -413,6 +433,7 @@ export function createRadioStore(options) {
         selectedKey,
         favorite: Array.from(favorite),
         songs: Array.from(songs.values()),
+        playback: { ...playbackMemory },
       };
     },
 
@@ -431,6 +452,13 @@ export function createRadioStore(options) {
      */
     load(record) {
       if (!record || typeof record !== 'object') return store;
+      const memory = record.playback;
+      if (memory && typeof memory === 'object') {
+        if (!volumeTouched && Number.isFinite(memory.volume)) playbackMemory.volume = Math.min(1, Math.max(0, memory.volume));
+        if (!playedTouched && typeof memory.lastPlayedKey === 'string' && memory.lastPlayedKey.length <= 512) {
+          playbackMemory.lastPlayedKey = memory.lastPlayedKey || null;
+        }
+      }
       const keys = (values) =>
         (Array.isArray(values) ? values : []).map((value) => String(value)).filter(Boolean);
       for (const key of keys(record.favorite)) favorite.add(key);
@@ -447,8 +475,9 @@ export function createRadioStore(options) {
       // A selection already made in this session wins over the one on disk. The
       // stored key is kept even when this catalogue cannot resolve it, for the
       // same reason a favourite is: the station may come back with the next one.
-      if (!selectedKey && typeof record.selectedKey === 'string' && record.selectedKey) {
-        selectedKey = record.selectedKey;
+      if (!selectedKey) {
+        const restored = playbackMemory.lastPlayedKey || record.selectedKey;
+        if (typeof restored === 'string' && restored) selectedKey = restored;
       }
       emit();
       return store;

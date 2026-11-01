@@ -159,9 +159,13 @@ function writeKey(db, key, value) {
   });
 }
 
-function toIdSet(record) {
-  const ids = record && Array.isArray(record.ids) ? record.ids : [];
-  return new Set(ids.map((id) => String(id)).filter(Boolean));
+/** Failed sources are quarantined, never permanently removed. Legacy IDs expire. */
+export const FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+export function activeFailures(record, now = Date.now()) {
+  const entries = record && Array.isArray(record.failures) ? record.failures : [];
+  return entries.filter((entry) => entry && typeof entry.id === 'string' && entry.id &&
+    Number.isFinite(entry.at) && entry.at <= now && now - entry.at < FAILURE_COOLDOWN_MS);
 }
 
 /**
@@ -204,7 +208,14 @@ export async function openRadioCache() {
 
     /** Station ids that must not be offered again. */
     async readBlacklist() {
-      return toIdSet(await readKey(db, BLACKLIST_KEY));
+      return new Set(activeFailures(await readKey(db, BLACKLIST_KEY)).map((entry) => entry.id));
+    },
+
+    async clearBlacklisted(id) {
+      return enqueueWrite(async () => {
+        const failures = activeFailures(await readKey(db, BLACKLIST_KEY)).filter((entry) => entry.id !== String(id));
+        return writeKey(db, BLACKLIST_KEY, { failures });
+      });
     },
 
     /**
@@ -220,11 +231,9 @@ export async function openRadioCache() {
       const key = String(id || '').trim();
       if (!key) return false;
       return enqueueWrite(async () => {
-        const ids = toIdSet(await readKey(db, BLACKLIST_KEY));
-        if (ids.has(key)) return true;
-        ids.add(key);
-        const trimmed = Array.from(ids).slice(-BLACKLIST_LIMIT);
-        return writeKey(db, BLACKLIST_KEY, { ids: trimmed, updatedAt: Date.now() });
+        const failures = activeFailures(await readKey(db, BLACKLIST_KEY)).filter((entry) => entry.id !== key);
+        failures.push({ id: key, at: Date.now() });
+        return writeKey(db, BLACKLIST_KEY, { failures: failures.slice(-BLACKLIST_LIMIT) });
       });
     },
   };

@@ -34,6 +34,7 @@ window.__ModuleLoader__.load({
       createElement: h,
       useCallback,
       useEffect,
+      useLayoutEffect,
       useMemo,
       useRef,
       useState,
@@ -464,6 +465,18 @@ window.__ModuleLoader__.load({
         blacklist: null,
         /** Failures recorded before the cache finished opening. */
         pendingBlacklist: null,
+        /** The radio chunk, once loaded: it owns the host-liveness logic. */
+        radioChunk: null,
+        /** "Is the host still there?" watch, or null until the chunk arrives. */
+        hostWatch: null,
+        /** 'on' while a hidden, audible page should probe, 'off' when it should not. */
+        hostWatchSync: 'off',
+        /** Subscription to the playback core that re-evaluates the watch. */
+        offPlayback: null,
+        /** visibilitychange handler; kept so dispose can remove it. */
+        onVisibility: null,
+        /** pagehide handler; kept so dispose can remove it. */
+        onPageHide: null,
         /**
          * The one catalogue promise for the whole plugin.
          *
@@ -481,9 +494,11 @@ window.__ModuleLoader__.load({
           // Host config wins where it speaks, defaults fill the rest: a config
           // file written before a knob existed must not silently turn it off.
           const conf = Object.assign({}, DEFAULT_CFG, cfg || {});
+          const token = shared.lifecycle;
           shared.data = Promise.resolve()
             .then(() => requireAsync(RADIO_CHUNK))
             .then(async (radio) => {
+              if (token !== shared.lifecycle) return null;
               const store = shared.ensureStore(radio.createRadioStore);
               let repository = null;
               let fallback = null;
@@ -495,9 +510,12 @@ window.__ModuleLoader__.load({
               // window, a quota error or a blocked upgrade resolves to null and
               // the network path below runs exactly as it did before.
               const cache = typeof radio.openRadioCache === 'function' ? await radio.openRadioCache() : null;
+              if (token !== shared.lifecycle) return null;
               shared.cache = cache;
               if (cache) {
-                shared.blacklist = await cache.readBlacklist();
+                const failures = await cache.readBlacklist();
+                if (token !== shared.lifecycle) return null;
+                shared.blacklist = failures;
                 // Failures recorded before the cache finished opening are
                 // flushed here, so a fast click on a broken stream is not lost.
                 // They also join the live set: the first catalogue of this
@@ -505,6 +523,7 @@ window.__ModuleLoader__.load({
                 if (shared.pendingBlacklist && shared.pendingBlacklist.size > 0) {
                   for (const id of shared.pendingBlacklist) {
                     await cache.addBlacklisted(id);
+                    if (token !== shared.lifecycle) return null;
                     shared.blacklist.add(id);
                   }
                   shared.pendingBlacklist = null;
@@ -609,12 +628,14 @@ window.__ModuleLoader__.load({
                 }
               }
 
+              if (token !== shared.lifecycle) return null;
               if (store && repository) store.index(repository.list());
               // After the index, never before: the store restores only the marks
               // whose station it can already resolve, so the catalogue has to be
               // in the store first — otherwise every favourite would be dropped
               // for having no record to point at.
               if (store) await shared.hydrateLibrary(store);
+              if (token !== shared.lifecycle) return null;
               if (!shared.env) shared.bindEnv(radio);
               if (fallback) {
                 // Say it out loud: the rail must not present mock stations as live.
@@ -642,11 +663,15 @@ window.__ModuleLoader__.load({
          * is created. A Host that does not answer the route leaves the library
          * in memory, exactly as it behaved before the route existed.
          */
+        lifecycle: 0,
         libraryLoaded: false,
+        libraryHydrated: false,
         libraryTimer: 0,
         async hydrateLibrary(store) {
           if (!store || shared.libraryLoaded || typeof store.load !== 'function') return;
           shared.libraryLoaded = true;
+          const token = shared.lifecycle;
+          const current = () => token === shared.lifecycle && shared.radio === store;
           // Read what the previous store wrote, not what was there before it: the
           // write `dispose` started is not awaited there, so it is awaited here.
           if (libraryWriteInFlight) {
@@ -656,6 +681,7 @@ window.__ModuleLoader__.load({
               /* a write that failed left the file as it was; the read still runs */
             }
           }
+          if (!current()) return;
           try {
             const signal =
               typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
@@ -664,12 +690,22 @@ window.__ModuleLoader__.load({
             const res = await fetch(LIBRARY_URL, { cache: 'no-store', signal });
             if (res.ok) {
               const record = await res.json();
+              if (!current()) return;
               // Merge, not replace: a mark made while this read was in flight is
               // newer than the file and must survive it.
-              if (record && typeof record === 'object') store.load(record);
+              if (record && typeof record === 'object') {
+                store.load(record);
+              }
             }
           } catch {
             /* no route, no server, or a network hiccup: memory-only is correct */
+          }
+          if (!current()) return;
+          shared.libraryHydrated = true;
+          if (shared.playback) {
+            const state = shared.playback.getState();
+            shared.playback.setVolume(store.playbackMemory().volume);
+            if (state.status === 'playing') store.rememberPlayed(state.stationId);
           }
           // Subscribed once, after the restore: a listener attached earlier would
           // answer the restore itself with a write of the record just read.
@@ -742,13 +778,23 @@ window.__ModuleLoader__.load({
         ensurePlayback(createPlayback) {
           if (!shared.playback && typeof createPlayback === 'function') {
             shared.playback = createPlayback();
+            if (shared.radio && shared.libraryHydrated) shared.playback.setVolume(shared.radio.playbackMemory().volume);
             // A stream that failed is remembered, not retried forever: the next
             // catalogue load filters the station out. A browser autoplay block
             // and a station without a stream are policy/answer, not a broken
             // station, so neither is blacklisted.
             if (shared.playback && typeof shared.playback.subscribe === 'function') {
               shared.playback.subscribe((state) => {
-                if (!state || state.status !== 'error' || !state.stationId) return;
+                if (!state) return;
+                if (shared.radio) {
+                  if (shared.libraryHydrated) shared.radio.rememberVolume(state.volume);
+                  if (state.status === 'playing') shared.radio.rememberPlayed(state.stationId);
+                }
+                if (state.status === 'playing' && state.stationId) {
+                  if (shared.blacklist) shared.blacklist.delete(String(state.stationId));
+                  if (shared.cache) shared.cache.clearBlacklisted(state.stationId).catch(() => {});
+                }
+                if (state.status !== 'error' || !state.stationId) return;
                 const reason = String(state.error || '');
                 if (!isBrokenStream(reason)) return;
                 const id = String(state.stationId);
@@ -762,6 +808,10 @@ window.__ModuleLoader__.load({
               });
             }
           }
+          if (shared.bindMedia) shared.bindMedia();
+          // The watch needs a playback core; if the chunk was already loaded
+          // when this core appeared, this is where the two halves meet.
+          shared.armHostWatch();
           return shared.playback;
         },
         /**
@@ -773,7 +823,17 @@ window.__ModuleLoader__.load({
         env: null,
         bindEnv(chunk) {
           if (shared.env || !chunk) return shared.env;
+          // The chunk owns the host-liveness logic; the shared state owns the
+          // page and the audio. Hand it over as soon as it exists.
+          shared.armHostWatch(chunk);
+          shared.bindMedia = () => {
+            if (!shared.mediaDispose && shared.playback && typeof chunk.bindMediaSession === 'function') {
+              shared.mediaDispose = chunk.bindMediaSession(shared.playback, (id) => shared.radio && shared.radio.getStation(id));
+            }
+          };
+          shared.bindMedia();
           shared.env = {
+            pollMetadata: chunk.pollMetadata,
             genreLabel: typeof chunk.genreLabel === 'function' ? chunk.genreLabel : (id) => String(id),
             genreCss: typeof chunk.genreCss === 'function' ? chunk.genreCss : () => '#9a9a9a',
             stationKey: typeof chunk.stationKey === 'function' ? chunk.stationKey : null,
@@ -781,7 +841,98 @@ window.__ModuleLoader__.load({
           };
           return shared.env;
         },
+        /**
+         * The first unload signal a page gets: stop before the renderer goes.
+         *
+         * A `pagehide` with `persisted` is the back/forward cache — the page is
+         * coming back, so nothing may be disposed there.
+         */
+        watchUnload() {
+          if (shared.onPageHide) return;
+          if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+          shared.onPageHide = (event) => {
+            if (event && event.persisted) return;
+            shared.dispose();
+          };
+          window.addEventListener('pagehide', shared.onPageHide);
+        },
+        /**
+         * Bind the "host is still there" watch.
+         *
+         * It needs two things that arrive in either order: the radio chunk
+         * (which owns the logic) and a playback core (whose state says whether
+         * anything is audible). Idempotent, and called again when the missing
+         * half shows up.
+         */
+        armHostWatch(chunk) {
+          if (chunk) shared.radioChunk = chunk;
+          const api = shared.radioChunk;
+          if (!api || typeof api.createHostWatch !== 'function') return;
+          if (!shared.hostWatch) {
+            shared.hostWatch = api.createHostWatch({
+              probe: async () => {
+                try {
+                  const signal =
+                    typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+                      ? AbortSignal.timeout(HOST_PROBE_TIMEOUT_MS)
+                      : undefined;
+                  // Any answer means the server process is still listening. A
+                  // 404 or 500 says the host is up but unhappy; only a refused
+                  // or timed-out connection says the app is on its way out.
+                  await fetch('/blackhole-radio-lab/config', {
+                    headers: { accept: 'application/json' },
+                    cache: 'no-store',
+                    signal,
+                  });
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+              active: () => shared.hostWatchSync === 'on',
+              onDead: () => {
+                // The host is gone, the page is not: silence the radio now
+                // rather than keeping it audible until the window is killed.
+                if (shared.playback && typeof shared.playback.stop === 'function') shared.playback.stop();
+              },
+            });
+            shared.hostWatchSync = 'off';
+            if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+              shared.onVisibility = () => syncHostWatch();
+              document.addEventListener('visibilitychange', shared.onVisibility);
+            }
+          }
+          if (!shared.offPlayback && shared.playback && typeof shared.playback.subscribe === 'function') {
+            shared.offPlayback = shared.playback.subscribe(() => syncHostWatch());
+          }
+          syncHostWatch();
+        },
         dispose() {
+          shared.lifecycle += 1;
+          // Page-level listeners belong to this session's page, not to the
+          // module: a dispose that left them behind would probe for a host the
+          // next session does not own.
+          if (shared.offPlayback) {
+            shared.offPlayback();
+            shared.offPlayback = null;
+          }
+          if (shared.onVisibility && typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', shared.onVisibility);
+            shared.onVisibility = null;
+          }
+          if (shared.hostWatch) {
+            shared.hostWatch.stop();
+            shared.hostWatch = null;
+          }
+          if (shared.onPageHide && typeof window !== 'undefined') {
+            window.removeEventListener('pagehide', shared.onPageHide);
+            shared.onPageHide = null;
+          }
+          shared.radioChunk = null;
+          shared.hostWatchSync = 'off';
+          if (shared.mediaDispose) shared.mediaDispose();
+          shared.mediaDispose = null;
+          shared.bindMedia = null;
           if (shared.playback && typeof shared.playback.dispose === 'function') {
             try {
               shared.playback.dispose();
@@ -802,6 +953,7 @@ window.__ModuleLoader__.load({
           // The restored flag belongs to the store as well; a new store reads the
           // library again instead of inheriting "already restored".
           shared.libraryLoaded = false;
+          shared.libraryHydrated = false;
           shared.radio = null;
           shared.data = null;
           shared.env = null;
@@ -812,6 +964,41 @@ window.__ModuleLoader__.load({
           shared.pendingBlacklist = null;
         },
       };
+
+      /**
+       * A local host either answers at once or is not there. Kept below the
+       * watch interval: a probe that outlived its interval would count twice
+       * for one slow answer, and two slow answers would look like a dead app.
+       */
+      const HOST_PROBE_TIMEOUT_MS = 2500;
+
+      /**
+       * Decide whether the host watch should run.
+       *
+       * Only a hidden page with audible output has a reason to ask whether the
+       * app is still up: a visible page can see the window, a silent one has
+       * nothing to silence.
+       */
+      const syncHostWatch = () => {
+        const watch = shared.hostWatch;
+        if (!watch) return;
+        const state =
+          shared.playback && typeof shared.playback.getState === 'function'
+            ? shared.playback.getState()
+            : null;
+        const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+        if (hidden && state && state.status === 'playing') {
+          // Playing again is a new audible attempt: the previous verdict was
+          // about an older attempt and must not silence this one unprobed.
+          if (watch.isDead()) watch.rearm();
+          shared.hostWatchSync = 'on';
+          watch.start();
+        } else {
+          shared.hostWatchSync = 'off';
+          watch.stop();
+        }
+      };
+
       return shared;
     }
 
@@ -1623,37 +1810,17 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!hasStation || !stream || !isMine || status !== 'playing' || !isMusic) return undefined;
         const id = String(station.id);
-        let alive = true;
-        let timer = 0;
-        const ask = () => {
-          let pending;
-          try {
-            pending = fetch(`${NOW_PLAYING_URL}?url=${encodeURIComponent(stream)}`, { cache: 'no-store' });
-          } catch {
-            return;
-          }
-          Promise.resolve(pending)
-            .then((response) => (response && response.ok ? response.json() : null))
-            .then((body) => {
-              if (!alive) return;
-              const title = body && typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
-              setNowPlaying((previous) =>
-                previous.stationId === id && previous.title === title ? previous : { stationId: id, title },
-              );
-            })
-            .catch(() => {
-              if (!alive) return;
-              setNowPlaying((previous) => (previous.stationId === id ? previous : { stationId: id, title: '' }));
-            })
-            .then(() => {
-              if (alive) timer = setTimeout(ask, NOW_PLAYING_POLL_MS);
-            });
-        };
-        ask();
-        return () => {
-          alive = false;
-          if (timer) clearTimeout(timer);
-        };
+        if (!shared.env || typeof shared.env.pollMetadata !== 'function') return undefined;
+        return shared.env.pollMetadata({
+          url: `${NOW_PLAYING_URL}?url=${encodeURIComponent(stream)}`,
+          intervalMs: NOW_PLAYING_POLL_MS,
+          onResult(body) {
+            const title = body && typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
+            setNowPlaying((previous) =>
+              previous.stationId === id && previous.title === title ? previous : { stationId: id, title },
+            );
+          },
+        });
       }, [hasStation, stream, isMine, status, isMusic, station && station.id]);
 
       // The song on the card: the station's own title, and only while that
@@ -1756,6 +1923,7 @@ window.__ModuleLoader__.load({
       const changeVolume = (event) => {
         const value = Number(event.target.value);
         if (!playback || !Number.isFinite(value)) return;
+        if (store) store.rememberVolume(value / 100);
         playback.setVolume(value / 100);
       };
 
@@ -1960,11 +2128,40 @@ window.__ModuleLoader__.load({
           ),
         );
       };
+      // Right-clicking a row is the way out of the list: it takes the station
+      // or the song out of the library without closing the panel, so a run of
+      // removals stays one gesture. A left click keeps its own meaning (play
+      // the station, open the platform search).
+      const dropListed = (entry) => {
+        if (!store) return;
+        if (reveal.kind === 'stations') store.setFavorite(entry, false);
+        else store.setSongLiked(entry, false);
+        setTimeout(() => {
+          const panel = popupRef.current;
+          if (!panel) return;
+          const next = panel.querySelector('.bhrl-favpop__item');
+          if (next && typeof next.focus === 'function') next.focus();
+          else if (typeof panel.focus === 'function') panel.focus();
+        }, 0);
+      };
+      const rowMenu = (entry) => ({
+        onContextMenu: (event) => {
+          event.preventDefault();
+          dropListed(entry);
+        },
+        onKeyDown: (event) => {
+          if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'Enter')) {
+            event.preventDefault();
+            dropListed(entry);
+          }
+        },
+      });
       const popover = reveal
         ? h(
             'div',
             {
               ref: popupRef,
+              tabIndex: -1,
               className: 'bhrl-favpop',
               style: {
                 bottom: `${reveal.bottom}px`,
@@ -2028,6 +2225,7 @@ window.__ModuleLoader__.load({
                                 setReveal(null);
                                 if (favRef.current) favRef.current.focus();
                               },
+                              ...rowMenu(entry),
                             },
                             rowBody,
                           ),
@@ -2048,6 +2246,7 @@ window.__ModuleLoader__.load({
                             target: '_blank',
                             rel: 'noopener noreferrer',
                             onClick: () => setReveal(null),
+                            ...rowMenu(entry),
                           },
                           rowBody,
                         ),
@@ -2608,11 +2807,12 @@ window.__ModuleLoader__.load({
       // ---- the library on the scene -----------------------------------------
       //
       // A short right press anywhere in the scene opens the favourites where the
-      // press happened. It is the same list the card's corner post unfolds, with
-      // the star on the row itself: this one is reached from the sky, not from a
-      // mark that already means "favourites", so the row has to carry the mark.
+      // press happened. It is the same list the card's corner post unfolds;
+      // there the mark on the row stood for "take it out", here the press on the
+      // row itself does, so the list reads the same in both places.
       const [favMenu, setFavMenu] = useState(null);
       const favMenuRef = useRef(null);
+      const favMenuPanelRef = useRef(null);
       favMenuRef.current = favMenu;
 
       const favouriteList = useShared(
@@ -2640,6 +2840,16 @@ window.__ModuleLoader__.load({
         (station) => {
           if (!store || !station) return;
           store.toggleFavorite(station);
+          // The press takes the row out and leaves the list up, so a run of
+          // removals stays one gesture. Keyboard focus follows the list: the
+          // next row, or the empty panel when the last one just went.
+          setTimeout(() => {
+            const panel = favMenuPanelRef.current;
+            if (!panel) return;
+            const next = panel.querySelector('.bhrl-favpop__item');
+            if (next && typeof next.focus === 'function') next.focus();
+            else if (typeof panel.focus === 'function') panel.focus();
+          }, 0);
         },
         [store],
       );
@@ -2691,6 +2901,51 @@ window.__ModuleLoader__.load({
         };
         window.addEventListener('pointerdown', onPointerDown, true);
         return () => window.removeEventListener('pointerdown', onPointerDown, true);
+      }, [favMenu]);
+
+      /**
+       * Keep the list next to the press, whatever the host's layout did.
+       *
+       * The point is in client pixels and the box asks to be painted fixed, but
+       * a fixed box only measures from the viewport while nothing above it
+       * makes a containing block — a filter, a transform, a `contain`, all of
+       * which glass surfaces carry. Under one of those the same numbers name a
+       * spot in that surface's own box, and the list opens somewhere else.
+       *
+       * Guessing that surface's scale is what failed before: a plain offset and
+       * a zoomed one look the same to a single measurement, and a wrong guess
+       * is exact near the surface's origin and further off the further the
+       * press lands. So nothing is assumed. The box is moved, the move is
+       * measured, and the next move is divided by what the last one actually
+       * bought — a ratio that is 1 for a plain viewport, the surface's zoom for
+       * a zoomed one, and whatever the host does for anything stranger. Three
+       * passes settle every affine case; the loop stops early once the box is
+       * on the point.
+       */
+      useLayoutEffect(() => {
+        const panel = favMenuPanelRef.current;
+        if (!panel || !favMenu) return;
+        let worthX = 1;
+        let worthY = 1;
+        for (let pass = 0; pass < 3; pass += 1) {
+          const rect = panel.getBoundingClientRect();
+          const dx = favMenu.x - rect.left;
+          const dy = favMenu.y - rect.top;
+          if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) return;
+          const stepX = dx / worthX;
+          const stepY = dy / worthY;
+          const atX = Number.parseFloat(panel.style.left) || 0;
+          const atY = Number.parseFloat(panel.style.top) || 0;
+          panel.style.left = `${atX + stepX}px`;
+          panel.style.top = `${atY + stepY}px`;
+          const after = panel.getBoundingClientRect();
+          const movedX = after.left - rect.left;
+          const movedY = after.top - rect.top;
+          // What one local pixel is worth out there. Only learned from a move
+          // big enough to read, and only when the box actually obeyed.
+          if (Math.abs(stepX) > 2 && movedX !== 0) worthX = movedX / stepX;
+          if (Math.abs(stepY) > 2 && movedY !== 0) worthY = movedY / stepY;
+        }
       }, [favMenu]);
 
       // The disk's ring belongs to playback, so the panel must say when the
@@ -3101,13 +3356,15 @@ window.__ModuleLoader__.load({
       /**
        * The favourites, opened where the right press landed.
        *
-       * A row starts what it names and the list stays open; the star on the row
-       * is the only thing that changes the library.
+       * A row starts what it names and the list stays open; a right press on the
+       * row takes it out of the library, the way the card's own list does.
        */
       const favMenuNode = favMenu
         ? h(
             'div',
             {
+              ref: favMenuPanelRef,
+              tabIndex: -1,
               className: 'bhrl-favpop',
               style: { left: `${favMenu.x}px`, top: `${favMenu.y}px` },
               role: 'dialog',
@@ -3138,31 +3395,27 @@ window.__ModuleLoader__.load({
                       'li',
                       { className: 'bhrl-favpop__row', key: String(entry.id) },
                       h(
-                        'div',
-                        { className: 'bhrl-favpop__line' },
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'bhrl-favpop__item',
-                            onClick: () => playFavourite(entry),
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'bhrl-favpop__item',
+                          onClick: () => playFavourite(entry),
+                          onContextMenu: (event) => {
+                            event.preventDefault();
+                            dropFavourite(entry);
                           },
-                          h('span', { className: 'bhrl-favpop__name' }, entry.name),
-                          meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
-                        ),
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'bhrl-favpop__star',
-                            'data-on': 'true',
-                            'aria-pressed': 'true',
-                            'aria-label': t('unfavouriteAction'),
-                            title: t('unfavouriteAction'),
-                            onClick: () => dropFavourite(entry),
+                          onKeyDown: (event) => {
+                            if (
+                              event.key === 'ContextMenu' ||
+                              (event.shiftKey && event.key === 'Enter')
+                            ) {
+                              event.preventDefault();
+                              dropFavourite(entry);
+                            }
                           },
-                          h(StarGlyph, { size: 11, filled: true }),
-                        ),
+                        },
+                        h('span', { className: 'bhrl-favpop__name' }, entry.name),
+                        meta ? h('span', { className: 'bhrl-favpop__meta' }, meta) : null,
                       ),
                     );
                   }),
@@ -3864,24 +4117,6 @@ window.__ModuleLoader__.load({
   font-size: 10px; line-height: 1.25; color: var(--bhrl-ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* A row of the scene's list: the station and the mark that removes it, side by
-   side. The mark keeps its own hit area instead of living inside the row's
-   button, because a row starts playback and must never change the library. */
-.bhrl-favpop__line { display: flex; align-items: stretch; gap: 2px; }
-.bhrl-favpop__line .bhrl-favpop__item { flex: 1 1 auto; min-width: 0; }
-.bhrl-favpop__star {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; padding: 0; border: 0; border-radius: 6px;
-  background: none; color: #ffc08a; cursor: pointer; flex: none;
-}
-.bhrl-favpop__star:hover,
-.bhrl-favpop__star:focus-visible {
-  background: color-mix(in oklab, var(--bhrl-ink) 8%, transparent);
-}
-.bhrl-favpop__star:focus-visible {
-  outline: 1px solid color-mix(in srgb, var(--bhrl-ink) 40%, transparent);
-  outline-offset: 1px;
-}
 /* The platform picker: one row per platform, the current one marked on the
  * right rather than by a tick, so the row never changes height. */
 .bhrl-favpop__body { display: flex; flex-direction: column; gap: 6px; }
@@ -3980,6 +4215,10 @@ window.__ModuleLoader__.load({
         // unmounting: closing the black hole or dropping a WebGL context must
         // not silence the radio.
         const shared = createSharedState();
+        // Closing DSH hides the window before the renderer goes; stop at the
+        // first unload signal instead of waiting to be killed. `pagehide` is
+        // that signal — a media element does not stop itself.
+        shared.watchUnload();
         // Optional access, never an inject: a host without a theme service must
         // still load the plugin, it only loses the light/dark answer.
         shared.theme = createThemeSource(ctx);

@@ -100,6 +100,12 @@ export function sanitizeLibrary(input) {
     version: 2,
     savedAt: Number.isFinite(input.savedAt) ? Math.max(0, Math.round(input.savedAt)) : Date.now(),
     selectedKey: key(input.selectedKey) || null,
+    ...(input.playback && typeof input.playback === 'object' ? {
+      playback: {
+        volume: Number.isFinite(input.playback.volume) ? Math.min(1, Math.max(0, input.playback.volume)) : 1,
+        lastPlayedKey: key(input.playback.lastPlayedKey) || null,
+      },
+    } : {}),
     favorite,
     songs,
   };
