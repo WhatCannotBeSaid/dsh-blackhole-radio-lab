@@ -40,7 +40,7 @@ There is no permanent search bar, category sidebar or readout panel. Search and 
 - Play/pause, previous, random next, volume; a stream that never starts or stalls for 15 seconds is retried once on the same station, never swapped silently.
 - Volume and the last successfully played station are remembered; playback restores paused, and system play/pause/stop controls work. Track metadata polling stops while the page is hidden and refreshes on return.
 - Hover card: click to play, right-click or the star to favourite, with the genre and a `LIVE` badge.
-- Transitions pay for themselves out of frame time: if slow frames pile up during a transition, the render is first capped at 700k pixels for the viewport area and then stepped down by 0.8 per round, never below 0.5, climbing back once idle. Sprite size follows the pixel ratio, so a lower resolution never draws bigger stars.
+- Transitions pay for themselves out of frame time: if slow frames pile up during a transition, the render is first capped at 700k pixels for the viewport area and then stepped down by 0.8 per round, never below 0.5, climbing back once idle. The cluster sprites size themselves against the real pixel ratio, so a lower resolution never draws them as blocks; the star shells are drawn on the reduced canvas and thin out with it, which is proportional downsampling rather than oversized stars.
 - Now-playing comes from the stream's `icy-metaint` metadata block; clicking the title searches that song on Spotify, NetEase Cloud Music, QQ Music, Apple Music or YouTube (the platform is switchable with a right-click).
 - Favourite stations and liked songs persist locally, never synced.
 - Chinese / English follow the app language.
