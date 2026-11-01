@@ -60,6 +60,7 @@ import { createStarfield } from './scene/starfield.js';
 import {
   HORIZON_RADIUS,
   CRITICAL_IMPACT_PARAMETER,
+  DISK_INNER,
   DISK_OUTER,
   maxOrbitRadiusForShadow,
   shadowAngularRadius,
@@ -91,6 +92,15 @@ const TOUCH_CARD_MS = 480;
 const TOUCH_BACK_MS = 600;
 /** A press held longer than this is not a click, whatever else it did. */
 const PRESS_CLICK_MS = 800;
+/**
+ * How long the right button waits before it becomes an exit hold.
+ *
+ * Starting the hold is not free: it runs `exitCluster` at once, so a hold that
+ * began on the press would already have sent the field home before a tap could
+ * be recognised. Waiting this long keeps every tap on the favourites list, and
+ * a real hold only pays the delay once, before its ring starts.
+ */
+const MENU_HOLD_MS = 320;
 /** Progress units per second; the full transition takes ~1.05 s. */
 const TRANSITION_RATE = 0.95;
 
@@ -119,7 +129,7 @@ const WORM_OUT_RING_S = 0.55;
 /** The frame is opaque again, the hole is about to be uncovered. */
 const WORM_OUT_VEIL_S = 1.15;
 /** The hole is back. */
-const WORM_OUT_END_S = 1.75;
+const WORM_OUT_END_S = 3.05; // 2.5 s of motion after WORM_OUT_RING_S.
 /** Movement beyond this many CSS px turns a hold into a camera drag. */
 const WORM_DEADZONE_PX = 8;
 /** How long an abandoned hold takes to retreat to where the frame was (ms/s). */
@@ -348,6 +358,7 @@ export function mountStage(container, options) {
     let selectedId = null;
     const idToIndex = new Map(stations.map((station, index) => [station.id, index]));
     const projected = new Vector3();
+    const pointerRay = new Vector3();
     const focusTarget = new Vector3();
     const selectedStation = () => (selectedIndex >= 0 ? stations[selectedIndex] : null);
 
@@ -418,11 +429,11 @@ export function mountStage(container, options) {
       };
     };
 
-    const applySize = () => {
+    const applySize = (force = false) => {
       const rect = container.getBoundingClientRect();
       const w = Math.max(1, Math.round(rect.width));
       const h = Math.max(1, Math.round(rect.height));
-      if (w === viewport.w && h === viewport.h) return false;
+      if (!force && w === viewport.w && h === viewport.h) return false;
       viewport.w = w;
       viewport.h = h;
       camera.aspect = w / h;
@@ -434,7 +445,7 @@ export function mountStage(container, options) {
       drawingBuffer.x = buffer.x;
       drawingBuffer.y = buffer.y;
       disk.setViewport(buffer.x, buffer.y);
-      starfield.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioCap));
+      starfield.setPixelRatio(renderer.getPixelRatio());
       if (layer) {
         layer.setPixelRatio(renderer.getPixelRatio());
         layer.setViewport(w, h, camera.fov);
@@ -551,11 +562,13 @@ export function mountStage(container, options) {
       // A captured source cell and the imaged disc are NEVER drawn together.
       // During the passage this pass supplies only the sky/shadow; all visible
       // disc material lives in discTransfer, including the gas between stations.
+      const returning = machine.returning === true;
+      const returnDisc = smoothstep01(clamp01((1 - machine.progress - 0.35) / 0.65));
       const transferred = discTransfer.active;
       const handoff = transferred ? discTransferHandoff(machine.progress) : 1;
       discTransfer.setProgress(machine.progress);
       disk.setDiscTransfer(transferred ? Math.min(1, machine.progress / DISC_TRANSFER_LANDING) : -1);
-      disk.setOpacity(transferred ? 1 - handoff : 1 - holeFade);
+      disk.setOpacity(returning ? returnDisc : transferred ? 1 - handoff : 1 - holeFade);
       disk.setStationEmission(0.30);
       disk.setStationGain(5);
 
@@ -587,15 +600,16 @@ export function mountStage(container, options) {
         // The cluster is the same station cloud rearranged, so the cluster
         // amount is what fades the stations that are not part of what is on
         // screen.
-        layer.setClusterAmount(rise);
+        layer.setReturning(returning);
+        layer.setClusterAmount(returning ? 1 : rise);
         // The normal particle population is a resting-state representation,
         // not an in-flight substitute. It returns only after the source cells
         // have reached their station destinations.
         layer.object.visible = !transferred || handoff > 0;
-        layer.setHoleOnly(clamp01(1 - clamp01(rise * 1.6)));
+        layer.setHoleOnly(returning ? 0 : clamp01(1 - clamp01(rise * 1.6)));
 
-        layer.setDiskMatter(clamp01(1 - rise));
-        layer.setDim((HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
+        layer.setDiskMatter(returning ? 0 : clamp01(1 - rise));
+        layer.setDim(returning ? 1 - returnDisc : (HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
       }
       if (rise > 0.001 || cover > 0.001) dirty = true;
     };
@@ -603,6 +617,27 @@ export function mountStage(container, options) {
     const frameTimes = [];
     const frameDeltas = [];
     let pauseCount = 0;
+    let qualityAt = 0;
+    let qualitySlow = 0;
+    const updateTransitionQuality = (now, rawMs) => {
+      const active = Boolean(worm.kind);
+      const current = renderer.getPixelRatio();
+      // A bounded raster budget on entry; lower again only after consecutive
+      // slow frames. Do not change the particle path, clock or brightness.
+      const budget = Math.min(ratio, Math.max(0.5, Math.sqrt(700000 / Math.max(1, viewport.w * viewport.h))));
+      qualitySlow = active && rawMs > 21 && rawMs <= 200 ? qualitySlow + 1 : 0;
+      if (now - qualityAt < 300) return;
+      let next = current;
+      if (active && current > budget + 0.01) next = budget;
+      else if (active && qualitySlow >= 3) next = Math.max(Math.min(0.5, ratio), current * 0.8);
+      else if (!active && current < ratio) next = Math.min(ratio, current + 0.1);
+      if (Math.abs(next - current) < 0.01) return;
+      qualityAt = now;
+      qualitySlow = 0;
+      renderer.setPixelRatio(next);
+      applySize(true);
+      dirty = true;
+    };
 
     // GPU timing, when the driver exposes it. renderer.render() returns when the
     // CPU has finished submitting commands, not when the GPU has finished
@@ -681,6 +716,7 @@ export function mountStage(container, options) {
         if (frameDeltas.length > 240) frameDeltas.shift();
       }
       const dt = Math.min(0.05, Math.max(0.001, rawMs / 1000));
+      updateTransitionQuality(now, rawMs);
 
       const moved = rig.update(dt);
       if (moved) dirty = true;
@@ -757,7 +793,8 @@ export function mountStage(container, options) {
         moved ||
         morphing ||
         transitioning ||
-        worm.kind
+        worm.kind ||
+        renderer.getPixelRatio() < ratio - 0.01
       ) {
         // Scheduling goes through the same guard requestFrame uses: the hold can
         // have asked for the next frame from inside this one already.
@@ -987,33 +1024,53 @@ export function mountStage(container, options) {
     let hoverIndex = -1;
 
     /**
-     * The disc's own footprint on screen, as one circle.
+     * Is the pointer over the disc's band?
      *
-     * The pointer freezes the record while it is anywhere in here, not only
+     * The pointer freezes the record while it is over the disc's band, not only
      * while a station is directly under it: the stations are laid over the whole
      * disc, so pinning on a hit alone made the band stop and start at every seam
-     * between two stations. The centre is the shadow's and the radius is the
-     * outer rim's projection, so the region follows the camera without a second
-     * source of truth. One projection per pointer move.
+     * between two stations.
+     *
+     * The band is measured where the disc actually is — matter in the y = 0
+     * plane — so the pointer's ray is intersected with that plane and the hit is
+     * held against the disc's own radii. A screen-space circle cannot do this:
+     * the camera sits a few degrees above the disc plane, so the rim projects to
+     * an ellipse far flatter than it is wide, and a circle around the hole
+     * swallows most of the empty sky above and below the rim. The shadow is
+     * excluded first, because it is a control rather than disc matter: resting
+     * on it must leave the record turning.
+     *
+     * @param px - pointer x in CSS pixels inside the canvas
+     * @param py - pointer y in CSS pixels inside the canvas
      */
-    const discRegion = () => {
+    const pointerOverDisc = (px, py) => {
       const hole = silhouette();
-      const distance = Math.max(HORIZON_RADIUS * 1.0001, camera.position.distanceTo(holeCenter));
-      const halfFov = (camera.fov * Math.PI) / 360;
-      const tangent = Math.tan(halfFov);
-      const radius =
-        tangent > 1e-4 ? (DISK_OUTER / (distance * tangent)) * viewport.h * 0.5 : hole.r;
-      return { x: hole.x, y: hole.y, r: radius };
+      const toShadowX = px - hole.x;
+      const toShadowY = py - hole.y;
+      if (toShadowX * toShadowX + toShadowY * toShadowY < hole.r * hole.r) return false;
+      pointerRay
+        .set((px / Math.max(1, viewport.w)) * 2 - 1, 1 - (py / Math.max(1, viewport.h)) * 2, 0.5)
+        .unproject(camera)
+        .sub(camera.position);
+      // A ray that runs along the disc plane never meets it, and one that leaves
+      // away from it meets it behind the camera: both are off the disc.
+      if (!(Math.abs(pointerRay.y) > 1e-6)) return false;
+      const travel = (holeCenter.y - camera.position.y) / pointerRay.y;
+      if (!(travel > 0)) return false;
+      const hitX = camera.position.x + pointerRay.x * travel - holeCenter.x;
+      const hitZ = camera.position.z + pointerRay.z * travel - holeCenter.z;
+      const reach = Math.hypot(hitX, hitZ);
+      return reach >= DISK_INNER && reach <= DISK_OUTER;
     };
 
-    /** The pointer is somewhere inside the disc's footprint. */
+    /** The pointer is somewhere on the disc's band, clear of the hole. */
     let pauseHeld = false;
     /** The panel reports the pointer on the hover card, which counts as inside. */
     let cardHeld = false;
 
     /**
      * Freeze or resume the record for the two reasons that can hold it: the
-     * pointer inside the disc's footprint, or the pointer on the card that freeze
+     * pointer over the disc's band, or the pointer on the card that freeze
      * produced. Resuming waits out the card's own dismissal, so carrying the
      * pointer from a station onto its card does not set the band turning again
      * underneath someone who is about to click the card.
@@ -1045,17 +1102,14 @@ export function mountStage(container, options) {
       syncSpin();
     };
 
-    /** Read the disc region from a pointer position in client pixels. */
+    /** Freeze or resume the record for a pointer position in client pixels. */
     const trackDiscRegion = (clientX, clientY) => {
       if (!canOpenCenter() || lastPointerType === 'touch') {
         holdSpin(false);
         return;
       }
-      const region = discRegion();
       const rect = canvas.getBoundingClientRect();
-      const dx = clientX - rect.left - region.x;
-      const dy = clientY - rect.top - region.y;
-      holdSpin(dx * dx + dy * dy <= region.r * region.r);
+      holdSpin(pointerOverDisc(clientX - rect.left, clientY - rect.top));
     };
 
     // A card opened by a touch press has no pointer hovering it: the finger is
@@ -1566,6 +1620,12 @@ export function mountStage(container, options) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
+      // A right-button hold that has not been armed yet belongs to the scene too:
+      // left behind, it would start an exit against the space it was opened in.
+      if (menuHoldTimer) {
+        clearTimeout(menuHoldTimer);
+        menuHoldTimer = 0;
+      }
       // The record's own resume timer belongs to the scene too: left behind, it
       // fires against a disposed disk when the page changes mid-freeze. Resuming
       // here is the same thing the timer would have done, minus the wait.
@@ -1975,6 +2035,10 @@ export function mountStage(container, options) {
         worm.startedAt = performance.now();
       } else {
         if (holdRing) holdRing.hide();
+        if (wasExit && worm.target === 'cluster') {
+          restoreClusterAfterCancel();
+          return;
+        }
         worm.kind = null;
         worm.phase = null;
         worm.from = null;
@@ -2005,7 +2069,10 @@ export function mountStage(container, options) {
       worm.coverBefore = machine.wormCover;
       worm.progressBefore = machine.progress;
       worm.target = fromCluster ? 'cluster' : 'field';
-      if (fromCluster && !prepareDiscTransfer({ holeFraming: machine.savedCamera })) {
+      // A settled cluster returns using its live particles. No readback, new
+      // population or reverse-flight material swap on the first moving frame.
+      machine.returning = !reducedMotion && fromCluster && machine.progress >= 0.999 && !discTransfer.active;
+      if (fromCluster && !machine.returning && !prepareDiscTransfer({ holeFraming: machine.savedCamera })) {
         worm.armed = false;
         cancelHold(true);
         return;
@@ -2071,6 +2138,7 @@ export function mountStage(container, options) {
         disk.setDiscTransfer(-1);
         disk.setStationSpin(1);
       }
+      machine.returning = false;
       machine.target = 1;
       machine.progress = resume;
       machine.wormCharge = 0;
@@ -2138,6 +2206,7 @@ export function mountStage(container, options) {
         machine.progress = 0;
       }
       machine.wormCover = 0;
+      machine.returning = false;
       applyTransition();
       // The mode follows the scalar, never the other way round: the field is
       // on screen before the host is told it is the space it is in.
@@ -2288,7 +2357,7 @@ export function mountStage(container, options) {
         driveCharge(start * e);
         driveCluster(blend);
         if (holdRing) holdRing.setProgress(Math.min(0.999, targetBlend === 1 ? 1 - blend : blend), worm.cursorX, worm.cursorY);
-        if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
+        if (layer) layer.setBurst(reducedMotion || machine.returning ? 0 : burstOf(blend));
         dirty = true;
         if (t >= span) {
           if (holdRing) holdRing.hide();
@@ -2414,7 +2483,7 @@ export function mountStage(container, options) {
       // layer's flow and only the no-op branch leaves a resumed flow alone.
       if (discTransfer.active) layer.setFlow(clamp01(machine.progress / DISC_TRANSFER_LANDING));
       if (worm.target !== 'field') {
-        if (layer) layer.setBurst(reducedMotion ? 0 : burstOf(blend));
+        if (layer) layer.setBurst(reducedMotion || machine.returning ? 0 : burstOf(blend));
         // Coming back to the hole there is nothing to wind up: the disc
         // reassembles at the very end, already at rest.
         driveCharge(0);
@@ -2453,12 +2522,13 @@ export function mountStage(container, options) {
     /**
      * The right button's short press, which asks the panel for the favourites.
      *
-     * The right button is also the exit hold, and the two differ only in
-     * duration: the exit cannot commit before WORM_OUT_RING_S, so a press that
-     * ends before the ring fills leaves nothing behind and is free to be read as
-     * a tap. No waiting on the release, no timer, no second gesture.
+     * The right button is also the exit hold, but the hold is only armed after
+     * MENU_HOLD_MS: an exit starts by tearing the field down, so a press that
+     * ends before that timer is a tap and nothing else has happened yet.
      */
     const menuPress = { active: false, id: -1, at: 0, downX: 0, downY: 0 };
+    /** The pending right-button hold, armed MENU_HOLD_MS after the press. */
+    let menuHoldTimer = 0;
 
     const centerAt = (clientX, clientY) => {
       const region = centerRegion();
@@ -2543,7 +2613,15 @@ export function mountStage(container, options) {
         menuPress.downY = event.clientY;
         if (machine.mode === 'cluster' || machine.progress > 0.05 || (worm.kind === 'recoil' && worm.recoilTarget === 1)) {
           event.preventDefault();
-          startHold('exit', event);
+          // The hold waits: starting it here would run the exit's teardown on
+          // the press, and a tap released a moment later would have taken the
+          // field home and still opened the list on top of it.
+          if (menuHoldTimer) clearTimeout(menuHoldTimer);
+          menuHoldTimer = setTimeout(() => {
+            menuHoldTimer = 0;
+            if (!menuPress.active || menuPress.id !== event.pointerId) return;
+            startHold('exit', event);
+          }, MENU_HOLD_MS);
         } else if (worm.kind === 'recoil' && worm.recoilTarget === 0) {
           // A hole-side recoil is the entry given back, not an exit to resume.
           // The hold must not begin, but the press is still consumed, or the tap
@@ -2694,6 +2772,12 @@ export function mountStage(container, options) {
       // stay frozen under a pointer that has already been put down.
       trackDiscRegion(event.clientX, event.clientY);
       if (event.button === 2) {
+        // A release before the timer is a tap: the hold never started, so there
+        // is nothing to cancel and the field is still where it was.
+        if (menuHoldTimer) {
+          clearTimeout(menuHoldTimer);
+          menuHoldTimer = 0;
+        }
         const asked = menuPress.active && menuPress.id === event.pointerId;
         const tappedAt = menuPress.at;
         const tappedFrom = { x: menuPress.downX, y: menuPress.downY };
@@ -2705,12 +2789,13 @@ export function mountStage(container, options) {
         if (worm.kind && !worm.locked && event.pointerId === worm.pointerId && event.button === worm.button) {
           cancelHold();
         }
-        // A press that became a hold is not a tap: only one that ended before its
-        // ring filled, leaving no hold and no recoil behind, asks for the list.
-        const tapped = isSelectionGesture(
-          Math.hypot(event.clientX - tappedFrom.x, event.clientY - tappedFrom.y),
-          performance.now() - tappedAt,
-        );
+        // A press that became a hold is not a tap: only one that ended before
+        // its ring filled, leaving no hold and no recoil behind, asks for the
+        // list. The window is MENU_HOLD_MS, the same moment the hold would have
+        // started, so the two readings can never overlap: past it the press was
+        // a hold, and its release is a cancel rather than a second request.
+        const tapped = Math.hypot(event.clientX - tappedFrom.x, event.clientY - tappedFrom.y) <= CLICK_SLOP
+          && performance.now() - tappedAt < MENU_HOLD_MS;
         if (asked && tapped && !worm.kind && !worm.locked && typeof settings.onFavourites === 'function') {
           try {
             settings.onFavourites(tappedFrom.x, tappedFrom.y);
@@ -2815,6 +2900,10 @@ export function mountStage(container, options) {
       cardIndex = -1;
       cardShown = false;
       menuPress.active = false;
+      if (menuHoldTimer) {
+        clearTimeout(menuHoldTimer);
+        menuHoldTimer = 0;
+      }
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
     };
 

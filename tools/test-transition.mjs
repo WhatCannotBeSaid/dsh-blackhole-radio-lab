@@ -35,6 +35,9 @@ import { buildFragmentShader } from '../src/scene/geodesic.glsl.js';
 import { buildDiscFragments, DISC_TRANSFER_LANDING, discTransferHandoff } from '../src/scene/disc-transfer.js';
 
 const source = readFileSync(new URL('../src/stage.js', import.meta.url), 'utf8');
+const exitEnd = Number(source.match(/const WORM_OUT_END_S = ([\d.]+)/)[1]);
+const exitDuration = exitEnd - Number(source.match(/const WORM_OUT_RING_S = ([\d.]+)/)[1]);
+assert.equal(exitDuration, 2.5, 'approved return duration changed');
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const smoothstep01 = (x) => x * x * (3 - 2 * x);
 const inverseSmoothstep = (v) => (v <= 0 ? 0 : v >= 1 ? 1 : 0.5 - Math.sin(Math.asin(1 - 2 * v) / 3));
@@ -131,7 +134,7 @@ function harness(reducedMotion = false) {
     rig: { isSettled: true, framing: () => ({ radius: 8, phi: 0.4, theta: 0 }), setHome() {} },
     hoverGroupId: null, setGroupHover() {}, showHint() {}, hintFor: (key) => key,
     WORM_RING_S: 1, WORM_END_S: 2.5, WORM_OUT_RING_S: 0.55,
-    WORM_OUT_VEIL_S: 1.15, WORM_OUT_END_S: 1.75, WORM_RECOIL_S: 0.22,
+    WORM_OUT_VEIL_S: 1.15, WORM_OUT_END_S: exitEnd, WORM_RECOIL_S: 0.22,
     WORM_RECOIL_EPS: 0.003,
     WORM_CALM_RATE: 5, WORM_REVEAL_RATE: 1 / 1.15, TRANSITION_RATE: 0.95,
     HOLE_STATION_DIM: 0.55, dirty: false, transitioning: false,
@@ -284,20 +287,32 @@ for (const firstFrame of [1.1, 3.0]) {
   assert.equal(h.ring.visible, false);
   h.layer.dispose(); cases++;
 }
-{
+for (const advance of [0, 0.01]) {
   // A right tap: armed on the press, released before anything advanced. It must
   // leave no hold and no recoil behind, or the favourites tap would pay a shake.
   const h = harness();
   h.api.startHold('enter', event); h.frame(2.5);
   const armed = h.context.machine.progress;
   h.api.startHold('exit', { ...event, button: 2 });
+  if (advance) h.frame(2.5 + advance);
   h.api.cancelHold();
+  assert.equal(h.context.machine.returning, false, 'a near-zero exit cancellation leaked return styling');
+  assert.equal(h.context.machine.target, 1, 'a near-zero exit cancellation kept the hole as destination');
   assert.equal(h.api.worm.kind, null, 'a right tap must not leave a recoil');
   assert.equal(h.api.worm.armed, false, 'a right tap must disarm the exit');
   assert.equal(h.ring.visible, false, 'a right tap must leave no ring');
   assert.equal(h.context.machine.progress, armed, 'a right tap must not move the frame');
   h.frame(3.0);
   assert.equal(h.context.machine.progress, armed);
+  h.api.startHold('exit', { ...event, button: 2 });
+  h.frame(3 + exitDuration);
+  h.api.startHold('enter', event);
+  assert.equal(h.context.machine.returning, false);
+  assert.equal(h.context.disk.opacity, 1, 'next entry did not start with the original disc');
+  h.frame(3 + exitDuration + 0.5);
+  assert.equal(h.context.disk.opacity, 1, 'return opacity leaked into the next forward capture');
+  h.frame(3 + exitDuration + 2.5);
+  h.endpoint();
   h.layer.dispose(); cases++;
 }
 {
@@ -306,7 +321,7 @@ for (const firstFrame of [1.1, 3.0]) {
   h.api.startHold('enter', event); h.frame(2.5);
   h.api.startHold('exit', { ...event, button: 2 });
   h.frame(3.2);
-  h.frame(4.25);
+  h.frame(2.5 + exitDuration);
   assert.equal(h.api.worm.kind, null);
   assert.equal(h.context.machine.mode, 'black-hole');
   for (let i = 0; i < stations.length; i++) {
@@ -344,12 +359,16 @@ for (const failedOwner of ['capture', 'build']) {
 {
   const h = harness();
   h.api.startHold('enter', event); h.frame(2.5);
-  const framing = h.context.machine.savedCamera;
+  const captures = h.context.disk.captures;
+  const before = h.layer.object.geometry.attributes.position.array.slice();
   h.api.startHold('exit', { ...event, button: 2 });
+  h.frame(2.5);
+  assert.equal(h.context.disk.captures, captures, 'settled return blocked on a disc readback');
+  assert.equal(h.context.machine.returning, true);
+  assert.deepEqual(h.layer.object.geometry.attributes.position.array, before, 'return replaced the live cluster on press');
   h.frame(3.2);
-  const expected = new Vector3().setFromSphericalCoords(framing.radius, framing.phi, framing.theta);
-  assert.ok(h.context.disk.capturedCamera.position.distanceTo(expected) < 1e-8, 'exit captured the focused cluster camera instead of the saved hole framing');
-  h.frame(4.25);
+  assert.equal(h.context.discTransfer.active, false, 'return introduced a second particle population');
+  h.frame(2.5 + exitDuration);
   assert.equal(h.ring.completed, 2);
   h.layer.dispose(); cases++;
 }
@@ -363,7 +382,7 @@ for (const calm of [false, true]) {
     // The scalar is 1 at the cluster and the exit empties the arc, so a press
     // that has not drawn a frame yet shows an empty arc, not a full one.
     assert.ok(h.ring.progress <= 0.001, 'exit ring did not start empty');
-    const end = calm ? 1 / 0.95 : 1.2;
+    const end = calm ? 1 / 0.95 : exitDuration;
     for (let n = 1; n <= Math.ceil((end + 0.4) * hz); n++) {
       const t = n / hz;
       h.frame(2.5 + t, 1 / hz);
@@ -381,16 +400,16 @@ for (const calm of [false, true]) {
     h.layer.dispose(); cases++;
   }
 }
-for (const firstExitFrame of [0.56, 1.9]) {
+for (const firstExitFrame of [0.56, exitDuration + 0.1]) {
   const h = harness();
   h.api.startHold('enter', event); h.frame(2.5);
   // A previous hold must not choose this exit's target.
   h.api.worm.target = 'field';
   h.api.startHold('exit', { ...event, button: 2 });
   h.frame(2.5 + firstExitFrame);
-  if (firstExitFrame < 1.2) {
+  if (firstExitFrame < exitDuration) {
     assert.equal(h.ring.progress, 1 - h.context.machine.progress);
-    h.frame(4.25);
+    h.frame(2.5 + exitDuration);
   }
   assert.equal(h.ring.completed, 2);
   h.layer.dispose(); cases++;
@@ -486,13 +505,13 @@ for (const calm of [false, true]) {
     assert.equal(rig.isSettled, true);
     h.context.rig = rig;
     h.api.startHold('exit', { ...event, button: 2 });
-    h.frame(4.4, 1 / hz);
+    h.frame(2.5 + exitDuration + 0.1, 1 / hz);
     assert.equal(h.context.machine.progress, 0);
     assert.equal(rig.isSettled, false, 'exit did not exercise a displaced camera');
     assert.equal(h.ring.completed, 1, 'delayed first rAF skipped camera homing');
     let n = 1;
     while (h.api.worm.kind && n < 240) {
-      h.frame(4.4 + n / hz, 1 / hz);
+      h.frame(2.5 + exitDuration + 0.1 + n / hz, 1 / hz);
       if (!rig.isSettled) assert.equal(h.ring.completed, 1, 'full ring led the camera');
       n++;
     }
@@ -546,6 +565,65 @@ for (const calm of [false, true]) {
   assert.equal(container.children.length, 0);
   console.log('PASS real SVG ring: immediate show/re-show, same-clock arc, full endpoint and completion-timer cancellation.');
 }
+// The production quality controller must lower GPU raster work without
+// changing the transition clock, and restore the resting resolution afterwards.
+{
+  let pixelRatio = 2, resizeCount = 0;
+  const quality = vm.createContext({
+    ratio: 2, viewport: { w: 1920, h: 1080 }, worm: { kind: 'enter' },
+    renderer: { getPixelRatio: () => pixelRatio, setPixelRatio: (v) => { pixelRatio = v; } },
+    applySize(force) { assert.equal(force, true); resizeCount++; }, dirty: false, Math,
+  });
+  vm.runInContext(`let qualityAt = 0, qualitySlow = 0; ${declaration('updateTransitionQuality')} globalThis.update = updateTransitionQuality;`, quality);
+  quality.update(1000, 16.7);
+  const budget = pixelRatio;
+  assert.ok(budget < 0.6 && budget >= 0.5, 'entry did not cap the raster budget');
+  for (let n = 1; n <= 3; n++) quality.update(1000 + n * 110, 30);
+  assert.equal(pixelRatio, 0.5, 'sustained slow frames did not lower quality to its floor');
+  quality.update(1700, 250);
+  assert.equal(pixelRatio, 0.5, 'background pause changed the floor');
+  quality.worm.kind = null;
+  for (let n = 1; n <= 20; n++) quality.update(1700 + n * 310, 16.7);
+  assert.equal(pixelRatio, 2, 'resting pixel ratio was not restored');
+  assert.ok(resizeCount > 1 && quality.dirty, 'quality changes did not resize/redraw');
+  console.log('PASS adaptive raster budget: entry cap, consecutive slow frames, floor, pause and idle restoration.');
+}
+// Sprite sizes are in CSS pixels; the uniform must track even sub-1 DPR.
+{
+  const layer = createStationsLayer(stations, { seed: 7 });
+  for (const ratio of [0.5, 0.581, 1, 2]) {
+    layer.setPixelRatio(ratio);
+    assert.equal(layer.object.material.uniforms.uPixelRatio.value, ratio);
+  }
+  layer.dispose();
+  console.log('PASS particle pixel ratio follows reduced raster resolution without inflating sprites.');
+}
+// Sample the exact production flight function, not a duplicate implementation.
+{
+  const layerSource = readFileSync(new URL('../src/nodes/stations-layer.js', import.meta.url), 'utf8');
+  const start = layerSource.indexOf('  function sampleFlight(');
+  const end = layerSource.indexOf('\n  }', start) + 4;
+  const flight = vm.createContext({ returning: true, flightPosition: new Vector3(), Math,
+    wrapAngle: (v) => Math.atan2(Math.sin(v), Math.cos(v)), RS: 1 });
+  vm.runInContext(`${layerSource.slice(start, end)} globalThis.sample = sampleFlight;`, flight);
+  const args = [2, 0.1, 0, -12, 7, 8];
+  const destination = flight.sample(...args, 1).clone();
+  const origin = flight.sample(...args, 0).clone();
+  assert.ok(destination.distanceTo(new Vector3(-12, 7, 8)) < 1e-10);
+  assert.ok(origin.distanceTo(new Vector3(2, 0.1, 0)) < 1e-10);
+  let radius = Math.hypot(destination.x, destination.z);
+  let angle = Math.atan2(destination.z, destination.x);
+  for (let n = 1; n <= 150; n++) {
+    const p = flight.sample(...args, 1 - n / 150);
+    const next = Math.hypot(p.x, p.z);
+    const nextAngle = Math.atan2(p.z, p.x);
+    const turn = Math.atan2(Math.sin(nextAngle - angle), Math.cos(nextAngle - angle));
+    assert.ok(next <= radius + 1e-10, 'return radius re-expanded while gathering');
+    assert.ok(turn < 0, 'return spiral reversed direction');
+    assert.ok(Number.isFinite(p.y)); radius = next; angle = nextAngle;
+  }
+  console.log('PASS return flight: exact live endpoints, continuous polar gathering without radial rebound.');
+}
 const tickStart = source.indexOf('    const tick = ');
 const tickEnd = source.indexOf('\n    };', tickStart);
 const tick = source.slice(tickStart, tickEnd);
@@ -567,6 +645,55 @@ assert.equal(tick.includes('layer.setHoleOnly('), false, 'tick has a second visi
   assert.ok(guard.includes('isSelectionGesture(tapMoved, tapHeld)'), 'the tap ignores the click geometry');
   assert.ok(guard.includes('centerAt(press.downX, press.downY).inside'), 'the tap is not anchored to the press origin');
   console.log('PASS hole tap survives the consumed press: recoil is not a crossing, geometry and origin still gate the host callback.');
+}
+// The right button reads two things off one gesture, and they must not overlap:
+// starting the exit hold tears the field down at once, so a press that is still
+// inside its tap window may never have started one. The hold waits MENU_HOLD_MS,
+// the tap window is the same number, and the release disarms whatever is pending.
+{
+  const down = source.indexOf("if (event.button === 2) {", source.indexOf('const onPointerDown'));
+  const up = source.indexOf('const onPointerUp');
+  assert.ok(down > 0 && down < up, 'the right-button press has no branch of its own');
+  const branch = source.slice(down, source.indexOf('if (event.button !== 0) return;', down));
+  const timer = branch.indexOf('menuHoldTimer = setTimeout(');
+  const hold = branch.indexOf("startHold('exit', event)");
+  assert.ok(timer > 0, 'the exit hold still starts on the press, not after the tap window');
+  assert.ok(hold > timer, 'the exit hold is armed outside the deferred timer');
+  assert.equal(branch.slice(0, timer).includes("startHold('exit'"), false, 'the press arms the exit directly');
+  const upSlice = source.slice(up, source.indexOf('if (!press.active || press.id !== event.pointerId) return;', up));
+  assert.ok(upSlice.indexOf('clearTimeout(menuHoldTimer)') < upSlice.indexOf('settings.onFavourites'), 'a tap asks for the list with a hold still pending');
+  assert.ok(upSlice.includes('performance.now() - tappedAt < MENU_HOLD_MS'), 'the tap window is not the hold delay');
+  console.log('PASS right-button tap and hold cannot overlap: the exit is armed only after the tap window.');
+}
+// The favourites list asks to be painted fixed at the press point, but a fixed
+// box only measures from the viewport while nothing above it makes a containing
+// block — a filtered, transformed or contained host surface moves the origin.
+// The surface's own scale cannot be assumed: a plain offset and a zoomed one
+// look identical to one measurement, and a wrong guess is exact near that
+// surface's origin and off by more the further the press lands. So the box is
+// moved, the move is measured, and the next step is divided by what the last
+// one actually bought. Bounded, because the box may refuse to move at all.
+{
+  const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  const snap = client.indexOf('useLayoutEffect(() => {');
+  const body = client.slice(snap, client.indexOf('}, [favMenu]);', snap));
+  assert.ok(snap > 0 && body.length > 0, 'the list is never weighed against its own box');
+  assert.ok(body.includes('for (let pass = 0; pass < 3; pass += 1)'), 'the correction assumes one guess is enough');
+  assert.ok(
+    body.indexOf('const rect = panel.getBoundingClientRect();') < body.indexOf('panel.style.left ='),
+    'the box is moved before it is measured',
+  );
+  assert.ok(
+    body.includes('const after = panel.getBoundingClientRect();'),
+    'the move is never measured, so its worth cannot be learned',
+  );
+  assert.ok(body.includes('worthX = movedX / stepX'), 'a step is repeated without learning what it bought');
+  assert.ok(
+    body.includes('Math.abs(dx) <= 1 && Math.abs(dy) <= 1) return;'),
+    'the loop has no settled exit and would drift a box already on the point',
+  );
+  assert.equal(body.includes('offsetWidth'), false, 'the correction still guesses the surface scale');
+  console.log('PASS favourites land on the press: every pass is measured, and the next one is scaled by what the last bought.');
 }
 console.log(`PASS ${cases} transition cases + production frame ordering; 13 nonempty fixture groups; real particle buffers and interaction anchors. GPU/browser acceptance NOT exercised.`);
 if (process.argv.includes('--bundles')) {

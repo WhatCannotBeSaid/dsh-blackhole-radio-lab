@@ -86,14 +86,11 @@ export function buildDiscFragments(snapshot, layout) {
   for (let head = 0; head < tail; head++) {
     const i = queue[head];
     const x = i % width;
-    const visit = (j) => {
-      if (j >= 0 && j < total && owner[j] < 0) {
-        owner[j] = owner[i]; queue[tail++] = j;
-      }
-    };
-    if (x > 0) visit(i - 1);
-    if (x + 1 < width) visit(i + 1);
-    visit(i - width); visit(i + width);
+    // Keep the same breadth-first tie order without a closure per image cell.
+    if (x > 0 && owner[i - 1] < 0) { owner[i - 1] = owner[i]; queue[tail++] = i - 1; }
+    if (x + 1 < width && owner[i + 1] < 0) { owner[i + 1] = owner[i]; queue[tail++] = i + 1; }
+    if (i >= width && owner[i - width] < 0) { owner[i - width] = owner[i]; queue[tail++] = i - width; }
+    if (i + width < total && owner[i + width] < 0) { owner[i + width] = owner[i]; queue[tail++] = i + width; }
   }
   let count = 0;
   for (let i = 0; i < total; i++) if (pixels[i * 4 + 3]) count++;

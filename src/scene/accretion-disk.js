@@ -668,7 +668,9 @@ export function createAccretionDisk(options = {}) {
   function captureDisc(camera) {
     if (disposed || !renderer) return null;
     renderer.getDrawingBufferSize(drawBuffer);
-    const scale = Math.min(1, 1024 / Math.max(drawBuffer.x, drawBuffer.y));
+    // Bound readback, attribution and fragment upload together. Motion keeps
+    // the same image/identity mapping at a quarter of the former pixel budget.
+    const scale = Math.min(1, 512 / Math.max(drawBuffer.x, drawBuffer.y));
     const width = Math.max(1, Math.round(drawBuffer.x * scale));
     const height = Math.max(1, Math.round(drawBuffer.y * scale));
     const pixels = new Uint8Array(width * height * 4);

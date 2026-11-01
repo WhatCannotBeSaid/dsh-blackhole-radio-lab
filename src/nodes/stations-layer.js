@@ -486,6 +486,8 @@ export function createStationsLayer(stations, options) {
   // Set while a hand-authored passage drives the blend: -1 hands the blend back
   // to the timed ease, 0..1 (and over) means the timeline owns it exactly.
   let flow = -1;
+  // The return keeps the live stars, rather than replacing them with a capture.
+  let returning = false;
 
   // Current blend towards the cloud state. Declared before the build loop
   // because the initial buffer fill reads it (as a factor of zero).
@@ -710,6 +712,20 @@ export function createStationsLayer(stations, options) {
   // Its departure tangent follows orbital motion; the destination tangent eases
   // into the category knot. Both endpoints are exact and reverse on the same path.
   function sampleFlight(x, y, z, tx, ty, tz, blend) {
+    if (returning) {
+      // Preserve both endpoints and turn continuously while the radius shrinks.
+      // The vertical component flattens sooner so the stars feed the disc plane.
+      const gather = 1 - blend;
+      const sourceAngle = Math.atan2(z, x);
+      const delta = wrapAngle(Math.atan2(tz, tx) - sourceAngle);
+      const angle = sourceAngle + (delta + Math.PI * 2) * blend;
+      const radius = Math.hypot(x, z) * gather + Math.hypot(tx, tz) * blend;
+      return flightPosition.set(
+        Math.cos(angle) * radius,
+        y * gather + ty * blend * blend,
+        Math.sin(angle) * radius,
+      );
+    }
     const radius = Math.max(0.001, Math.hypot(x, z));
     const tangentX = -z / radius;
     const tangentZ = x / radius;
@@ -950,7 +966,8 @@ export function createStationsLayer(stations, options) {
     particleCount: particleTotal,
 
     setPixelRatio(ratio) {
-      uniforms.uPixelRatio.value = Math.max(1, Number(ratio) || 1);
+      const next = Number(ratio);
+      uniforms.uPixelRatio.value = Number.isFinite(next) && next > 0 ? next : 1;
     },
 
     setViewport(width, height, fovDegrees) {
@@ -1122,6 +1139,13 @@ export function createStationsLayer(stations, options) {
      * exactly the kind of drift that made the old crossing read as two effects
      * playing at once. While this is set, the timeline IS the clock.
      */
+    setReturning(value) {
+      const next = value === true;
+      if (next === returning) return;
+      returning = next;
+      dirtyPositions = dirtyBuffers = animating = true;
+    },
+
     setFlow(value) {
       const next = Number(value);
       const wanted = Number.isFinite(next) && next >= 0 ? clamp01(next) : -1;
