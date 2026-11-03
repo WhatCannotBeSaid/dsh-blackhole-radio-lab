@@ -3174,6 +3174,8 @@ window.__ModuleLoader__.load({
       // Escape and a press anywhere outside both close the box. The press still
       // belongs to the scene: closing is the only thing this adds to it.
       useEffect(() => {
+        const handle = stageRef.current;
+        if (handle && typeof handle.setSearchOpen === 'function') handle.setSearchOpen(searchOpen);
         if (!searchOpen) return undefined;
         const onKeyDown = (event) => {
           if (event.key === 'Escape') setSearchOpen(false);

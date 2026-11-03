@@ -231,6 +231,40 @@ function harness(reducedMotion = false) {
 }
 const event = { clientX: 400, clientY: 300, pointerId: 1, button: 0 };
 let cases = 0;
+// A search tap may release before any frame, below the recoil threshold, or
+// after visible travel. Every cancellation must hand the disc back eventually.
+for (const reducedMotion of [false, true]) {
+  for (const advance of [0, 0.01, 0.08]) {
+    const h = harness(reducedMotion);
+    let spin = 1;
+    h.context.disk.setStationSpin = (value) => { spin = value; };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      assert.equal(h.api.startHold('enter', event), true);
+      if (advance) h.frame(h.context.now / 1000 + advance);
+      h.api.cancelHold();
+      // A no-travel tap must restore immediately, not wait for another frame.
+      if (advance === 0 || (!reducedMotion && advance === 0.01)) {
+        assert.equal(h.api.worm.kind, null, 'no-travel tap deferred restoration to a recoil');
+        assert.equal(h.context.discTransfer.active, false, 'no-travel tap deferred capture cleanup');
+        assert.equal(h.context.disk.transfer, -1, 'no-travel tap deferred ray tracing');
+      }
+      if (h.api.worm.kind === 'recoil') h.frame(h.context.now / 1000 + 1);
+      assert.equal(h.api.worm.kind, null);
+      assert.equal(h.api.worm.layoutReady, false);
+      assert.equal(h.context.discTransfer.active, false, 'search tap left captured disc active');
+      assert.equal(h.context.disk.transfer, -1, 'search tap did not restore ray tracing');
+      assert.equal(spin, 1, 'search tap left station spin frozen');
+      assert.equal(h.context.machine.progress, 0);
+      assert.equal(h.context.machine.target, 0);
+      assert.equal(h.context.disk.opacity, 1);
+      assert.equal(h.ring.visible, false);
+      h.frame(h.context.now / 1000 + 1);
+      assert.equal(h.context.discTransfer.active, false, 'idle frame revived the capture');
+    }
+    if (!reducedMotion) assert.equal(h.context.disk.captures, 2, 'next hold reused a stale capture');
+    h.layer.dispose(); cases++;
+  }
+}
 for (const hz of [15, 30, 60]) {
   const h = harness();
   const start = h.layer.positionAt(0);

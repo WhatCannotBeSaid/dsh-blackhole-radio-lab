@@ -1097,6 +1097,11 @@ export function mountStage(container, options) {
     let pauseHeld = false;
     /** The panel reports the pointer on the hover card, which counts as inside. */
     let cardHeld = false;
+    /**
+     * The search box is open. Typing is not pinning a station, so a pointer
+     * resting over the disc must not freeze it for as long as the box is up.
+     */
+    let searchHeld = false;
 
     /**
      * Freeze or resume the record for the two reasons that can hold it: the
@@ -1134,7 +1139,7 @@ export function mountStage(container, options) {
 
     /** Freeze or resume the record for a pointer position in client pixels. */
     const trackDiscRegion = (clientX, clientY) => {
-      if (!canOpenCenter() || lastPointerType === 'touch') {
+      if (searchHeld || !canOpenCenter() || lastPointerType === 'touch') {
         holdSpin(false);
         return;
       }
@@ -2086,11 +2091,11 @@ export function mountStage(container, options) {
           worm.phase = null;
         }
         if (!wasExit) {
-          worm.kind = null;
-          worm.phase = null;
-          worm.from = null;
-          worm.alpha = 0;
-          worm.charge = 0;
+          // Even a tap prepared captured fragments before the clock advanced.
+          driveCharge(0);
+          driveCluster(0);
+          if (layer) layer.setBurst(0);
+          settleExit();
         }
         // An exit prepared its settlement on the press even when the ring never
         // filled, so whichever placeholder the pointer left behind is finished
@@ -2675,6 +2680,10 @@ export function mountStage(container, options) {
     const centerClick = () => {
       if (!canOpenCenter()) return;
       clearTimers();
+      // The tap opens the search box, and the pointer that tapped is still over
+      // the hole: its hover freeze would hold the disc clock for as long as the
+      // reader types. Typing is not pinning a station, so the pause ends here.
+      holdSpin(false);
       if (typeof settings.onHoleTap === 'function') {
         try {
           settings.onHoleTap();
@@ -3164,6 +3173,15 @@ export function mountStage(container, options) {
 
     const handle = {
       info,
+
+      /**
+       * The host owns whether the search box is up; the scene only has to stop
+       * treating the pointer over the disc as a reason to freeze it.
+       */
+      setSearchOpen(on) {
+        searchHeld = Boolean(on);
+        if (searchHeld) holdSpin(false);
+      },
 
       /** Ease the camera back to the active mode's authored framing. */
       resetView() {
