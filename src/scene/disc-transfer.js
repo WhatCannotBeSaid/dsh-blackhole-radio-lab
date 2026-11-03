@@ -29,8 +29,10 @@ uniform vec3 uUp;
 attribute vec3 position;
 attribute vec3 aSource;
 attribute vec3 aTarget;
+attribute vec3 aAnchor;
 attribute vec2 aUv;
 attribute float aDelay;
+attribute float aSpin;
 varying vec2 vUv;
 varying vec2 vLocal;
 varying float vFlight;
@@ -40,14 +42,26 @@ void main() {
   vec3 radial = aSource - uOrigin;
   float sx = dot(radial, uRight);
   float sy = dot(radial, uUp);
-  float turn = 0.85 * sin(3.14159265359 * p) / (0.7 + length(vec2(sx, sy)) * 0.18);
+  // One rotation per station: every cell of the same station sweeps the same
+  // arc, so the field turns as groups instead of each cell spinning alone.
+  float turn = aSpin * sin(3.14159265359 * p);
   vec3 source = uOrigin + uRight * (sx * cos(turn) - sy * sin(turn))
     + uUp * (sx * sin(turn) + sy * cos(turn));
+  // The station's own knot on the disc is the rendezvous its cells pass
+  // through, so the passage reads as a stream rather than debris.
+  vec3 anchorRadial = aAnchor - uOrigin;
+  float ax = dot(anchorRadial, uRight);
+  float ay = dot(anchorRadial, uUp);
+  vec3 anchor = uOrigin + uRight * (ax * cos(turn) - ay * sin(turn))
+    + uUp * (ax * sin(turn) + ay * cos(turn));
   vec3 tangent = (-sy * uRight + sx * uUp) / max(0.001, length(vec2(sx, sy)));
-  float reach = min(2.2, length(radial) * 0.65);
+  vec3 toAnchor = anchor - source;
+  float reach = min(2.2, length(toAnchor) * 0.55);
+  vec3 control1 = source + toAnchor * 0.42 + tangent * reach * 0.4;
+  vec3 control2 = anchor + (aTarget - anchor) * 0.5;
   float q = 1.0 - flight;
-  vec3 world = q*q*q*source + 3.0*q*q*flight*(source + tangent*reach)
-    + 3.0*q*flight*flight*(aTarget - tangent*reach*0.25) + flight*flight*flight*aTarget;
+  vec3 world = q*q*q*source + 3.0*q*q*flight*control1
+    + 3.0*q*flight*flight*control2 + flight*flight*flight*aTarget;
   vec4 clip = projectionMatrix * modelViewMatrix * vec4(world, 1.0);
   vec2 size = mix(uCellPx, vec2(2.2), flight);
   clip.xy += position.xy * size * 2.0 / uViewport * clip.w;
@@ -113,6 +127,8 @@ export function buildDiscFragments(snapshot, layout) {
   const uv = new Float32Array(count * 2);
   const delay = new Float32Array(count);
   const station = new Int32Array(count);
+  const anchorSum = new Float64Array(stationCount * 3);
+  const anchorCount = new Float64Array(stationCount);
   camera.updateMatrixWorld();
   const right = new Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
   const up = new Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
@@ -136,15 +152,34 @@ export function buildDiscFragments(snapshot, layout) {
       // This is not a new random star: it is the same cell of the captured image.
       const jitter = Math.sin((i + 1) * (k + 1) * 2.39996323) * 0.018;
       target[n * 3 + k] = layout.positions[id * 3 + k] + jitter;
+      anchorSum[id * 3 + k] += source[n * 3 + k];
     }
+    anchorCount[id]++;
     uv[n * 2] = u; uv[n * 2 + 1] = v;
     // The outside leaves first. The remaining original cells form an eroding
-    // inner disc rather than all pixels fading out together.
-    delay[n] = 0.27 * (1 - Math.min(1, Math.hypot(u - 0.5, v - 0.5) / 0.52));
+    // inner disc rather than all pixels fading out together. The per-station
+    // phase keeps whole stations from starting at the same instant.
+    delay[n] = 0.27 * (1 - Math.min(1, Math.hypot(u - 0.5, v - 0.5) / 0.52))
+      + 0.05 * ((id * 0.6180339887) % 1);
     station[n] = id;
     n++;
   }
-  return { count, source, target, uv, delay, station, origin, right, up };
+  // Every cell of a station shares that station's source centroid, so the
+  // passage funnels through one knot per station instead of scattering.
+  const anchor = new Float32Array(count * 3);
+  const spin = new Float32Array(count);
+  for (let id = 0; id < stationCount; id++) {
+    if (anchorCount[id] > 0) {
+      for (let k = 0; k < 3; k++) anchorSum[id * 3 + k] /= anchorCount[id];
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    const id = station[i];
+    for (let k = 0; k < 3; k++) anchor[i * 3 + k] = anchorSum[id * 3 + k];
+    // Same station, same sweep. Deterministic, so replays stay identical.
+    spin[i] = 0.55 + 0.35 * Math.sin(id * 1.6180339887);
+  }
+  return { count, source, target, anchor, spin, uv, delay, station, origin, right, up };
 }
 
 export function createDiscTransfer(renderer) {
@@ -171,8 +206,10 @@ export function createDiscTransfer(renderer) {
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
     geometry.setAttribute('aSource', new InstancedBufferAttribute(data.source, 3));
     geometry.setAttribute('aTarget', new InstancedBufferAttribute(data.target, 3));
+    geometry.setAttribute('aAnchor', new InstancedBufferAttribute(data.anchor, 3));
     geometry.setAttribute('aUv', new InstancedBufferAttribute(data.uv, 2));
     geometry.setAttribute('aDelay', new InstancedBufferAttribute(data.delay, 1));
+    geometry.setAttribute('aSpin', new InstancedBufferAttribute(data.spin, 1));
     geometry.instanceCount = data.count;
     const nextImage = new DataTexture(snapshot.pixels, snapshot.width, snapshot.height, RGBAFormat, UnsignedByteType);
     nextImage.minFilter = NearestFilter;
