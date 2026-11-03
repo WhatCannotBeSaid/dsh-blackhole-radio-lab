@@ -4272,7 +4272,9 @@ window.__ModuleLoader__.load({
  * the name, the star and the heart sideways for as long as the pointer is
  * there. */
 .bhrl-fcard__row--sub .bhrl-act,
-.bhrl-fcard__row--sub .bhrl-act:hover:not(:disabled) { width: 14px; height: 14px; }
+.bhrl-fcard__row--sub .bhrl-act.is-on,
+.bhrl-fcard__row--sub .bhrl-act:hover:not(:disabled),
+.bhrl-fcard__row--sub .bhrl-act.is-on:hover:not(:disabled) { width: 14px; height: 14px; }
 
 .bhrl-foot .bhrl-eq { display: inline-block; width: 3px; height: 8px; background: currentColor; }
 .bhrl-foot .bhrl-eq.is-on { animation: bhrl-eq 900ms ease-in-out infinite alternate; }
