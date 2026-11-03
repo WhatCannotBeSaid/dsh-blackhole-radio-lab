@@ -159,8 +159,16 @@ function writeKey(db, key, value) {
   });
 }
 
-/** Failed sources are quarantined, never permanently removed. Legacy IDs expire. */
-export const FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+/**
+ * Failed sources are quarantined, never permanently removed.
+ *
+ * Ten minutes, not six hours: most "failures" are one bad moment on the
+ * station's side or a hiccup on this side, and a six-hour sentence made the
+ * radio feel broken for the rest of the evening. Short enough to give a
+ * recovered source another chance, long enough that a genuinely dead one is
+ * not hammered by every shuffle.
+ */
+export const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 
 export function activeFailures(record, now = Date.now()) {
   const entries = record && Array.isArray(record.failures) ? record.failures : [];

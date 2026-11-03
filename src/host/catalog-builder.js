@@ -378,7 +378,15 @@ export async function buildCatalog(options = {}) {
   const o = normalize(options);
   if (!o.fetchImpl) throw new Error('fetch is not available in this runtime');
 
-  const candidates = await fetchCandidates(o);
+  // A caller that already holds candidates (re-checking a shipped snapshot,
+  // for instance) skips the network fetch and only pays for the probes. The
+  // fetch count is then the pool size, so the snapshot still reports how many
+  // stations were considered.
+  const supplied = Array.isArray(options.candidates) && options.candidates.length > 0
+    ? options.candidates
+    : null;
+  const candidates = supplied ?? (await fetchCandidates(o));
+  const requested = supplied ? supplied.length : o.fetch;
   assertNotAborted(o);
   if (candidates.length === 0) {
     throw new Error('Radio Browser returned no candidates; refusing to build an empty catalogue');
@@ -403,13 +411,13 @@ export async function buildCatalog(options = {}) {
     v: 1,
     builtAt: new Date().toISOString(),
     source: 'radio-browser.info',
-    requested: o.fetch,
+    requested,
     candidates: candidates.length,
     healthy,
     stations,
   };
   const stats = {
-    requested: o.fetch,
+    requested,
     candidates: candidates.length,
     healthy,
     picked: stations.length,

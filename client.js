@@ -137,19 +137,67 @@ window.__ModuleLoader__.load({
      * Which playback failures mean "this station is broken" rather than "this
      * environment could not play it right now".
      *
-     * A missing Audio element, an autoplay block, a paused load and a
-     * transient network error are all states a later attempt can survive, and
-     * blacklisting them would quietly delete working stations from every
-     * future catalogue. Only a source the media stack rejects outright is
-     * worth remembering.
+     * A missing Audio element, an autoplay block and a paused load are states
+     * a later attempt can survive, and blacklisting them would quietly delete
+     * working stations from every future catalogue. Only a source the media
+     * stack rejects outright is worth remembering.
+     *
+     * `network` belongs here because the core already retried once before
+     * giving up: two network failures in a row mean the stream is not serving,
+     * and a ten-minute cooldown is far cheaper than parking on a dead station.
      */
-    const BROKEN_STREAM_ERRORS = new Set(['decode', 'unsupported-or-unreachable', 'bad-url']);
+    const BROKEN_STREAM_ERRORS = new Set(['decode', 'unsupported-or-unreachable', 'bad-url', 'network']);
 
     function isBrokenStream(reason) {
       if (BROKEN_STREAM_ERRORS.has(reason)) return true;
       // play() rejects with NotSupportedError when the format is not playable;
       // AbortError and NotAllowedError are environment, not station.
       return reason === 'play-failed:NotSupportedError';
+    }
+
+    /** Chunk that carries hls.js; fetched the first time a station needs it. */
+    const HLS_CHUNK = './client.hls.js';
+    /** A URL that is an HLS playlist rather than a media file. */
+    const HLS_URL = /\.m3u8(\?|#|$)/i;
+    /** How many dead stations one listen may skip before it stops trying. */
+    const AUTO_SKIP_LIMIT = 3;
+    /** A listen that lasted this long counts as a success when it later drops. */
+    const SETTLED_MS = 5000;
+
+    /**
+     * Build the stream attacher the playback core asks before every attempt.
+     *
+     * m3u8 goes through hls.js, lazily: the chunk is fetched the first time a
+     * station needs one and kept on `shared` afterwards. Until it has arrived
+     * the URL is left to the element itself, which plays simple HLS on Chromium
+     * and fails safely elsewhere — the behaviour that existed before this
+     * change, so a slow chunk can never make playback worse.
+     */
+    function makeAttachStream(shared, requireAsync) {
+      const load = () => {
+        if (shared.hlsChunk || shared.hlsLoading || typeof requireAsync !== 'function') return;
+        shared.hlsLoading = true;
+        Promise.resolve()
+          .then(() => requireAsync(HLS_CHUNK))
+          .then((chunk) => {
+            if (chunk && typeof chunk.attachHls === 'function') shared.hlsChunk = chunk;
+          })
+          .catch(() => {
+            /* the native element stays the fallback */
+          })
+          .then(() => {
+            shared.hlsLoading = false;
+          });
+      };
+      return (audio, url, onError) => {
+        if (typeof url !== 'string' || !HLS_URL.test(url)) return null;
+        const chunk = shared.hlsChunk;
+        if (!chunk) {
+          load();
+          return null;
+        }
+        return chunk.attachHls(audio, url, onError);
+      };
     }
 
     const DICT = {
@@ -775,9 +823,9 @@ window.__ModuleLoader__.load({
           if (!shared.radio && typeof createStore === 'function') shared.radio = createStore();
           return shared.radio;
         },
-        ensurePlayback(createPlayback) {
+        ensurePlayback(createPlayback, options) {
           if (!shared.playback && typeof createPlayback === 'function') {
-            shared.playback = createPlayback();
+            shared.playback = options ? createPlayback(options) : createPlayback();
             if (shared.radio && shared.libraryHydrated) shared.playback.setVolume(shared.radio.playbackMemory().volume);
             // A stream that failed is remembered, not retried forever: the next
             // catalogue load filters the station out. A browser autoplay block
@@ -793,10 +841,19 @@ window.__ModuleLoader__.load({
                 if (state.status === 'playing' && state.stationId) {
                   if (shared.blacklist) shared.blacklist.delete(String(state.stationId));
                   if (shared.cache) shared.cache.clearBlacklisted(state.stationId).catch(() => {});
+                  // Only a listen that actually lasted counts as a success. A
+                  // station that reaches `playing` and dies two seconds later
+                  // must not hand the streak a fresh three skips, or a flapping
+                  // source would shuffle the catalogue forever.
+                  shared.playingAt = Date.now();
                 }
                 if (state.status !== 'error' || !state.stationId) return;
                 const reason = String(state.error || '');
                 if (!isBrokenStream(reason)) return;
+                if (shared.playingAt && Date.now() - shared.playingAt > SETTLED_MS) {
+                  shared.autoSkips = 0;
+                  shared.autoSkippedId = '';
+                }
                 const id = String(state.stationId);
                 if (shared.blacklist) shared.blacklist.add(id);
                 if (shared.cache && typeof shared.cache.addBlacklisted === 'function') {
@@ -805,6 +862,7 @@ window.__ModuleLoader__.load({
                   if (!shared.pendingBlacklist) shared.pendingBlacklist = new Set();
                   shared.pendingBlacklist.add(id);
                 }
+                shared.skipFailedStation(id);
               });
             }
           }
@@ -813,6 +871,50 @@ window.__ModuleLoader__.load({
           // when this core appeared, this is where the two halves meet.
           shared.armHostWatch();
           return shared.playback;
+        },
+        /** The hls.js chunk, once fetched. Null while no station needs it. */
+        hlsChunk: null,
+        /** True while that fetch is in flight, so one failure does not stack loads. */
+        hlsLoading: false,
+        /** Consecutive stations this session skipped because they failed. */
+        autoSkips: 0,
+        /** The station id already skipped, so one dead source is skipped once. */
+        autoSkippedId: '',
+        /** When the last successful listen started; `0` until one does. */
+        playingAt: 0,
+        /**
+         * Leave a failed station behind instead of parking on it.
+         *
+         * A dead source used to sit on the card until the user pressed next,
+         * which is what made a few broken streams feel like a broken radio.
+         * One skip per failure, three per streak: a catalogue with nothing
+         * alive still stops and shows the error rather than shuffling forever.
+         * The skipped station was already blacklisted by the subscriber, so it
+         * is not offered again; this only picks what replaces it.
+         */
+        skipFailedStation(failedId) {
+          const store = shared.radio;
+          const playback = shared.playback;
+          const id = String(failedId || '');
+          if (!store || !playback || !id) return;
+          if (shared.autoSkips >= AUTO_SKIP_LIMIT) return;
+          if (shared.autoSkippedId === id) return;
+          if (typeof playablePool !== 'function' || typeof streamOf !== 'function') return;
+          const pool = playablePool(store);
+          if (!pool || pool.length === 0) return;
+          const alive = pool.filter((station) => {
+            const key = String(station.id);
+            return key !== id && !(shared.blacklist && shared.blacklist.has(key));
+          });
+          const bag = alive.length > 0 ? alive : pool.filter((station) => String(station.id) !== id);
+          if (bag.length === 0) return;
+          const next = bag[Math.floor(Math.random() * bag.length)];
+          const nextStream = streamOf(next);
+          if (!nextStream) return;
+          shared.autoSkippedId = id;
+          shared.autoSkips += 1;
+          if (typeof store.select === 'function') store.select(next);
+          playback.play(next.id, nextStream);
         },
         /**
          * The small amount of the data chunk the panel itself needs: genre
@@ -2414,7 +2516,7 @@ window.__ModuleLoader__.load({
             // same store and the same playback core the panel would, so the
             // card can show a station even when the panel has never mounted.
             shared.ensureStore(chunk.createRadioStore);
-            shared.ensurePlayback(chunk.createPlaybackCore);
+            shared.ensurePlayback(chunk.createPlaybackCore, { attachStream: makeAttachStream(shared, requireAsync) });
             // The footer is a first-class surface, not a preview: if it is the
             // first thing to mount, it must still have stations to show and a
             // play button that works. `ensureData` is the same single flight
@@ -2528,25 +2630,12 @@ window.__ModuleLoader__.load({
           },
           onMode(snapshot) {
             setModeState(snapshot);
+            // A hold owns the scene for the whole flight: an open library would
+            // hang over the disc while it is being gathered, so it goes first.
+            if (snapshot.transitioning && favMenuRef.current) setFavMenu(null);
           },
           /**
-           * The hole's centre is the way in: holding it crosses to the cluster
-           * field. The scene starts that crossing itself, so this is only the
-           * host's chance to drop a stale selection — it must not open a berth,
-           * or the crossing would land on shelves nobody asked for.
-           */
-          onCenterClick() {
-            // Routed through the ref: this memo is built once, before the store
-            // exists, so calling `selectNone` directly would capture its first,
-            // empty closure and never clear a later selection.
-            if (actionsRef.current.selectStation) actionsRef.current.selectStation(null);
-            // A hold that lands on the cluster has no search box over it: the
-            // box belongs to the hole, and leaving it open would put a text
-            // field on a field of stars.
-            setSearchOpen(false);
-          },
-          /**
-           * A tap on the hole is not a hold: it opens the search box. The two
+           * A click on the hole is not a hold: it opens the search box. The two
            * gestures never overlap, because a completed hold consumed the press
            * at pointer down and never reaches this path.
            */
@@ -2573,7 +2662,7 @@ window.__ModuleLoader__.load({
           },
           /**
            * A short right press in the scene asks for the library. The stage has
-           * already done the gesture work (long press is the way back, and the
+           * already done the gesture work (a long press is the way back, and the
            * two never overlap), so all that is left is where it landed.
            */
           onFavourites(x, y) {
@@ -2638,7 +2727,7 @@ window.__ModuleLoader__.load({
           .then((chunk) => {
             if (!alive || !shared) return;
             if (!shared.env) shared.bindEnv(chunk);
-            shared.ensurePlayback(chunk.createPlaybackCore);
+            shared.ensurePlayback(chunk.createPlaybackCore, { attachStream: makeAttachStream(shared, requireAsync) });
             if (shared.radio && shared.playback) setPlaybackReady((n) => n + 1);
           })
           .catch(() => {
@@ -2856,14 +2945,14 @@ window.__ModuleLoader__.load({
 
       /**
        * Open the list where the press landed, or close it when it is already up:
-       * the second right press is the way out — the same gesture that opened it.
+       * the second right press is the way out - the same gesture that opened it.
        * The corner it hangs from is flipped here, not by a layout pass, so a
        * press near an edge does not put the list off the screen.
        */
       const openFavourites = useCallback(
         (x, y) => {
           if (!store) return;
-          // A second right press is the way out — the same gesture that opened
+          // A second right press is the way out: the same gesture that opened
           // it, so the list needs no other key of its own.
           if (favMenuRef.current) {
             setFavMenu(null);
@@ -2885,8 +2974,8 @@ window.__ModuleLoader__.load({
         [store, hoverCardIn],
       );
 
-      // Escape belongs to the page's own key handler — the list has to close
-      // before the radio does — so only the press outside lives here. A right
+      // Escape belongs to the page's own key handler - the list has to close
+      // before the radio does - so only the press outside lives here. A right
       // press in the scene is excluded: that one is the list's own toggle, and
       // closing it here would let the stage's report reopen it a frame later.
       useEffect(() => {
@@ -2908,7 +2997,7 @@ window.__ModuleLoader__.load({
        *
        * The point is in client pixels and the box asks to be painted fixed, but
        * a fixed box only measures from the viewport while nothing above it
-       * makes a containing block — a filter, a transform, a `contain`, all of
+       * makes a containing block - a filter, a transform, a `contain`, all of
        * which glass surfaces carry. Under one of those the same numbers name a
        * spot in that surface's own box, and the list opens somewhere else.
        *
@@ -2917,7 +3006,7 @@ window.__ModuleLoader__.load({
        * is exact near the surface's origin and further off the further the
        * press lands. So nothing is assumed. The box is moved, the move is
        * measured, and the next move is divided by what the last one actually
-       * bought — a ratio that is 1 for a plain viewport, the surface's zoom for
+       * bought - a ratio that is 1 for a plain viewport, the surface's zoom for
        * a zoomed one, and whatever the host does for anything stranger. Three
        * passes settle every affine case; the loop stops early once the box is
        * on the point.
@@ -2948,8 +3037,10 @@ window.__ModuleLoader__.load({
         }
       }, [favMenu]);
 
-      // The disk's ring belongs to playback, so the panel must say when the
-      // transport changed for a reason the stage cannot see.
+      // ---- the disk's ring -----------------------------------------
+      //
+      // The ring under the hole belongs to playback, so the panel must say when
+      // the transport changed for a reason the stage cannot see.
       const playId = playState && playState.stationId ? String(playState.stationId) : null;
       const playStatus = playState ? playState.status : 'idle';
 
@@ -2989,7 +3080,6 @@ window.__ModuleLoader__.load({
           radio: cfg.radio === undefined ? null : cfg.radio,
           onSelect: stageCallbacks.onSelect,
           onMode: stageCallbacks.onMode,
-          onCenterClick: stageCallbacks.onCenterClick,
           onHoleTap: stageCallbacks.onHoleTap,
           onPlay: stageCallbacks.onPlay,
           onHover: stageCallbacks.onHover,
@@ -3383,12 +3473,12 @@ window.__ModuleLoader__.load({
                   'ul',
                   { className: 'bhrl-favpop__list' },
                   favouriteList.slice(0, 40).map((entry) => {
-                    const language = entry.language
+                    const rowLanguage = entry.language
                       ? lang === 'en'
                         ? entry.language.en || entry.language.zh
                         : entry.language.zh || entry.language.en
                       : '';
-                    const meta = [genreLabelOf(entry.genre || 'other'), language]
+                    const meta = [genreLabelOf(entry.genre || 'other'), rowLanguage]
                       .filter(Boolean)
                       .join(' · ');
                     return h(

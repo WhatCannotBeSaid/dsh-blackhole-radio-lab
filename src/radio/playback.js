@@ -37,6 +37,10 @@ export const SLOW_LOAD_MS = 10000;
  * @param options.createAudio - () => audio-like object (tests inject a fake)
  * @param options.now         - clock, injected for tests
  * @param options.slowLoadMs  - threshold for the "slow load" notice
+ * @param options.attachStream - (audio, url, onError) => { detach() } | null.
+ *   An attacher that owns the source itself (hls.js needs MediaSource, so it
+ *   cannot go through `audio.src`). Returning a handle means "the source is
+ *   mine"; returning null keeps the native path, which is the default.
  */
 export function createPlaybackCore(options) {
   const opts = options || {};
@@ -46,8 +50,11 @@ export function createPlaybackCore(options) {
     typeof opts.createAudio === 'function'
       ? opts.createAudio
       : () => (typeof Audio === 'function' ? new Audio() : null);
+  const attachStream = typeof opts.attachStream === 'function' ? opts.attachStream : null;
 
   let audio = null;
+  /** The attacher's handle while it owns the element's source (HLS). */
+  let streamHandle = null;
   let created = 0;
   let status = 'idle';
   let stationId = null;
@@ -71,9 +78,23 @@ export function createPlaybackCore(options) {
     timer = null;
   }
 
+  /** Let go of a source the attacher owns before the element is reused. */
+  function detachStream() {
+    const handle = streamHandle;
+    streamHandle = null;
+    if (handle && typeof handle.detach === 'function') {
+      try {
+        handle.detach();
+      } catch {
+        /* an attached player may already be gone */
+      }
+    }
+  }
+
   function fail(reason) {
     clearTimer();
     generation += 1;
+    detachStream();
     status = 'error';
     error = reason;
     try { if (audio) audio.pause(); } catch { /* detached */ }
@@ -104,7 +125,27 @@ export function createPlaybackCore(options) {
     error = null;
     startedAt = now();
     if (reload) {
-      try { audio.pause(); audio.src = url; } catch { return fail('bad-url'); }
+      try { audio.pause(); } catch { /* detached */ }
+      detachStream();
+      let attached = null;
+      if (attachStream) {
+        try {
+          attached = attachStream(audio, url, (reason) => {
+            if (disposed || token !== generation) return;
+            if (reason === 'network') recover(reason);
+            else fail(String(reason || 'attach-failed'));
+          });
+        } catch {
+          return fail('bad-url');
+        }
+      }
+      streamHandle = attached && typeof attached === 'object' ? attached : null;
+      // A handle means the attacher owns the source now (hls.js feeds the
+      // element through MediaSource and starts it itself). Without one the
+      // element takes the URL directly, exactly as it always did.
+      if (!streamHandle) {
+        try { audio.src = url; } catch { return fail('bad-url'); }
+      }
     }
     emit();
     arm(startupMs, 'startup-timeout');
@@ -116,7 +157,12 @@ export function createPlaybackCore(options) {
       if (name === 'NotSupportedError') return fail('play-failed:NotSupportedError');
       recover(`play-failed:${name}`);
     };
-    try { Promise.resolve(audio.play()).catch(reject); } catch (reason) { reject(reason); }
+    // An attached source starts playing from its own manifest handler, so the
+    // element must not be asked a second time. A resume (reload === false)
+    // reuses the attachment as-is and still needs the call.
+    if (!streamHandle || !reload) {
+      try { Promise.resolve(audio.play()).catch(reject); } catch (reason) { reject(reason); }
+    }
   }
   /**
    * 0..1. It lives here, beside the element, because it is a property of the
@@ -326,6 +372,7 @@ export function createPlaybackCore(options) {
       if (disposed) return core;
       clearTimer();
       generation += 1;
+      detachStream();
       status = 'idle';
       if (audio) {
         try {
@@ -409,6 +456,7 @@ export function createPlaybackCore(options) {
       disposed = true;
       generation += 1;
       clearTimer();
+      detachStream();
       if (audio) {
         try {
           audio.pause();

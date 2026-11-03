@@ -1,8 +1,9 @@
 /**
- * Build the two lazily loaded chunks this plugin ships.
+ * Build the lazily loaded chunks this plugin ships.
  *
  *   src/stage.js        → client.stage.js   (three inlined; the only WebGL code)
  *   src/radio/index.js  → client.radio.js   (data only: no three, no DOM)
+ *   src/hls.js          → client.hls.js     (hls.js inlined; DOM + MediaSource)
  *
  * The outputs are not plain ES modules. They are harness package-local dynamic
  * chunks, which register themselves through the same facade the package's own
@@ -51,6 +52,7 @@ const CHUNKS = [
     // No bare `three` may survive: the browser would try to resolve it against
     // the harness module table instead of the inlined copy beside it.
     forbidBareThree: true,
+    bundled: 'Includes three.js (MIT); see THIRD-PARTY-NOTICES.md.',
   },
   {
     chunk: 'client.radio.js',
@@ -58,6 +60,16 @@ const CHUNKS = [
     // The data chunk must stay renderer-free; importing three would be a layer
     // violation that also doubles the chunk, so the build refuses it.
     forbidBareThree: true,
+    bundled: 'No bundled third-party code; see THIRD-PARTY-NOTICES.md.',
+  },
+  {
+    chunk: 'client.hls.js',
+    entry: join(ROOT, 'src', 'hls.js'),
+    // hls.js is bundled in rather than resolved at runtime: there is no module
+    // table entry for it, and a bare specifier would surface as a load failure
+    // only when a station first needs HLS. It may not pull in three either.
+    forbidBareThree: true,
+    bundled: 'Includes hls.js (Apache-2.0); see THIRD-PARTY-NOTICES.md.',
   },
 ];
 
@@ -98,7 +110,7 @@ async function buildChunk(spec) {
 
   const banner = [
     `/*! ${OWNER_ID} v${PKG.version} — ${PKG.license} License, © 2026 ${PKG.author}`,
-    ' * Includes three.js (MIT); see THIRD-PARTY-NOTICES.md.',
+    ` * ${spec.bundled}`,
     ' *',
     ' * Portions copyright (c) 2020 Eric Bruneton, BSD-3-Clause.',
     ' * Geodesic ray tracing and precomputed ray tables derive from',

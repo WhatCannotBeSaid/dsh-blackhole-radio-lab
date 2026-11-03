@@ -20,19 +20,22 @@
  * The gestures follow the depths. A depth is not a page: there is no cut, no
  * second scene and no chrome of its own.
  *
- *   black-hole ──left-hold the hole──▶ cluster
+ *   black-hole ──left-hold the hole (2.3 s)──▶ cluster
+ *   cluster    ──right-hold anywhere but a card (2.3 s)──▶ black-hole
+ *   any depth  ──short right press (under 120 ms)──▶ hand the library point to
+ *               the panel, which draws the list where the press landed
  *   cluster    ──click a station──▶ play it
- *   any depth  ──right-hold──▶ one level back (touch: hold the blank)
  *   any depth  ──Esc──▶ leave the radio page
  *
  * Everything between depths is one continuous state value (`progress`) plus the
- * station layer's per-station blend. Nothing is ever rebuilt, so enter and exit
- * animate the same numbers in opposite directions, and an interrupted gesture
- * keeps moving from where it is instead of snapping.
+ * station layer's per-station blend. There is no second state that makes the
+ * frame black in between: the hole shrinks out of its own disc, the disc
+ * scatters into the cluster, and the same numbers run backwards to re-form it.
+ * Nothing is ever rebuilt, so an interrupted gesture keeps moving from where it
+ * is instead of snapping.
  *
- * The sky is one sky. `starfield` is never dimmed by a depth change — only the
- * wormhole cover, mid-passage, may pull it down — because a depth change is a
- * rearrangement of the same stars, not a different background.
+ * The sky is one sky. `starfield` is never dimmed by a depth change, because a
+ * depth change is a rearrangement of the same stars, not a different background.
  *
  * The interaction machine (single source of truth for the panel) funnels the
  * pointer, the hold and the keyboard; the panel never writes scene state
@@ -62,6 +65,7 @@ import {
   CRITICAL_IMPACT_PARAMETER,
   DISK_INNER,
   DISK_OUTER,
+  RS,
   maxOrbitRadiusForShadow,
   shadowAngularRadius,
 } from './scene/dimensions.js';
@@ -84,64 +88,49 @@ const CLICK_SLOP = 6;
 /** Hover picking is throttled: a pointer moving across 2,000 dots must not
  * run 2,000 projections per pointer event. */
 const HOVER_INTERVAL_MS = 90;
-/** Holding the hole's centre this long enters the genre field. */
-const LONG_PRESS_MS = 500;
 /** Touch has no hover, so holding a station this long asks for its card. */
 const TOUCH_CARD_MS = 480;
 /** Touch has no right button either, so holding empty space this long goes back. */
 const TOUCH_BACK_MS = 600;
 /** A press held longer than this is not a click, whatever else it did. */
 const PRESS_CLICK_MS = 800;
-/**
- * How long the right button waits before it becomes an exit hold.
- *
- * Starting the hold is not free: it runs `exitCluster` at once, so a hold that
- * began on the press would already have sent the field home before a tap could
- * be recognised. Waiting this long keeps every tap on the favourites list, and
- * a real hold only pays the delay once, before its ring starts.
- */
-const MENU_HOLD_MS = 320;
 /** Progress units per second; the full transition takes ~1.05 s. */
 const TRANSITION_RATE = 0.95;
 
 /**
- * The wormhole transition, in seconds from the press.
+ * The form change, in seconds from the press.
  *
  * One timeline, not two: the ring fills during the same window the geometry
  * starts to give way, so the horizon is already moving when the ring locks and
  * the distance left after the commit is short. Every segment below is a wall
  * clock reading, so a dropped frame shortens the wait instead of stretching it.
+ * Both buttons use the same clock and the same curve: the left one runs it
+ * forwards, the right one runs it backwards.
  */
-/** Entry hand-over; reduced-motion geometry and ring start here. */
 const WORM_RING_S = 1.0;
+/** The hold's full length. Short of it, the release is a cancel. */
+const WORM_END_S = 2.3;
+/** Reduced motion keeps one short leg rather than borrowing the full one. */
+const WORM_CALM_S = 0.2;
 /**
- * The throat: the camera is through the pinch and the tube runs straight on to
- * the far mouth. The frame is opaque here, so the crossing happens under it.
+ * The ring has been recognised as a hold. Only feedback: the timeline below is
+ * untouched, and the press still has to run to WORM_END_S to commit.
  */
-const WORM_COVER_S = 1.35;
-/** The exit ring has swept past the lens and the new space is the frame. */
-const WORM_END_S = 2.5;
-/**
- * Right hold: the exit geometry starts here and the ring starts filling. The
- * exit commits only when that ring is full, at WORM_OUT_END_S.
- */
-const WORM_OUT_RING_S = 0.55;
-/** The frame is opaque again, the hole is about to be uncovered. */
-const WORM_OUT_VEIL_S = 1.15;
-/** The hole is back. */
-const WORM_OUT_END_S = 3.05; // 2.5 s of motion after WORM_OUT_RING_S.
+const HOLD_PULSE_S = 0.6;
 /** Movement beyond this many CSS px turns a hold into a camera drag. */
-const WORM_DEADZONE_PX = 8;
+const WORM_DEADZONE_PX = CLICK_SLOP;
 /** How long an abandoned hold takes to retreat to where the frame was (ms/s). */
 const WORM_RECOIL_S = 0.22;
 /**
- * Below this much advance nothing has visibly moved, so a release is a plain
- * undo and not a recoil. Without it a right tap — which arms the exit the
- * moment it is pressed — would shake the cluster for WORM_RECOIL_S.
+ * How long the right button must stay down before its hold begins. The same
+ * press is both the "one level back" hold and, released inside this window,
+ * nothing at all: waiting a click's length before drawing the ring keeps a
+ * short right press from flashing one. The hold's clock still starts at the
+ * real press, so the gesture itself is not a millisecond longer.
  */
-const WORM_RECOIL_EPS = 0.003;
-/** Reduced motion: no wormhole, one 200 ms cross-fade. */
-const WORM_CALM_RATE = 1 / 0.2;
+const RIGHT_HOLD_DELAY_S = 0.12;
+/** Reduced motion: no path, one 200 ms cross-fade. */
+const WORM_CALM_RATE = 1 / WORM_CALM_S;
 /** Catalogue brightness while the hole is the subject. */
 const HOLE_STATION_DIM = 0.55;
 
@@ -174,9 +163,8 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  * @param options.language - 'zh' | 'en'.
  * @param options.onSelect - fired with (station|null) for selections.
  * @param options.onMode - fired with the machine snapshot on every change.
- * @param options.onCenterClick - the hole centre was held (enter the genre field).
- * @param options.onHoleTap - the hole centre was tapped, not held: the search
- *   box's opening gesture. Holding still belongs to onCenterClick.
+ * @param options.onHoleTap - the hole centre was clicked: the search box's
+ *   opening gesture. Holding the centre is the way into the cluster instead.
  * @param options.onPlay - fired with (station, index) when a click asked for
  *   transport on the disk. The stage does not play anything itself: it reports
  *   the intent and the panel decides what "play" means there.
@@ -184,9 +172,9 @@ const SHADOW_SHORT_EDGE_FRACTION = 0.2;
  *   pointer settles on a station, and with null when it leaves one. The panel
  *   owns the timing of any card; the stage only reports what is under the
  *   pointer. `touch` says the report came from a long press, not a hover.
- * @param options.onFavourites - fired with (x, y) in client pixels when a short
- *   right press ended. The hold that leaves a cluster needs the ring to fill, so
- *   a press shorter than that is free to mean something else.
+ * @param options.onFavourites - fired with (x, y) when a short right press in
+ *   the scene is released before it turns into a hold: the library opens where
+ *   the press landed. The stage never draws that list itself.
  * @returns a handle with selection, mode, camera and measurement helpers.
  */
 export function mountStage(container, options) {
@@ -194,9 +182,8 @@ export function mountStage(container, options) {
   const antialias = settings.antialias !== false;
   const pixelRatioCap = clampRatio(settings.pixelRatioCap);
   const reducedMotion = settings.reducedMotion === true;
-  // The wormhole is the transition. The switch restores the old behaviour —
-  // a plain cross-fade — for A/B comparison and for a rollback that needs no
-  // code change.
+  // The switch restores the old behaviour — a plain cross-fade — for A/B
+  // comparison and for a rollback that needs no code change.
   const wormholeEnabled = settings.wormhole !== false;
   const language = settings.language === 'en' ? 'en' : 'zh';
 
@@ -380,13 +367,6 @@ export function mountStage(container, options) {
       pendingFocus: null,
       savedCamera: null,
       /**
-       * The hole is gone from the frame even though the arriving space is still
-       * faint. The hold needs those two states to be separate for its last
-       * stretch: the matter has already left the disc while the arriving space
-       * is still coming up, so the disc must not reappear underneath it.
-       */
-      wormCover: 0,
-      /**
        * Hold pressure, 0..1. The disc winds up and swells under the ring; the
        * burst itself follows `progress`, so this only ever has to unwind.
        */
@@ -548,27 +528,49 @@ export function mountStage(container, options) {
       // The arriving space drives the hole out. The hole leaves a little after
       // the content starts moving, and returns a little before it arrives: the
       // matter should look reorganised, not cross-faded.
-      // `wormCover` is the second source: the wormhole has already swallowed the
-      // frame, so the hole is gone even while `progress` is still at zero.
-      const cover = clamp01(machine.wormCover);
       // Hold pressure is not a source of "the hole is leaving": the disc is
       // winding up under the shadow, and the shadow itself must not move. The
       // hold only makes the traced disc's own points brighter and hotter, which
       // is the only way to show a wind-up without drawing a second population
       // of points over the first.
       const charge = clamp01(machine.wormCharge);
-      const leaving = Math.max(rise, cover);
-      const holeFade = smoothstep01(clamp01((leaving - 0.05) / 0.62));
+      const holeFade = smoothstep01(clamp01((rise - 0.05) / 0.62));
       // A captured source cell and the imaged disc are NEVER drawn together.
       // During the passage this pass supplies only the sky/shadow; all visible
       // disc material lives in discTransfer, including the gas between stations.
-      const returning = machine.returning === true;
-      const returnDisc = smoothstep01(clamp01((1 - machine.progress - 0.35) / 0.65));
+      // The return curve is for the way back only. A crossing that ended on
+      // the cluster leaves `returning` set on the hold that carried it, and
+      // reading it there kept the disc opaque over a finished hand-off.
       const transferred = discTransfer.active;
+      const returning = machine.returning === true && !transferred;
       const handoff = transferred ? discTransferHandoff(machine.progress) : 1;
       discTransfer.setProgress(machine.progress);
       disk.setDiscTransfer(transferred ? Math.min(1, machine.progress / DISC_TRANSFER_LANDING) : -1);
-      disk.setOpacity(returning ? returnDisc : transferred ? 1 - handoff : 1 - holeFade);
+      // Outward, the hole fades as the cluster arrives. Homeward it has to be
+      // in frame from the first pixel: the rig pulls the camera back through
+      // the distance the outward trip covered, so a hole that is still black at
+      // progress 0.67 does not grow into the frame — it appears in it, already
+      // large. `1 - holeFade` is the outward curve, and reusing it here was
+      // exactly that bug: `leaving` sits above 0.67 for the first third of the
+      // return, so opacity stayed at zero while the camera had already moved.
+      // The homeward leg rebuilds the live disc out of the captured fragments
+      // instead of cross-fading a disc back over them: the same points that
+      // left as material gather along the spiral into the ring they sat on.
+      const gather = !(returning || transferred);
+      const discOpacity = returning
+        ? smoothstep01(clamp01(1 - machine.progress))
+        : transferred ? 1 - handoff : gather ? 1 - rise : 1 - holeFade;
+      disk.setOpacity(discOpacity);
+      // Homeward, the gas pulls back off the horizon, so the shadow it was
+      // covering emerges from under it: the hole grows instead of appearing at
+      // full size. `setDiscInner` is the only control that changes the shadow's
+      // radius without touching the camera or the trace. Outward it stays at
+      // ISCO — there the hole leaves by fading, which already reads as a shrink.
+      disk.setDiscInner(
+        returning
+          ? 1.2 + (DISK_INNER / RS - 1.2) * smoothstep01(clamp01(1 - machine.progress))
+          : DISK_INNER / RS,
+      );
       disk.setStationEmission(0.30);
       disk.setStationGain(5);
 
@@ -582,7 +584,7 @@ export function mountStage(container, options) {
       // out of it. The shadow is left to the light: it goes when the disc goes.
       // Kept so this call site need not know that the analytic ring is gone:
       // the imaging pass draws the ring where the winding piles up, itself.
-      disk.setRingIntensity(0.62 * (1 - holeFade));
+      disk.setRingIntensity(0.62 * discOpacity);
       // The light goes before the geometry does. The two cones have to read as
       // one silhouette, and the fold has to happen where the eye can finish the
       // shape itself instead of being shown a lit diagram of it.
@@ -593,25 +595,32 @@ export function mountStage(container, options) {
       // camera sits inside its outer shells there.
       // The sky is one sky. Dimming it as the cluster arrives was reading as
       // "the background changed", which is exactly what this page is not allowed
-      // to do: the two states share one field of stars at one brightness. Only
-      // the wormhole cover, mid-passage, may pull it down.
-      starfield.setDim(cover * 0.55);
+      // to do: the two states share one field of stars at one brightness.
+      starfield.setDim(0);
       if (layer) {
         // The cluster is the same station cloud rearranged, so the cluster
         // amount is what fades the stations that are not part of what is on
         // screen.
         layer.setReturning(returning);
-        layer.setClusterAmount(returning ? 1 : rise);
+        // The gather runs on the same `rise` as the outward trip. `returning`
+        // only changes the flight path (stations spiral onto their disc anchors
+        // instead of following the cubic). It must NOT freeze these uniforms at
+        // the cluster values: doing that left the cloud exactly where it was and
+        // merely dimmed it out over the arriving disc, which read as a second
+        // disc layer rather than the stars becoming this one.
+        layer.setClusterAmount(rise);
         // The normal particle population is a resting-state representation,
         // not an in-flight substitute. It returns only after the source cells
         // have reached their station destinations.
         layer.object.visible = !transferred || handoff > 0;
-        layer.setHoleOnly(returning ? 0 : clamp01(1 - clamp01(rise * 1.6)));
+        layer.setHoleOnly(clamp01(1 - clamp01(rise * 1.6)));
 
-        layer.setDiskMatter(returning ? 0 : clamp01(1 - rise));
-        layer.setDim(returning ? 1 - returnDisc : (HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
+        layer.setDiskMatter(clamp01(1 - rise));
+        // Settles exactly on the resting hole view (dim = HOLE_STATION_DIM),
+        // so the last frame of the gather and the first resting frame match.
+        layer.setDim((HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
       }
-      if (rise > 0.001 || cover > 0.001) dirty = true;
+      if (rise > 0.001) dirty = true;
     };
 
     const frameTimes = [];
@@ -745,6 +754,11 @@ export function mountStage(container, options) {
       // Resolve the timeline before uploading particle buffers and disk uniforms.
       advanceWormhole(now);
 
+      // A landing that happened above only put its blend on the layer; the
+      // disc uniforms are authored here, and this is the upload that draws the
+      // endpoint. Without it the matrix keeps the entry picture.
+      if (worm.pulseEnd || worm.landed) applyTransition();
+
       currentLod = computeLod();
       if (layer) {
         layer.setLod(currentLod);
@@ -786,7 +800,18 @@ export function mountStage(container, options) {
       if (dirty) draw();
       // Only acknowledge completion after the exact end-state buffers were
       // uploaded and rendered. A full progress ring must never lead the image.
-      if (worm.landed) finishWormhole();
+      // The crossing drew its endpoint in the frame above: the ring fills and
+      // the mode is reported together, never before the image.
+      if (worm.pulseEnd) {
+        worm.pulseEnd = false;
+        if (worm.kind === null && machine.mode !== 'cluster' && machine.target > 0.5) {
+          machine.mode = 'cluster';
+          notifyMode();
+        }
+        if (holdRing) holdRing.complete();
+        dirty = true;
+        requestFrame();
+      }
       const morphing = layer ? layer.isAnimating : false;
       if (
         !reducedMotion ||
@@ -1552,6 +1577,10 @@ export function mountStage(container, options) {
     };
 
     const syncDataset = () => {
+      // The crossing, for the real-engine probe: the CPU harness cannot see a
+      // leg that gets stranded, and the canvas is where the scene already
+      // publishes what it is.
+      canvas.setAttribute('data-bhrl-crossing', worm.kind || '');
       if (selectedId) canvas.setAttribute('data-bhrl-selected', selectedId);
       else canvas.removeAttribute('data-bhrl-selected');
       canvas.setAttribute('data-bhrl-mode', machine.mode);
@@ -1620,12 +1649,6 @@ export function mountStage(container, options) {
         clearTimeout(longTimer);
         longTimer = 0;
       }
-      // A right-button hold that has not been armed yet belongs to the scene too:
-      // left behind, it would start an exit against the space it was opened in.
-      if (menuHoldTimer) {
-        clearTimeout(menuHoldTimer);
-        menuHoldTimer = 0;
-      }
       // The record's own resume timer belongs to the scene too: left behind, it
       // fires against a disposed disk when the page changes mid-freeze. Resuming
       // here is the same thing the timer would have done, minus the wait.
@@ -1687,7 +1710,11 @@ export function mountStage(container, options) {
       }
       if (machine.mode !== 'cluster' && machine.target < 0.5) {
         machine.savedCamera = rig.framing();
-        clearSelection(true);
+        // The scene drops its own highlight — the station has no berth in the
+        // field — but the host keeps the choice: the sidebar card and the
+        // info panel describe what the listener picked, not what this scene
+        // happens to draw. Notifying here is what emptied the card on entry.
+        clearSelection(false);
       }
       clearTimers();
       machine.categoryId = categoryId ? String(categoryId) : null;
@@ -1856,23 +1883,27 @@ export function mountStage(container, options) {
       blend: 0,
       layoutReady: false,
       landed: false,
+      /** The crossing finished inside its own frame: the tick fills the ring. */
+      pulseEnd: false,
+      landedLeg: null,
       /**
        * The exit has run its one-time preparation (the disc capture, the space
-       * hand-over at WORM_OUT_RING_S) but the crossing is not committed yet:
-       * the lock comes only when the ring is full, so a release in between has
-       * to put the cluster back.
+       * hand-over) but the crossing is not committed yet: the lock comes only
+       * when the ring is full, so a release in between has to put the cluster
+       * back.
        */
       armed: false,
+      /** An exit was released after it armed: finish the give-back next frame. */
+      settling: false,
+      /** The 0.6 s "held long enough to count" pulse already fired this press. */
+      pulsed: false,
       /** Where a cancel retreats to: 0 back to the hole, 1 back to the cluster. */
       recoilTarget: 0,
       /** Blend on screen when an exit was cancelled, so the retreat is sized. */
       recoilBlend: 0,
-      /** State captured before the exit preparation, so a cancel can restore it. */
-      coverBefore: 0,
       /** Cluster blend when the exit was armed: a cancel before it settles resumes. */
       progressBefore: 0,
       /** The ring reached its full arc and was dismissed for this hold. */
-      ringFull: false,
     };
 
     const ringPoint = (event) => {
@@ -1921,7 +1952,7 @@ export function mountStage(container, options) {
       return true;
     };
 
-    const startHold = (kind, event) => {
+    const startHold = (kind, event, sinceMs) => {
       // One hold at a time, ever. A second press mid-transition would overwrite
       // the timeline of the first and leave the mask half drawn. A recoil is not
       // a hold: it is only the cancel fading out, so a new press may cut it off.
@@ -1939,8 +1970,8 @@ export function mountStage(container, options) {
       }
       if (kind === 'enter' && !prepareDiscTransfer()) return false;
       const duration = kind === 'enter'
-        ? (reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S - 0.18)
-        : (reducedMotion ? 1 / TRANSITION_RATE : WORM_OUT_END_S - WORM_OUT_RING_S);
+        ? (reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S)
+        : (reducedMotion ? 1 / TRANSITION_RATE : WORM_END_S);
       // Every inverse here is taken on the blend the timeline itself walks, so a
       // resumed leg lands exactly on the frame the eye left. The exit walks its
       // blend downwards, from the cluster to the hole, so its distance into the
@@ -1956,10 +1987,9 @@ export function mountStage(container, options) {
       if (kind === 'enter') worm.target = 'cluster';
       worm.landed = false;
       worm.locked = false;
-      worm.covered = resuming && worm.covered;
-      worm.veiled = resuming && worm.veiled;
       worm.armed = resuming && worm.armed;
-      worm.ringFull = false;
+      worm.settling = false;
+      worm.pulsed = false;
       worm.phase = null;
       worm.from = null;
       worm.alpha = 0;
@@ -1972,7 +2002,9 @@ export function mountStage(container, options) {
         armExit();
         if (!worm.kind) return false;
       }
-      worm.startedAt = performance.now() - resumeAt * 1000;
+      // `sinceMs` is the real pointer-down, so the wait before the ring draws
+      // costs the gesture nothing: the hold is still WORM_END_S long.
+      worm.startedAt = (typeof sinceMs === 'number' ? sinceMs : performance.now()) - resumeAt * 1000;
       worm.downX = event.clientX;
       worm.downY = event.clientY;
       worm.cursorX = p.x;
@@ -2006,16 +2038,16 @@ export function mountStage(container, options) {
       // its preparation but not its lock is still reversible: the cluster is
       // already half gone and has to come back.
       const wasExit = worm.kind === 'exit';
-      // Arming the exit used to be part of the clock, so a released exit had
-      // always moved. It now happens on the press, and a tap that never
-      // advanced has nothing to take back.
-      const exitMoved = wasExit && (worm.target !== 'cluster'
-        || Math.abs(machine.progress - worm.progressBefore) > WORM_RECOIL_EPS);
-      const recoiling = (worm.kind === 'enter' && (machine.wormCharge > 0.004 || machine.progress > 0.0001 || worm.layoutReady))
-        || exitMoved;
+      // Either leg retreats from whatever is on screen. An exit that has armed
+      // has the cluster half gone and the hole half back, so releasing it must
+      // rewind rather than commit. A press that never moved the clock has
+      // nothing on screen yet and ends where it started.
+      const drawn = (worm.kind === 'enter' && (machine.wormCharge > 0.004 || machine.progress > 0.0001)) || (wasExit && (Math.abs(machine.progress - worm.progressBefore) > 0.0001 || worm.blend < 0.999));
+      // `armed` is the exit's own window into the entry. Lifting off inside it
+      // with nothing drawn is the one release that leaves no hold at all.
+      if (wasExit && worm.armed && !drawn) worm.armed = false;
+      const recoiling = drawn;
       worm.locked = false;
-      worm.covered = false;
-      worm.veiled = false;
       worm.hiddenAt = 0;
       worm.pointerId = -1;
       worm.button = 0;
@@ -2025,7 +2057,13 @@ export function mountStage(container, options) {
         // exit retreats toward the cluster it was leaving, not toward the hole.
         worm.kind = 'recoil';
         worm.charge = machine.wormCharge;
+        // Lifting off an armed exit rewinds back toward the cluster it was
+        // leaving; the hole keeps its destination so the mode never flips.
         worm.recoilTarget = wasExit ? 1 : 0;
+        if (wasExit) {
+          machine.returning = false;
+          machine.target = 1;
+        }
         // Where the frame actually stands: the scalar is the frame that has
         // already been drawn, in both legs. `worm.blend` is the same value on an
         // exit but lags it by a frame on an entry, so the scalar is the one that
@@ -2035,15 +2073,27 @@ export function mountStage(container, options) {
         worm.startedAt = performance.now();
       } else {
         if (holdRing) holdRing.hide();
-        if (wasExit && worm.target === 'cluster') {
-          restoreClusterAfterCancel();
-          return;
+        // Letting go before anything moved puts the hole back where it was: an
+        // armed exit has already stood the timeline at the top of the walk.
+        if (wasExit) machine.target = 1;
+        if (wasExit && !worm.armed) {
+          worm.kind = null;
+          worm.phase = null;
         }
-        worm.kind = null;
-        worm.phase = null;
-        worm.from = null;
-        worm.alpha = 0;
-        worm.charge = 0;
+        if (!wasExit) {
+          worm.kind = null;
+          worm.phase = null;
+          worm.from = null;
+          worm.alpha = 0;
+          worm.charge = 0;
+        }
+        // An exit prepared its settlement on the press even when the ring never
+        // filled, so whichever placeholder the pointer left behind is finished
+        // here — untouched past that point, it would never notice a release.
+        if (wasExit && worm.armed) {
+          worm.settling = true;
+          requestFrame();
+        }
         worm.armed = false;
       }
       dirty = true;
@@ -2051,10 +2101,11 @@ export function mountStage(container, options) {
     };
 
     /**
-     * The exit's one-time preparation: the disc capture, the space hand-over
-     * and the mask. It runs when the exit geometry starts, but it must not
-     * commit the crossing — the lock waits for the ring to be full, so this is
-     * also the state a cancel has to undo.
+     * The exit's one-time preparation: the space hand-over. It reserves a
+     * starting point for the cluster (progress one, camera home) so the exit can
+     * walk the same numbers the entry drove backwards. Nothing visible happens
+     * until the clock moves, so a press that never advances has no first frame to
+     * take back.
      */
     const armExit = () => {
       if (worm.armed) return;
@@ -2062,22 +2113,31 @@ export function mountStage(container, options) {
       // hole one step up, so the gesture is always "one level", never a jump.
       const fromCluster = machine.progress > 0.5;
       if (reducedMotion && !fromCluster) {
+        // Nothing to hand back: the press ends where it began. Published first,
+        // because a cancel may only throw away a press that exists.
+        worm.kind = 'exit';
         cancelHold(true);
         return;
       }
       worm.armed = true;
-      worm.coverBefore = machine.wormCover;
       worm.progressBefore = machine.progress;
       worm.target = fromCluster ? 'cluster' : 'field';
       // A settled cluster returns using its live particles. No readback, new
       // population or reverse-flight material swap on the first moving frame.
-      machine.returning = !reducedMotion && fromCluster && machine.progress >= 0.999 && !discTransfer.active;
-      if (fromCluster && !machine.returning && !prepareDiscTransfer({ holeFraming: machine.savedCamera })) {
-        worm.armed = false;
-        cancelHold(true);
-        return;
+      // The transfer is checked and cleared below, not used to pick a branch:
+      // leaving a stale one active hid the whole cluster layer on the exit
+      // (applyTransition drops it once handoff reaches zero) and replaced the
+      // gather with a second population of captured disc material.
+      machine.returning = !reducedMotion && fromCluster && machine.progress >= 0.999;
+      if (fromCluster) {
+        // Whatever the entry captured is spent. A settled entry usually has
+        // already ended it; end() is idempotent, so this covers the rest and
+        // guarantees the exit has exactly one way back.
+        discTransfer.end();
+        disk.setDiscTransfer(-1);
       }
-      machine.wormCover = fromCluster ? 0 : 1;
+      // Stand the numbers at the start of the backward walk. The blend does not
+      // change, so the first frame is the frame the press landed on.
       if (fromCluster) exitCluster({});
       // The cluster leg is reversible under this timeline, so the lock waits for
       // the ring to be full.
@@ -2088,30 +2148,38 @@ export function mountStage(container, options) {
     const lockHold = () => {
       if (worm.locked) return;
       worm.locked = true;
-      // Locking prevents accidental cancellation; it is not visual completion.
-      if (worm.kind === 'enter') return;
-      armExit();
+      // The hold closed, so a release can no longer throw it away. Pin the
+      // scalar to the frame the blend actually ended on: a release in the same
+      // frame as the landing otherwise hands back a cluster the exit had
+      // already left, because the cancel walks the scalar, not the blend.
+      machine.progress = worm.kind === 'enter' ? 1 : 0;
     };
 
     /**
-     * The frame is black. Hand the transition to the arriving space: the field
-     * arrives underneath the still-opaque tunnel, so the reveal is the tube
-     * opening onto the new space and not a cross-fade between two pictures.
+     * The cluster is installed and the camera starts its dolly here: the frame
+     * is already moving while the ring keeps filling.
+     */
+    /**
+     * The cluster is installed and the camera starts its dolly here: the frame
+     * is already moving while the ring keeps filling.
      */
     const beginCover = () => {
-      // Entry dissolves continuously with progress, never with an opaque cut.
-      machine.wormCover = 0;
-      // The host is told at the moment the space actually changes, exactly as
-      // the old centre hold told it. Its handler calls enterCluster(); if the
-      // host has no handler the transition starts here instead.
-      if (typeof settings.onCenterClick === 'function') {
-        try {
-          settings.onCenterClick();
-        } catch {
-          /* ignore */
-        }
-      }
       if (machine.target < 0.5) enterCluster();
+    };
+
+    /**
+     * The ring is about to pass full: freeze the layer where the eye now has it
+     * and stop the headless scalar. On the entry the cluster must not keep
+     * climbing while the camera is still on its way there; on the way back the
+     * disc has already assembled, and finishing means ending the hold, not
+     * unwinding it.
+     */
+    const handOver = () => {
+      if (layer) {
+        layer.setCluster(machine.layout);
+        layer.setClusterAmount(1);
+      }
+      machine.progress = machine.target;
     };
 
     /**
@@ -2121,6 +2189,11 @@ export function mountStage(container, options) {
      * destination, and the camera returns to the cluster's framing.
      */
     const restoreClusterAfterCancel = () => {
+      // Nothing to give back: the cluster only comes back if a press was
+      // actually undone. A late release in the landing frame lands here
+      // after the scalar has already been walked to the hole, and walking
+      // it back would put the cluster on screen with nothing holding it.
+      if (worm.progressBefore <= 0 && worm.recoilBlend <= 0) return;
       const layout = machine.layout;
       // A cancel usually lands on a settled cluster, where the scalar is already
       // one. It can also arrive while an entry is still climbing (press the hole,
@@ -2141,9 +2214,7 @@ export function mountStage(container, options) {
       machine.returning = false;
       machine.target = 1;
       machine.progress = resume;
-      machine.wormCharge = 0;
       machine.wormDark = 0;
-      machine.wormCover = worm.coverBefore;
       if (layer) {
         if (layout) layer.setCluster(layout);
         // A resumed entry keeps feeding the disc transfer: driveCluster above
@@ -2165,16 +2236,12 @@ export function mountStage(container, options) {
       worm.charge = 0;
       worm.blend = 0;
       worm.armed = false;
-      worm.coverBefore = 0;
       worm.progressBefore = 0;
-      worm.ringFull = false;
       worm.recoilTarget = 0;
       worm.recoilBlend = 0;
       worm.kind = null;
       worm.target = 'cluster';
       worm.locked = false;
-      worm.covered = false;
-      worm.veiled = false;
       worm.phase = null;
       worm.from = null;
       worm.alpha = 0;
@@ -2192,27 +2259,80 @@ export function mountStage(container, options) {
       requestFrame();
     };
 
+    /**
+     * Put the disc back exactly as it was after a release took the hole hold
+     * back. The layout was only installed to give the under-hand move a
+     * destination, so it has to go, or the next press starts from a half-built
+     * cluster.
+     */
+    const settleExit = () => {
+      const restoreHole = machine.target === 1;
+      if (restoreHole) {
+        machine.target = 0;
+        machine.categoryId = null;
+        machine.layout = null;
+        machine.pendingFocus = null;
+        transitioning = false;
+      }
+      if (layer) {
+        layer.setCluster(null);
+        layer.setFlow(-1);
+      }
+      discTransfer.end();
+      disk.setDiscTransfer(-1);
+      disk.setStationSpin(1);
+      applyTransition();
+      worm.settling = false;
+      worm.layoutReady = false;
+      worm.charge = 0;
+      worm.blend = 0;
+      worm.armed = false;
+      worm.kind = null;
+      worm.phase = null;
+      worm.from = null;
+      worm.alpha = 0;
+      if (restoreHole) {
+        const saved = machine.savedCamera;
+        const limits = holeOrbitLimits();
+        rig.setHome({
+          radius: saved && saved.radius ? saved.radius : undefined,
+          phi: saved && saved.phi ? saved.phi : undefined,
+          theta: saved && Number.isFinite(saved && saved.theta) ? saved.theta : undefined,
+          minRadius: limits.minRadius,
+          maxRadius: limits.maxRadius,
+        });
+        notifyMode();
+      }
+      dirty = true;
+    };
+
     const finishWormhole = () => {
       // Land exactly on the end state rather than a frame short of it. The
       // destination is the cluster field for the hole ↔ cluster leg.
       const target = worm.target === 'field' ? 'field' : 'cluster';
-      if (worm.kind === 'enter') {
+      // The leg is cleared by its own landing frame, so the direction is read
+      // from what that frame left behind rather than from `kind`.
+      const landed = worm.landedLeg === 'enter';
+      if (landed) {
         if (machine.target < 0.5) enterCluster();
-        machine.progress = 1;
-      } else if (target === 'field') {
-        machine.progress = 1;
-        machine.target = 1;
       } else {
         machine.progress = 0;
       }
-      machine.wormCover = 0;
       machine.returning = false;
+      // The hand-off is over before the last upload: the disc is the one on
+      // screen again, so the transfer must not keep drawing the endpoint the
+      // hole pass would fade out.
+      discTransfer.end();
+      disk.setDiscTransfer(-1);
       applyTransition();
       // The mode follows the scalar, never the other way round: the field is
       // on screen before the host is told it is the space it is in.
       transitioning = false;
-      machine.mode = worm.kind === 'enter' || target === 'field' ? 'cluster' : 'black-hole';
-      if (worm.kind !== 'enter' && target !== 'field') {
+      // Both legs share one surface: the hole with its disc, or the cluster
+      // those same stations fell into. Where the press started only decides
+      // the flight, never which of the two is on screen at the end.
+      machine.mode = landed ? 'cluster' : 'black-hole';
+      if (!landed && target !== 'field') {
         machine.categoryId = null;
         machine.layout = null;
         machine.pendingFocus = null;
@@ -2232,7 +2352,7 @@ export function mountStage(container, options) {
       if (layer) layer.setCharge(0);
       if (holdRing) {
         // This function runs after the endpoint draw for both directions.
-        if (worm.kind === 'enter' || target === 'cluster') holdRing.complete();
+        if (landed) holdRing.complete();
         else holdRing.hide();
       }
       worm.layoutReady = false;
@@ -2240,15 +2360,12 @@ export function mountStage(container, options) {
       worm.blend = 0;
       worm.kind = null;
       worm.locked = false;
-      worm.covered = false;
       worm.armed = false;
       worm.recoilTarget = 0;
       worm.recoilBlend = 0;
-      worm.coverBefore = 0;
       worm.progressBefore = 0;
-      worm.ringFull = false;
+      worm.landedLeg = null;
       worm.from = null;
-      worm.veiled = false;
       worm.alpha = 0;
       worm.charge = 0;
       worm.hiddenAt = 0;
@@ -2285,7 +2402,6 @@ export function mountStage(container, options) {
       if (layer) layer.setFlow(discTransfer.active ? clamp01(next / DISC_TRANSFER_LANDING) : next);
       if (next === machine.progress || (next > 0 && next < 1 && Math.abs(next - machine.progress) < 1e-4)) return;
       machine.progress = next;
-      applyTransition();
       dirty = true;
     };
 
@@ -2332,7 +2448,13 @@ export function mountStage(container, options) {
     const darkAt = () => 0;
 
     const advanceWormhole = (now) => {
-      if (!worm.kind) return false;
+      // A release before the clock moved: the exit prepared nothing visible, so
+      // there is no picture to give back — the settlement is just finished.
+      if (!worm.kind) {
+        if (!worm.settling) return false;
+        settleExit();
+        return true;
+      }
       // A hidden page keeps no time. Freezing the timeline here is what makes the
       // give-back in onFocus honest: without it the compensation would rewind the
       // transition by the time the frames kept running.
@@ -2368,49 +2490,7 @@ export function mountStage(container, options) {
           driveCharge(0);
           driveCluster(0);
           if (layer) layer.setBurst(0);
-          // beginCover already handed the space over at WORM_RING_S, so a
-          // release after that point is not just an unwound wind-up: the field
-          // has to go and the camera has to face the hole again.
-          const restoreHole = machine.target === 1;
-          if (restoreHole) {
-            machine.target = 0;
-            machine.categoryId = null;
-            machine.layout = null;
-            machine.pendingFocus = null;
-            transitioning = false;
-          }
-          // The layout was only installed to give the under-hand move a
-          // destination; releasing before the commit has to put the disc back
-          // exactly as it was, or the next press would start from a half-built
-          // cluster.
-          if (layer) {
-            layer.setCluster(null);
-            layer.setFlow(-1);
-          }
-          discTransfer.end();
-          disk.setDiscTransfer(-1);
-          disk.setStationSpin(1);
-          applyTransition();
-          worm.layoutReady = false;
-          worm.charge = 0;
-          worm.blend = 0;
-          worm.armed = false;
-          worm.kind = null;
-          worm.phase = null;
-          worm.from = null;
-          worm.alpha = 0;
-          if (restoreHole) {
-            const saved = machine.savedCamera;
-            const limits = holeOrbitLimits();
-            rig.setHome({
-              radius: saved && saved.radius ? saved.radius : undefined,
-              phi: saved && saved.phi ? saved.phi : undefined,
-              theta: saved && Number.isFinite(saved && saved.theta) ? saved.theta : undefined,
-              minRadius: limits.minRadius,
-              maxRadius: limits.maxRadius,
-            });
-            notifyMode();
-          }
+          settleExit();
         }
         return true;
       }
@@ -2419,20 +2499,45 @@ export function mountStage(container, options) {
         // Prepare the real 13-category destination before the first moving frame,
         // including when a slow first frame has already crossed the lock point.
         if (layer && !worm.layoutReady) prepareDiscTransfer();
-        // Preserve the existing geometry curve and arrival; the hold ends on
-        // that very frame, without the former 0.18 s (calm: 0.03 s) idle tail.
-        const arrival = reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S - 0.18;
+        // One clock for both directions: the hold has to be held for the whole
+        // travel, and the ring reads the same number the layer does.
+        const arrival = reducedMotion ? 1 / WORM_CALM_RATE - 0.03 : WORM_END_S;
         const travel = smoothstep01(clamp01(t / arrival));
-        // The visual hand-over stays at the old 1 s mark: the cluster is
-        // installed and the camera starts its dolly there, so the frame is
-        // already moving while the ring keeps filling.
-        if (t >= (reducedMotion ? 0 : WORM_RING_S) && !worm.covered) {
-          worm.covered = true;
+        // The cluster is installed at the old 1 s mark, so the frame is already
+        // moving while the ring keeps filling.
+        if (t >= (reducedMotion ? 0 : WORM_RING_S) && !worm.armed) {
+          worm.armed = true;
           beginCover();
         }
-        // The lock — the point a release can no longer cancel — waits for the
-        // ring to be full, at arrival.
-        if (t >= arrival && !worm.locked) lockHold();
+        if (t >= HOLD_PULSE_S && !worm.pulsed && holdRing) {
+          worm.pulsed = true;
+          holdRing.pulse();
+        }
+        // The ring is full: the crossing has happened. The cluster is on screen
+        // already, so the blend snaps to one and the hold ends here rather than
+        // spending another frame walking a scalar nothing is drawn from.
+        if (t >= arrival) {
+          worm.pulsed = true;
+          worm.blend = 1;
+          driveCharge(0);
+          driveCluster(1);
+          if (layer) layer.setBurst(0);
+          driveDark(0);
+          handOver();
+          // The cluster is installed, so the crossing is done here: fill the
+          // ring only after this frame has been drawn, and report the mode with
+          // it. The leg is cleared for the same frame — `landed` would re-enter
+          // this branch forever — so the tick picks the fill up from `pulseEnd`.
+          worm.pulseEnd = true;
+          // The hand-over reads the direction off this: by the time the tick
+          // finishes the hold the leg is already cleared, and a crossing that
+          // forgot it landed on the hole it came from.
+          worm.landedLeg = 'enter';
+          worm.kind = null;
+          worm.locked = false;
+          worm.armed = false;
+          return true;
+        }
         worm.blend = travel;
         driveCharge(reducedMotion ? 0 : Math.sin(Math.PI * travel));
         driveCluster(travel);
@@ -2442,39 +2547,18 @@ export function mountStage(container, options) {
           // Keep the arc below full until the endpoint has actually been drawn.
           holdRing.setProgress(Math.min(0.999, travel), worm.cursorX, worm.cursorY);
         }
-        if (t >= arrival) worm.landed = true;
         dirty = true;
         return true;
       }
 
-      // Leaving for the hole: the same passage, run backwards on the shorter
-      // clock. Nothing here is a second choreography — the cluster comes apart
-      // first and the cones reassemble last because that is what the forward
-      // passage looks like from the other end.
-      // No hold threshold: preserve the old moving segment, starting at press.
-      // The exit is the entry backwards on the shorter clock; reduced motion
-      // keeps its own short leg rather than borrowing the full one.
-      const end = reducedMotion
-        ? 1 / TRANSITION_RATE
-        : WORM_OUT_END_S - WORM_OUT_RING_S;
-      // The mask is opaque at the end of the veil: drop the cover behind it.
-      if (t >= WORM_OUT_VEIL_S - 0.02 && !worm.veiled) {
-        worm.veiled = true;
-        machine.wormCover = 0;
-        applyTransition();
-      }
-      // The field leg advances on the same clock the arc reads. It used to hold
-      // still under an opaque cover while the arrangement slid, which left a
-      // second time source behind a threshold. A hole is the head of the entry,
-      // a field its tail, so an exit runs the entry backwards — read from where
-      // the frame actually stands, which is the same thing for a normal press
-      // and the only safe thing after an interrupted one.
+      // Leaving for the hole: the entry run backwards, on the same clock. The
+      // cluster comes apart first and the disc reassembles last because that is
+      // what the forward passage looks like from the other end. The blend reads
+      // from where the frame actually stands, which is the only safe thing
+      // after an interrupted press.
+      const end = reducedMotion ? 1 / TRANSITION_RATE : WORM_END_S;
       const u = clamp01(t / end);
-      // The exit runs the entry backwards, so its blend climbs back towards the
-      // cluster while the arc empties. A resumed leg takes the same predicate:
-      // it is the same exit, continued from the frame the eye left.
-      const entry = machine.target === 1 && !worm.armed;
-      const blend = entry ? smoothstep01(u) : 1 - smoothstep01(u);
+      const blend = t >= end ? 0 : 1 - smoothstep01(u);
       driveCluster(blend);
       // The exit has to leave the same trail the entry does, or a release would
       // retreat to the hole it started from instead of to the frame on screen.
@@ -2490,18 +2574,20 @@ export function mountStage(container, options) {
         driveDark(darkAt(blend));
       }
       if (holdRing) holdRing.setProgress(Math.min(0.999, 1 - blend), worm.cursorX, worm.cursorY);
+      if (t >= HOLD_PULSE_S && !worm.pulsed && holdRing) {
+        worm.pulsed = true;
+        holdRing.pulse();
+      }
+      // The disc is assembled at rest the moment it lands: no lock and no
+      // camera wait, otherwise the ring would sit full and the field would wait
+      // on a dolly that is not running.
       if (t >= end) {
-        // Restore the real normal-disc owner BEFORE the final draw. Completion
-        // after that draw must not acknowledge a still-captured image instead.
-        if (worm.target === 'cluster') {
-          discTransfer.end();
-          disk.setDiscTransfer(-1);
-          applyTransition();
-        }
-        // Material and camera share the completion boundary. The rig keeps its
-        // authored damping; do not fill the last arc while it is still homing.
-        worm.landed = worm.target !== 'cluster' || rig.isSettled;
-        if (worm.landed) lockHold();
+        handOver();
+        worm.landedLeg = 'exit';
+        worm.kind = null;
+        worm.locked = false;
+        worm.armed = false;
+        worm.landed = true;
       }
       dirty = true;
       return true;
@@ -2519,16 +2605,42 @@ export function mountStage(container, options) {
     let cardTimer = 0;
     let cardIndex = -1;
     let cardShown = false;
+    // The right press, held in reserve for RIGHT_HOLD_DELAY_S. `null` unless a
+    // right press is down and its hold has not begun yet.
+    let exitArm = null;
+
+    /** Throw the reserve away. Returns the press that was waiting, or null. */
+    const dropExitArm = () => {
+      if (!exitArm) return null;
+      if (exitArm.timer) clearTimeout(exitArm.timer);
+      const pending = exitArm;
+      exitArm = null;
+      return pending;
+    };
+
     /**
-     * The right button's short press, which asks the panel for the favourites.
-     *
-     * The right button is also the exit hold, but the hold is only armed after
-     * MENU_HOLD_MS: an exit starts by tearing the field down, so a press that
-     * ends before that timer is a tap and nothing else has happened yet.
+     * Start the right press's countdown. Nothing visible happens until it
+     * expires: a release inside the window is a click, and the ring never draws.
      */
-    const menuPress = { active: false, id: -1, at: 0, downX: 0, downY: 0 };
-    /** The pending right-button hold, armed MENU_HOLD_MS after the press. */
-    let menuHoldTimer = 0;
+    const armRightHold = (event, holdable = true) => {
+      dropExitArm();
+      const since = performance.now();
+      const held = {
+        pointerId: event.pointerId,
+        button: event.button,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+      const timer = setTimeout(() => {
+        const pending = exitArm;
+        exitArm = null;
+        // Without something to gather, the press is only ever the click: the
+        // window closes and the release is what asks for the library.
+        if (!pending || !pending.holdable) return;
+        startHold('exit', pending.press, pending.since);
+      }, RIGHT_HOLD_DELAY_S * 1000);
+      exitArm = { timer, press: held, since, holdable };
+    };
 
     const centerAt = (clientX, clientY) => {
       const region = centerRegion();
@@ -2552,17 +2664,15 @@ export function mountStage(container, options) {
     };
 
     /**
-     * The hole's centre is the way into the genre field.
-     *
-     * The host is told through `onCenterClick` so it can mirror the same state
-     * in its own UI.
+     * A click on the hole's centre opens the search. Holding it is the way
+     * into the cluster; releasing early goes back to the hole, not to search.
      */
     const centerClick = () => {
       if (!canOpenCenter()) return;
       clearTimers();
-      if (typeof settings.onCenterClick === 'function') {
+      if (typeof settings.onHoleTap === 'function') {
         try {
-          settings.onCenterClick();
+          settings.onHoleTap();
         } catch {
           /* ignore */
         }
@@ -2594,9 +2704,9 @@ export function mountStage(container, options) {
       // whether that card goes away.
       hoverSticky = false;
       if (event.button === 2) {
-        // Right is the way back out, and only by holding it. A short right press
-        // is the favourites instead; the two never overlap, because the exit
-        // cannot commit before its ring fills.
+        // Right is the way back out, and only by holding it all the way. A
+        // short right press does nothing at all, not even a ring: the press
+        // waits RIGHT_HOLD_DELAY_S before its hold may draw anything.
         if (!wormholeEnabled) return;
         // While a hold owns the gesture, nothing else may start one. The only
         // thing a second right press does is land a running exit. A recoil is
@@ -2606,32 +2716,23 @@ export function mountStage(container, options) {
           if (skipWormhole()) event.preventDefault();
           return;
         }
-        menuPress.active = true;
-        menuPress.id = event.pointerId;
-        menuPress.at = performance.now();
-        menuPress.downX = event.clientX;
-        menuPress.downY = event.clientY;
-        if (machine.mode === 'cluster' || machine.progress > 0.05 || (worm.kind === 'recoil' && worm.recoilTarget === 1)) {
+        if (machine.mode === 'black-hole' && machine.progress < 0.05) {
+          // Nothing to gather yet: in the hole there is no cluster to pull in,
+          // so the press can only become the library's click.
+          if (worm.kind === 'recoil' && worm.recoilTarget === 0) event.preventDefault();
           event.preventDefault();
-          // The hold waits: starting it here would run the exit's teardown on
-          // the press, and a tap released a moment later would have taken the
-          // field home and still opened the list on top of it.
-          if (menuHoldTimer) clearTimeout(menuHoldTimer);
-          menuHoldTimer = setTimeout(() => {
-            menuHoldTimer = 0;
-            if (!menuPress.active || menuPress.id !== event.pointerId) return;
-            startHold('exit', event);
-          }, MENU_HOLD_MS);
-        } else if (worm.kind === 'recoil' && worm.recoilTarget === 0) {
-          // A hole-side recoil is the entry given back, not an exit to resume.
-          // The hold must not begin, but the press is still consumed, or the tap
-          // would reach the favourites list through a hole that has no cluster
-          // to leave.
-          event.preventDefault();
+          armRightHold(event, false);
+          return;
         }
+        event.preventDefault();
+        // Right is one press with two readings: held past the delay it walks
+        // back out, released sooner it is a click and nothing happens. The ring
+        // is drawn by the hold, so it cannot appear before that is decided.
+        armRightHold(event);
         return;
       }
       if (event.button !== 0) return;
+      dropExitArm();
       // A hold owns the gesture: a left press during one is not a selection, and
       // it must not be able to cancel the hold that is already running. A recoil
       // is the one exception: pressing again is how you take the fall back up.
@@ -2649,7 +2750,7 @@ export function mountStage(container, options) {
       press.consumed = false;
       press.moved = false;
       // The centre is entered by holding it. A press and release there is a
-      // press on the hole itself, which is not a button and does nothing.
+      // click on the hole, which opens the search.
       if ((canOpenCenter() || (worm.kind === 'recoil' && worm.recoilTarget === 0)) && (!worm.kind || worm.kind === 'recoil') && centerAt(event.clientX, event.clientY).inside) {
         if (wormholeEnabled) {
           // The hold draws its own ring, so the press is consumed now: the
@@ -2658,12 +2759,6 @@ export function mountStage(container, options) {
           startHold('enter', event);
           return;
         }
-        longTimer = setTimeout(() => {
-          longTimer = 0;
-          if (!press.active) return;
-          press.consumed = true;
-          centerClick();
-        }, LONG_PRESS_MS);
       }
       // Touch has no hover and no right button: holding empty space is the way
       // back one level, the same gesture the centre uses to go in. A drag
@@ -2685,15 +2780,13 @@ export function mountStage(container, options) {
       // the live one: a mouse moving over a touch-opened card must be treated as
       // a mouse, not as the finger that opened it.
       lastPointerType = event.pointerType || 'mouse';
-      // A right press that travels is a camera drag, not the favourites list.
-      if (menuPress.active && event.pointerId === menuPress.id) {
-        if (Math.hypot(event.clientX - menuPress.downX, event.clientY - menuPress.downY) > CLICK_SLOP) {
-          menuPress.active = false;
-        }
-      }
-      // A hold is a hold only while the pointer stays put. Eight pixels of slop
+      // A hold is a hold only while the pointer stays put. Six pixels of slop
       // covers the hand shaking on a trackpad; past that it is a drag and the
       // camera is what the gesture belongs to.
+      if (exitArm && event.pointerId === exitArm.press.pointerId
+        && Math.hypot(event.clientX - exitArm.press.clientX, event.clientY - exitArm.press.clientY) > WORM_DEADZONE_PX) {
+        dropExitArm();
+      }
       if (worm.kind && event.pointerId === worm.pointerId) {
         if (!worm.locked && Math.hypot(event.clientX - worm.downX, event.clientY - worm.downY) > WORM_DEADZONE_PX) {
           cancelHold();
@@ -2772,36 +2865,23 @@ export function mountStage(container, options) {
       // stay frozen under a pointer that has already been put down.
       trackDiscRegion(event.clientX, event.clientY);
       if (event.button === 2) {
-        // A release before the timer is a tap: the hold never started, so there
-        // is nothing to cancel and the field is still where it was.
-        if (menuHoldTimer) {
-          clearTimeout(menuHoldTimer);
-          menuHoldTimer = 0;
+        // A release before the hold began is the click half of the gesture: no
+        // ring was drawn, so the press asks for the library instead.
+        const clicked = dropExitArm();
+        if (clicked) {
+          if (
+            clicked.press.pointerId === event.pointerId &&
+            typeof settings.onFavourites === 'function'
+          ) {
+            settings.onFavourites(clicked.press.clientX, clicked.press.clientY);
+          }
+          return;
         }
-        const asked = menuPress.active && menuPress.id === event.pointerId;
-        const tappedAt = menuPress.at;
-        const tappedFrom = { x: menuPress.downX, y: menuPress.downY };
-        menuPress.active = false;
-        // Letting go of the right button before the ring fills is a cancel. An
-        // exit that armed on the press has to be unarmed here as well, or the
-        // armed preparation would linger past the gesture. Only the very button
-        // that opened the hold may end it.
+        // Letting go of the right button before the ring fills is a cancel.
+        // Only the very button that opened the hold may end it. A short right
+        // press has no hold to end and does nothing else.
         if (worm.kind && !worm.locked && event.pointerId === worm.pointerId && event.button === worm.button) {
           cancelHold();
-        }
-        // A press that became a hold is not a tap: only one that ended before
-        // its ring filled, leaving no hold and no recoil behind, asks for the
-        // list. The window is MENU_HOLD_MS, the same moment the hold would have
-        // started, so the two readings can never overlap: past it the press was
-        // a hold, and its release is a cancel rather than a second request.
-        const tapped = Math.hypot(event.clientX - tappedFrom.x, event.clientY - tappedFrom.y) <= CLICK_SLOP
-          && performance.now() - tappedAt < MENU_HOLD_MS;
-        if (asked && tapped && !worm.kind && !worm.locked && typeof settings.onFavourites === 'function') {
-          try {
-            settings.onFavourites(tappedFrom.x, tappedFrom.y);
-          } catch {
-            /* a panel bug must not break the render loop */
-          }
         }
         return;
       }
@@ -2885,6 +2965,7 @@ export function mountStage(container, options) {
     };
 
     const onPointerCancel = (event) => {
+      dropExitArm();
       press.active = false;
       press.consumed = false;
       if (longTimer) {
@@ -2899,15 +2980,11 @@ export function mountStage(container, options) {
       }
       cardIndex = -1;
       cardShown = false;
-      menuPress.active = false;
-      if (menuHoldTimer) {
-        clearTimeout(menuHoldTimer);
-        menuHoldTimer = 0;
-      }
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
     };
 
     const onPointerLeave = (event) => {
+      dropExitArm();
       canvas.style.cursor = 'grab';
       if (worm.kind && !worm.locked && event.pointerId === worm.pointerId) cancelHold();
       // Leaving the canvas is the end of a hover: the card must not outlive the
@@ -3380,8 +3457,12 @@ export function mountStage(container, options) {
           enabled: wormholeEnabled,
           kind: worm.kind,
           locked: worm.locked,
+          target: worm.target,
+          before: worm.progressBefore,
+          landed: worm.landed,
+          settling: worm.settling,
           elapsed: worm.kind ? (performance.now() - worm.startedAt) / 1000 : 0,
-          cover: machine.wormCover,
+          cover: 0,
           // What is actually on screen, so a capture can be checked without
           // reading pixels: radius in viewport heights, and the mask's own alpha.
           mask: worm.phase
@@ -3458,7 +3539,6 @@ export function mountStage(container, options) {
       /** Force the transition to its end state (verification only). */
       settle() {
         machine.progress = machine.target;
-        transitioning = false;
         if (layer) {
           for (let i = 0; i < stations.length; i += 1) layer.setClusterAmount(machine.target);
         }

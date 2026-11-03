@@ -10,9 +10,17 @@
 - 上游：<https://github.com/mrdoob/three.js>
 - 义务：`client.stage.js` 顶部保留版权与许可声明行；MIT 全文见上游仓库与 `node_modules/three/LICENSE`。
 
+## hls.js
+
+- 用途：播放 `.m3u8`（HLS）电台流——`src/hls.js` 通过 MediaSource 把播放列表与分片喂给 `<audio>`；非 HLS 站不会加载这段代码。
+- 版本：1.7.x，作为运行依赖安装，构建时**内联**进懒加载的 `client.hls.js`。
+- 许可：Apache-2.0，Copyright © 2017 Dailymotion。
+- 上游：<https://github.com/video-dev/hls.js>
+- 义务：`client.hls.js` 顶部保留版权与许可声明行；Apache-2.0 全文见上游仓库与 `node_modules/hls.js/LICENSE`。
+
 ## esbuild
 
-- 用途：仅构建期使用（打包 `client.stage.js` / `client.radio.js`），不随包运行。
+- 用途：仅构建期使用（打包 `client.stage.js` / `client.radio.js` / `client.hls.js`），不随包运行。
 - 版本：0.28.x。
 - 许可：MIT，Copyright (c) 2020 Evan Wallace。
 - 上游：<https://github.com/evanw/esbuild>
@@ -30,7 +38,7 @@
 
 - 文件：`data/catalog.v1.json`、`data/catalog.v1.json.gz`。
 - 来源：<https://www.radio-browser.info> 的公开 API，由 `tools/build-catalog.mjs` 抓取、探测、筛洗生成。
-- 生成时间：2026-10-29T13:33:35.915Z；候选 50,000，探测后保留 24,514 台。
+- 生成时间：2026-11-02T11:29:50.032Z；候选 24,514，探测后保留 20,564 台（剔除 3,950 台不可达源）。
 - 字段：台名、国家、语言、分类标签、码率、流地址等电台公开元数据。
 - 上游条款（据其 API 文档 <https://api.radio-browser.info/>，访问日期 2026-10-31）：该 API「completely free and open source」，可用于自由与非自由软件，允许自建镜像与 fork；文档同时建议每次点击回传 `/json/url` 以便站点统计。
 - 需要说明的是：该 API 文档只写了「可用于自由与非自由软件」，**没有**明确写出数据库集合本身的再分发许可。因此本仓库把这份目录视为「可公开获取的元数据快照」而非「已核实的自由许可数据集」：你可以用 `npm run build:catalog` 自行重建，也可以直接删掉这两个文件——插件在目录缺失时会退回运行时抓取。

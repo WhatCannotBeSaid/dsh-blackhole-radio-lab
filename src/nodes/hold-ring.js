@@ -77,6 +77,16 @@ export function createHoldRing(container) {
   svg.appendChild(backing);
   svg.appendChild(track);
   svg.appendChild(arc);
+
+  // One short echo, fired once a press has been held long enough to count as a
+  // hold. It is a second circle so it can expand on its own while the arc keeps
+  // filling where it is.
+  const echo = circle(RADIUS, WARM, STROKE * 0.8, 0);
+  echo.setAttribute('cx', String(CENTER));
+  echo.setAttribute('cy', String(CENTER));
+  echo.setAttribute('fill', 'none');
+  echo.style.cssText = 'opacity:0;transform-origin:' + CENTER + 'px ' + CENTER + 'px';
+  svg.appendChild(echo);
   root.appendChild(svg);
 
   // The panel owns the stacking context, so this element is positioned in its
@@ -86,6 +96,7 @@ export function createHoldRing(container) {
   let progress = 0;
   let visible = false;
   let hiddenTimer = 0;
+  let echoTimer = 0;
 
   const hide = () => {
     if (!visible && progress === 0) return;
@@ -98,7 +109,9 @@ export function createHoldRing(container) {
   };
 
   const move = (x, y) => {
-    root.style.transform = `translate(${Math.round(x - CENTER)}px, ${Math.round(y - CENTER)}px)`;
+    const scale = /scale\([^)]*\)/.exec(root.style.transform);
+    const offset = `translate(${Math.round(x - CENTER)}px, ${Math.round(y - CENTER)}px)`;
+    root.style.transform = scale ? `${offset} ${scale[0]}` : offset;
   };
 
   return {
@@ -150,9 +163,36 @@ export function createHoldRing(container) {
       }, 240);
     },
     hide,
+    /**
+     * "This press has been held long enough to count." One outward echo, no
+     * timing of its own: the stage decides when, this only draws.
+     */
+    pulse() {
+      if (echoTimer) {
+        clearTimeout(echoTimer);
+        echoTimer = 0;
+      }
+      echo.style.transition = 'none';
+      echo.style.transform = 'scale(0.72)';
+      echo.style.opacity = '0.85';
+      // Commit that start frame, or the browser coalesces it with the end and
+      // nothing is drawn at all.
+      echo.getBoundingClientRect();
+      echo.style.transition = 'transform 420ms ease-out, opacity 420ms ease-out';
+      echo.style.transform = 'scale(1.9)';
+      echo.style.opacity = '0';
+      echoTimer = setTimeout(() => {
+        echoTimer = 0;
+        echo.style.transition = 'none';
+        echo.style.transform = 'scale(0.72)';
+        echo.style.opacity = '0';
+      }, 440);
+    },
     dispose() {
       if (hiddenTimer) clearTimeout(hiddenTimer);
+      if (echoTimer) clearTimeout(echoTimer);
       hiddenTimer = 0;
+      echoTimer = 0;
       if (root.parentNode) root.parentNode.removeChild(root);
     },
   };

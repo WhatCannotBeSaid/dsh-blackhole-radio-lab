@@ -156,3 +156,84 @@ test('pagehide silences the audio, bfcache does not, and a dead host stops playb
   assert.equal(f.core.getState().status, 'idle'); assert.equal(f.core.stats().alive, 0);
   assert.equal(s.size, 0); assert.equal(listeners.has('pagehide'), false);
 });
+test('an attached source is not written to audio.src and is detached on stop', () => {
+  const attached = []; let detached = 0; let srcWrites = 0;
+  const audio = { play: () => Promise.resolve(), pause() {}, addEventListener() {}, removeAttribute() {}, load() {} };
+  Object.defineProperty(audio, 'src', { get: () => '', set() { srcWrites += 1; } });
+  const core = createPlaybackCore({
+    createAudio: () => audio,
+    setTimeout: () => 1, clearTimeout() {},
+    attachStream: (_element, url) => { attached.push(url); return { detach() { detached += 1; } }; },
+  });
+  core.play('a', 'https://test/a.m3u8');
+  assert.deepEqual(attached, ['https://test/a.m3u8']);
+  // The attacher owns the element now: setting src would fight MediaSource.
+  assert.equal(srcWrites, 0);
+  core.stop();
+  assert.equal(detached, 1);
+  core.dispose();
+});
+test('a fatal attached source fails the attempt, a network one is retried', () => {
+  const audio = { play: () => Promise.resolve(), pause() {}, addEventListener() {}, removeAttribute() {}, load() {} };
+  let report; let attaches = 0;
+  const core = createPlaybackCore({
+    createAudio: () => audio,
+    setTimeout: () => 1, clearTimeout() {},
+    attachStream: (_element, _url, onError) => { attaches += 1; report = onError; return { detach() {} }; },
+  });
+  core.play('a', 'https://test/a.m3u8');
+  report('decode');
+  assert.equal(core.getState().status, 'error');
+  assert.equal(core.getState().error, 'decode');
+  core.dispose();
+  const again = createPlaybackCore({
+    createAudio: () => ({ ...audio }),
+    setTimeout: () => 1, clearTimeout() {},
+    attachStream: (_element, _url, onError) => { attaches += 1; report = onError; return { detach() {} }; },
+  });
+  again.play('b', 'https://test/b.m3u8');
+  report('network');
+  assert.equal(again.getState().status, 'loading');
+  assert.equal(attaches, 3);
+  again.dispose();
+});
+test('a failed station hands the listen to a live one, capped at three skips', () => {
+  const stations = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  const shared = runtime(async () => ({ ok: false }), {
+    AUTO_SKIP_LIMIT: 3,
+    playablePool: () => stations,
+    streamOf: (station) => `https://test/${station.id}`,
+  });
+  shared.ensureStore(createRadioStore).index(stations);
+  const played = [];
+  shared.playback = { play(id) { played.push(id); } };
+  shared.skipFailedStation('a');
+  assert.equal(played.length, 1);
+  assert.notEqual(played[0], 'a');
+  // The streak is bounded: with nothing alive the card stops instead of
+  // shuffling through the whole catalogue.
+  shared.skipFailedStation('b'); shared.skipFailedStation('c'); shared.skipFailedStation('d');
+  assert.equal(played.length, 3);
+  shared.dispose();
+});
+
+test('resuming an attached source asks the element to play again', () => {
+  // The attacher plays from its own manifest handler, so play() leaves the
+  // element alone. A resume reuses that attachment and must not rely on a
+  // manifest event that already happened — it would sit silent until the
+  // startup timeout.
+  let plays = 0;
+  const audio = { play() { plays += 1; return Promise.resolve(); }, pause() {}, addEventListener() {}, removeAttribute() {}, load() {} };
+  const core = createPlaybackCore({
+    createAudio: () => audio,
+    setTimeout: () => 1, clearTimeout() {},
+    attachStream: () => ({ detach() {} }),
+  });
+  core.play('a', 'https://test/a.m3u8');
+  assert.equal(plays, 0);
+  core.pause();
+  core.resume();
+  assert.equal(plays, 1);
+  assert.equal(core.getState().status, 'loading');
+  core.dispose();
+});
