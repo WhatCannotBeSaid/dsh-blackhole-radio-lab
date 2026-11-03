@@ -33,7 +33,7 @@ import { DISK_INNER, RS } from '../src/scene/dimensions.js';
   assert.ok(shader.includes('float dissolve = 1.0 - smoothstep(0.0, 0.12, holeScale);'));
   console.log('PASS hole contracts before dissolving; reverse expands; resting/capture/probe observer unchanged.');
 }
-import { buildDiscFragments, DISC_TRANSFER_LANDING, discTransferHandoff } from '../src/scene/disc-transfer.js';
+import { buildDiscFragments, createDiscTransfer, DISC_TRANSFER_LANDING, discTransferHandoff } from '../src/scene/disc-transfer.js';
 
 const source = readFileSync(new URL('../src/stage.js', import.meta.url), 'utf8');
 const exitEnd = Number(source.match(/const WORM_END_S = ([\d.]+)/)[1]);
@@ -102,6 +102,86 @@ camera.updateMatrixWorld();
   assert.equal(discTransferHandoff(DISC_TRANSFER_LANDING), 0, 'resting stars appeared before the source arrived');
   assert.equal(discTransferHandoff(1), 1);
   console.log(`PASS ${fragments.count} real source-cell mappings: captured colour, projected origin, observed station identity, category destination, late-only material handoff.`);
+
+  // Exercise the actual material's scalar GLSL, not a second copy of its curves.
+  // This checks math/ownership only; GPU compilation and appearance need a browser.
+  const transfer = createDiscTransfer({ getDrawingBufferSize: (out) => out.set(2048, 1024) });
+  try {
+    transfer.begin(snapshot, layout);
+    const { vertexShader, fragmentShader } = transfer.object.material;
+    assert.match(vertexShader, /float point = /, 'point formation is still tied to the whole flight');
+    const curves = vertexShader.slice(vertexShader.indexOf('  float p = '), vertexShader.indexOf('  vec3 radial = '));
+    const size = vertexShader.match(/vec2 size = (.*);/)[1];
+    const smoothstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return smoothstep01(t); };
+    const mix = (a, b, t) => Array.isArray(a) ? a.map((v, i) => v + (b[i] - v) * t) : a + (b - a) * t;
+    const run = new Function('uProgress', 'aDelay', 'uCellPx', 'clamp', 'smoothstep', 'mix', 'vec2',
+      `${curves.replace(/\bfloat\b/g, 'let')} return { flight, point, size: ${size} };`);
+    const shape = (p, delay, cell) => run(p, delay, cell, (x, a, b) => Math.max(a, Math.min(b, x)), smoothstep, mix, (x) => [x, x]);
+    assert.match(vertexShader, /vPoint = point;/);
+    // Round sprites alone still preserve pixel-grid sheets. Exercise spatial
+    // breakup within ONE station, including cells whose flight is still delayed.
+    const scatter = transfer.object.geometry.getAttribute('aScatter');
+    assert.ok(scatter, 'round dots still move as an undisturbed image-cell sheet');
+    assert.deepEqual(Array.from(scatter.array), Array.from(fragments.scatter));
+    const patch = { width: 64, height: 64, pixels: new Uint8Array(64 * 64 * 4).fill(255), ids: new Float32Array(64 * 64), camera };
+    const cloud = buildDiscFragments(patch, layout);
+    assert.deepEqual(buildDiscFragments(patch, layout).scatter, cloud.scatter, 'scatter changed on replay');
+    assert.equal(new Set(cloud.station).size, 1);
+    const spreadCode = vertexShader.match(/float spread = (.*);/)[1];
+    const spread = new Function('p', 'smoothstep', `return ${spreadCode};`);
+    assert.match(vertexShader, /world \+= aScatter \* spread;/, 'scatter is not applied to actual positions');
+    assert.equal(spread(0, smoothstep), 0, 'unstarted capture moved');
+    assert.equal(spread(1, smoothstep), 0, 'scatter changed the landing target');
+    for (const p of [0.02, 0.06, 0.3, 0.7, 0.95]) {
+      const amount = spread(p, smoothstep);
+      assert.ok(amount > 0 && amount <= 1);
+      assert.equal(amount, spread(p, smoothstep), 'reverse/replay depends on elapsed time');
+    }
+    assert.ok(spread(0.06, smoothstep) > 0.9 && shape(0.06, 0.32, [4, 4]).flight === 0, 'delayed dots still form sheets');
+    const normal = cloud.right.clone().cross(cloud.up);
+    const depth = [];
+    const occupied = new Set();
+    const radius = Math.max(...cloud.scatter);
+    let neighbourEnergy = 0;
+    for (let i = 0; i < cloud.count; i++) {
+      const offset = Array.from(cloud.scatter.subarray(i * 3, i * 3 + 3));
+      occupied.add(offset.map((v) => Math.max(0, Math.min(3, Math.floor((v / radius + 1) * 2)))).join(','));
+      depth.push(new Vector3().fromArray(cloud.scatter, i * 3).dot(normal));
+      if (i % patch.width) {
+        for (let k = 0; k < 3; k++) neighbourEnergy += (cloud.scatter[i * 3 + k] - cloud.scatter[(i - 1) * 3 + k]) ** 2;
+      }
+    }
+    const cellStep = new Vector3().fromArray(cloud.source, 3).distanceTo(new Vector3().fromArray(cloud.source));
+    assert.ok(Math.sqrt(neighbourEnergy / (patch.height * (patch.width - 1))) > cellStep, 'neighbours still travel as a rigid patch');
+    assert.ok(Math.max(...depth) - Math.min(...depth) > cellStep * 2, 'dots still occupy a flat sheet');
+    assert.ok(occupied.size >= 48, 'scatter forms correlated strands instead of filling a volume');
+    console.log('PASS spatial breakup: independent same-station offsets, depth, delayed dots, exact endpoints and deterministic reverse envelope (CPU/scalar GLSL only).');
+    const mask = fragmentShader.slice(fragmentShader.indexOf('  float d = '), fragmentShader.indexOf('  if (alpha'));
+    const alpha = new Function('vLocal', 'vPoint', 'uOpacity', 'length', 'smoothstep', 'mix',
+      `${mask.replace(/\bfloat\b/g, 'let')} return alpha;`);
+    const opacity = (local, point, value = 1) => alpha(local, point, value, (v) => Math.hypot(...v), smoothstep, mix);
+    for (const delay of [0, 0.16, 0.32]) {
+      for (const cell of [[4, 4], [8, 4]]) {
+        assert.deepEqual(shape(0, delay, cell).size, cell, 'unstarted transfer stopped filling the disc');
+        assert.equal(shape(0, delay, cell).point, 0);
+        // Even delayed cells must be dots from the first advancing frame.
+        for (const p of [0.000001, 0.01, 0.08, 0.16, 0.32, 0.5, 1]) {
+          const s = shape(p, delay, cell);
+          assert.equal(s.point, 1, 'advancing transfer still contains rectangular cells');
+          assert.deepEqual(s.size, [2.2, 2.2], 'advancing transfer still contains large shards');
+          assert.equal(opacity([0.5, 0.5], s.point), 0, 'a delayed cell retained square corners');
+          assert.equal(s.flight, smoothstep01(clamp01((p - delay) / (1 - delay))), 'point formation changed the flight timing');
+        }
+      }
+    }
+    assert.equal(opacity([0.5, 0.5], 0), 1, 'intact disc acquired a dot lattice');
+    assert.equal(opacity([0.5, 0.5], 1), 0, 'airborne dot retained square corners');
+    assert.equal(opacity([0, 0], 1), 1, 'dot lost its captured centre brightness');
+    assert.equal(opacity([0, 0], 1, 0), 0, 'dot ignored the existing material handoff');
+    console.log('PASS transfer material: intact unstarted disc, dots only at every advancing sample including delayed cells, unchanged flight timing and opacity handoff (scalar GLSL only).');
+  } finally {
+    transfer.dispose();
+  }
 }
 function harness(reducedMotion = false) {
   const layer = createStationsLayer(stations, { seed: 7 });

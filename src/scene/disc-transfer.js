@@ -30,15 +30,20 @@ attribute vec3 position;
 attribute vec3 aSource;
 attribute vec3 aTarget;
 attribute vec3 aAnchor;
+attribute vec3 aScatter;
 attribute vec2 aUv;
 attribute float aDelay;
 attribute float aSpin;
 varying vec2 vUv;
 varying vec2 vLocal;
-varying float vFlight;
+varying float vPoint;
 void main() {
   float p = clamp(uProgress, 0.0, 1.0);
-  float flight = smoothstep(0.0, 1.0, clamp((p - aDelay) / (1.0 - aDelay), 0.0, 1.0));
+  float travel = clamp((p - aDelay) / (1.0 - aDelay), 0.0, 1.0);
+  float flight = smoothstep(0.0, 1.0, travel);
+  // Once the passage advances, ALL cells are dots, including delayed ones.
+  // Only an unstarted press keeps the intact image; no tiles may fly or turn.
+  float point = p > 0.0 ? 1.0 : 0.0;
   vec3 radial = aSource - uOrigin;
   float sx = dot(radial, uRight);
   float sy = dot(radial, uUp);
@@ -62,13 +67,17 @@ void main() {
   float q = 1.0 - flight;
   vec3 world = q*q*q*source + 3.0*q*q*flight*control1
     + 3.0*q*flight*flight*control2 + flight*flight*flight*aTarget;
+  // Break the captured pixel grid into a volume, even before delayed cells fly.
+  // Progress alone drives it: cancellation retraces it and both endpoints match.
+  float spread = smoothstep(0.0, 0.06, p) * (1.0 - smoothstep(0.55, 1.0, p));
+  world += aScatter * spread;
   vec4 clip = projectionMatrix * modelViewMatrix * vec4(world, 1.0);
-  vec2 size = mix(uCellPx, vec2(2.2), flight);
+  vec2 size = mix(uCellPx, vec2(2.2), point);
   clip.xy += position.xy * size * 2.0 / uViewport * clip.w;
   gl_Position = clip;
   vUv = aUv;
   vLocal = position.xy;
-  vFlight = flight;
+  vPoint = point;
 }
 `;
 const FRAGMENT = `
@@ -77,17 +86,16 @@ uniform sampler2D uImage;
 uniform float uOpacity;
 varying vec2 vUv;
 varying vec2 vLocal;
-varying float vFlight;
+varying float vPoint;
 void main() {
   // These are already display-space bytes from the real imaging pass. Do not
   // apply another palette, exposure curve, halo or procedural density to them.
   vec3 colour = texture2D(uImage, vUv).rgb;
-  // Each source cell becomes a point of light once airborne. At rest the quad
-  // still fills its cell, so the unbroken disc never shows a dot lattice.
+  // During the passage even cells waiting to depart are round points.
+  // Only progress zero fills the original image, before any motion begins.
   float d = length(vLocal) * 2.0;
   float disc = 1.0 - smoothstep(0.55, 1.0, d);
-  float round = smoothstep(0.0, 0.55, vFlight);
-  float alpha = uOpacity * mix(1.0, disc, round);
+  float alpha = uOpacity * mix(1.0, disc, vPoint);
   if (alpha < 0.004) discard;
   gl_FragColor = vec4(colour, alpha);
 }
@@ -124,6 +132,7 @@ export function buildDiscFragments(snapshot, layout) {
   for (let i = 0; i < total; i++) if (pixels[i * 4 + 3]) count++;
   const source = new Float32Array(count * 3);
   const target = new Float32Array(count * 3);
+  const scatter = new Float32Array(count * 3);
   const uv = new Float32Array(count * 2);
   const delay = new Float32Array(count);
   const station = new Int32Array(count);
@@ -137,6 +146,8 @@ export function buildDiscFragments(snapshot, layout) {
   const origin = camera.position.clone().addScaledVector(forward, distance);
   const halfHeight = Math.tan(camera.fov * Math.PI / 360) * distance;
   const halfWidth = halfHeight * camera.aspect;
+  // Relative to the captured field, not its pixel resolution or current camera.
+  const scatterRadius = halfHeight * 0.08;
   let n = 0;
   for (let i = 0; i < total; i++) {
     if (!pixels[i * 4 + 3]) continue;
@@ -150,8 +161,10 @@ export function buildDiscFragments(snapshot, layout) {
       source[n * 3 + k] = origin[axis] + right[axis] * x + up[axis] * y;
       // A source cell keeps a tiny, deterministic place within its station knot.
       // This is not a new random star: it is the same cell of the captured image.
-      const jitter = Math.sin((i + 1) * (k + 1) * 2.39996323) * 0.018;
-      target[n * 3 + k] = layout.positions[id * 3 + k] + jitter;
+      const noise = Math.sin((i + 1) * (k + 1) * 2.39996323);
+      const hash = noise * 43758.5453;
+      scatter[n * 3 + k] = (hash - Math.floor(hash) - 0.5) * 2 * scatterRadius;
+      target[n * 3 + k] = layout.positions[id * 3 + k] + noise * 0.018;
       anchorSum[id * 3 + k] += source[n * 3 + k];
     }
     anchorCount[id]++;
@@ -179,7 +192,7 @@ export function buildDiscFragments(snapshot, layout) {
     // Same station, same sweep. Deterministic, so replays stay identical.
     spin[i] = 0.55 + 0.35 * Math.sin(id * 1.6180339887);
   }
-  return { count, source, target, anchor, spin, uv, delay, station, origin, right, up };
+  return { count, source, target, scatter, anchor, spin, uv, delay, station, origin, right, up };
 }
 
 export function createDiscTransfer(renderer) {
@@ -207,6 +220,7 @@ export function createDiscTransfer(renderer) {
     geometry.setAttribute('aSource', new InstancedBufferAttribute(data.source, 3));
     geometry.setAttribute('aTarget', new InstancedBufferAttribute(data.target, 3));
     geometry.setAttribute('aAnchor', new InstancedBufferAttribute(data.anchor, 3));
+    geometry.setAttribute('aScatter', new InstancedBufferAttribute(data.scatter, 3));
     geometry.setAttribute('aUv', new InstancedBufferAttribute(data.uv, 2));
     geometry.setAttribute('aDelay', new InstancedBufferAttribute(data.delay, 1));
     geometry.setAttribute('aSpin', new InstancedBufferAttribute(data.spin, 1));
