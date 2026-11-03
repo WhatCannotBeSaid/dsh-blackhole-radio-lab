@@ -812,6 +812,11 @@ export function mountStage(container, options) {
         dirty = true;
         requestFrame();
       }
+      // An exit has no `pulseEnd`: `handOver` already snapped progress to the
+      // target, so the tween above never runs and finishTransition is not
+      // reached. This is the one place that can retire the ring and put the
+      // machine back in the hole after the endpoint has been drawn.
+      if (worm.landed) finishWormhole();
       const morphing = layer ? layer.isAnimating : false;
       if (
         !reducedMotion ||

@@ -218,7 +218,12 @@ function harness(reducedMotion = false) {
         assert.equal(disk.transfer, -1, 'exit ring leads the normal ray-traced disc draw');
         assert.equal(disk.opacity, 1);
         assert.ok(layer.object.geometry.getAttribute('aCluster').array.every((v) => v === 0));
-        context.machine.mode = 'black-hole';
+        // This is `finishWormhole`'s own work: if the tick ever stops calling
+        // it, the ring stays on screen and the machine keeps cluster mode, so
+        // the hole's long press is ignored.
+        assert.equal(context.machine.mode, 'black-hole', 'exit left the machine in cluster mode');
+        assert.equal(context.transitioning, false, 'exit left the transition armed');
+        assert.equal(ring.visible, false, 'exit left the progress ring on screen');
       }
     }
   }
@@ -762,7 +767,15 @@ const tick = source.slice(tickStart, tickEnd);
 assert.ok(tick.indexOf('advanceWormhole(now)') < tick.indexOf('layer.update(dt, camera, viewport.h)'));
 assert.ok(tick.indexOf('layer.update(dt, camera, viewport.h)') < tick.indexOf('if (dirty) draw()'));
 assert.ok(tick.indexOf('if (dirty) draw()') < tick.indexOf('if (worm.pulseEnd)'));
-assert.equal(tick.includes('finishWormhole()'), false, 'the tick finishes a pass the exit landing already closed');
+// The exit lands through `handOver`, which snaps progress to its target, so the
+// ordinary tween branch never runs and finishTransition is never reached. Only
+// the tick's landed branch can retire the ring and report black-hole; dropping
+// it left the ring full and the machine stuck in cluster mode (2026-11-03).
+assert.ok(tick.includes('if (worm.landed) finishWormhole();'), 'the tick no longer closes the exit landing');
+assert.ok(
+  tick.indexOf('if (dirty) draw()') < tick.indexOf('if (worm.landed) finishWormhole();'),
+  'the exit closed before its endpoint was drawn',
+);
 assert.ok(tick.includes('if (!worm.kind && machine.progress !== machine.target)'));
 assert.equal(tick.includes('layer.setHoleOnly('), false, 'tick has a second visibility owner');
 // A quick release on the hole is a tap even though the press was consumed at
