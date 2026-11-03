@@ -32,6 +32,8 @@ attribute vec3 aTarget;
 attribute vec2 aUv;
 attribute float aDelay;
 varying vec2 vUv;
+varying vec2 vLocal;
+varying float vFlight;
 void main() {
   float p = clamp(uProgress, 0.0, 1.0);
   float flight = smoothstep(0.0, 1.0, clamp((p - aDelay) / (1.0 - aDelay), 0.0, 1.0));
@@ -47,10 +49,12 @@ void main() {
   vec3 world = q*q*q*source + 3.0*q*q*flight*(source + tangent*reach)
     + 3.0*q*flight*flight*(aTarget - tangent*reach*0.25) + flight*flight*flight*aTarget;
   vec4 clip = projectionMatrix * modelViewMatrix * vec4(world, 1.0);
-  vec2 size = mix(uCellPx, vec2(1.5), flight);
+  vec2 size = mix(uCellPx, vec2(2.2), flight);
   clip.xy += position.xy * size * 2.0 / uViewport * clip.w;
   gl_Position = clip;
   vUv = aUv;
+  vLocal = position.xy;
+  vFlight = flight;
 }
 `;
 const FRAGMENT = `
@@ -58,10 +62,20 @@ precision highp float;
 uniform sampler2D uImage;
 uniform float uOpacity;
 varying vec2 vUv;
+varying vec2 vLocal;
+varying float vFlight;
 void main() {
   // These are already display-space bytes from the real imaging pass. Do not
   // apply another palette, exposure curve, halo or procedural density to them.
-  gl_FragColor = vec4(texture2D(uImage, vUv).rgb, uOpacity);
+  vec3 colour = texture2D(uImage, vUv).rgb;
+  // Each source cell becomes a point of light once airborne. At rest the quad
+  // still fills its cell, so the unbroken disc never shows a dot lattice.
+  float d = length(vLocal) * 2.0;
+  float disc = 1.0 - smoothstep(0.55, 1.0, d);
+  float round = smoothstep(0.0, 0.55, vFlight);
+  float alpha = uOpacity * mix(1.0, disc, round);
+  if (alpha < 0.004) discard;
+  gl_FragColor = vec4(colour, alpha);
 }
 `;
 
