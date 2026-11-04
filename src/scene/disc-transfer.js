@@ -16,6 +16,24 @@ export function discTransferHandoff(progress) {
   return t * t * (3 - 2 * t);
 }
 
+// Undo the timeline's ease once, for both the live particles and traced image.
+export function discReturnProgress(progress) {
+  if (progress <= 0) return 1;
+  if (progress >= 1) return 0;
+  return 0.5 + Math.sin(Math.asin(1 - 2 * progress) / 3);
+}
+
+// Local interleaving, not an angular wipe: no branch cut through the light band.
+// The shadow reaches its final scale at .72, before the first arrival at .74.
+export function discReturnPhase(u, v) {
+  return 0.74 + 0.14 * (0.5 + 0.25 * Math.sin(u * 173) + 0.25 * Math.sin(v * 157));
+}
+export const DISC_RETURN_GLSL = `
+float discReturnPhase(vec2 uv) {
+  return 0.74 + 0.14 * (0.5 + 0.25 * sin(uv.x * 173.0) + 0.25 * sin(uv.y * 157.0));
+}
+`;
+
 const VERTEX = `
 precision highp float;
 uniform mat4 projectionMatrix;

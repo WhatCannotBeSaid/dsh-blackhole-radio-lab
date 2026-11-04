@@ -54,7 +54,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { createAccretionDisk } from './scene/accretion-disk.js';
-import { createDiscTransfer, DISC_TRANSFER_LANDING, discTransferHandoff } from './scene/disc-transfer.js';
+import { createDiscTransfer, buildDiscFragments, DISC_TRANSFER_LANDING, discTransferHandoff, discReturnProgress } from './scene/disc-transfer.js';
 import { buildStationField, rewriteStationBits } from './scene/station-field.js';
 import { createCameraRig } from './scene/camera-rig.js';
 import { createCameraFrame } from './scene/camera-frame.js';
@@ -66,7 +66,6 @@ import {
   DISK_INNER,
   DISK_OUTER,
   RS,
-  maxOrbitRadiusForShadow,
   shadowAngularRadius,
 } from './scene/dimensions.js';
 import { createStationsLayer } from './nodes/stations-layer.js';
@@ -134,21 +133,8 @@ const WORM_CALM_RATE = 1 / WORM_CALM_S;
 /** Catalogue brightness while the hole is the subject. */
 const HOLE_STATION_DIM = 0.55;
 
-/** The black-hole camera framing, restored on exit. */
+/** The black-hole view keeps its existing near stop. */
 const HOLE_MIN_RADIUS = 3.6;
-/**
- * Absolute far stop for the hole view, before the viewport fit.
- *
- * The old limit was a flat 44 world units. At 44 the shadow was ~12% of the
- * viewport's short edge in a normal landscape window — the hole read as a dot
- * in empty space. The fit below now derives the working limit from the actual
- * box (roughly 13 units at 1280x720), and this constant only remains as a hard
- * ceiling for extreme window shapes, so the camera can never dolly out past the
- * distance where the scene stops being a composition at all.
- */
-const HOLE_MAX_RADIUS = 44.0;
-/** Shadow diameter floor, as a fraction of the viewport's short edge. */
-const SHADOW_SHORT_EDGE_FRACTION = 0.2;
 
 /**
  * Mount the stage into `container`.
@@ -431,39 +417,21 @@ export function mountStage(container, options) {
         layer.setViewport(w, h, camera.fov);
       }
       if (radio) radio.resize(w, h, renderer.getPixelRatio());
-      // The hole's far limit is a property of the box, not a constant: opening
-      // the sidebar narrows the canvas, and a ceiling authored for the full
-      // window would let the shadow fall below its size floor there. A cluster
-      // keeps the limit its own layout authored, so only the hole is refitted.
+      // Reapply the shared far stop without shrinking it for a narrower canvas.
       if (machine.target < 0.5 && machine.mode === 'black-hole') {
         rig.setLimits(holeOrbitLimits());
       }
       return true;
     };
 
-    /**
-     * The hole view's distance limits for the current canvas.
-     *
-     * At the old flat ceiling of 44 units the shadow was ~12% of the short edge
-     * in a landscape window: the hole read as a dot. The ceiling is now derived
-     * from the box so the shadow's DIAMETER stays at least
-     * SHADOW_SHORT_EDGE_FRACTION of the short edge, which lands near 13 units at
-     * 1280x720. The disc was checked at that distance too: its outer rim
-     * (12 Rs) projects to ~93% of the half-height there, so the whole disc stays
-     * inside the frame instead of being cropped as it was at the default zoom.
-     */
+    /** Both spaces use the field's far stop; home distance/angles stay unchanged. */
     function holeOrbitLimits() {
-      return {
-        minRadius: HOLE_MIN_RADIUS,
-        maxRadius: maxOrbitRadiusForShadow({
-          width: viewport.w || 1280,
-          height: viewport.h || 720,
-          fovDegrees: camera.fov,
-          minRadius: HOLE_MIN_RADIUS,
-          hardMax: HOLE_MAX_RADIUS,
-          shortEdgeFraction: SHADOW_SHORT_EDGE_FRACTION,
-        }),
-      };
+      let layout = layoutCache.get('field');
+      if (!layout) {
+        layout = buildClusterLayout(stations, { seed: catalog.seed, vocabulary: GENRE_IDS, byGenre: true, forms: true });
+        layoutCache.set('field', layout);
+      }
+      return { minRadius: HOLE_MIN_RADIUS, maxRadius: layout.maxRadius };
     }
 
     let frame = 0;
@@ -546,31 +514,14 @@ export function mountStage(container, options) {
       const handoff = transferred ? discTransferHandoff(machine.progress) : 1;
       discTransfer.setProgress(machine.progress);
       disk.setDiscTransfer(transferred ? Math.min(1, machine.progress / DISC_TRANSFER_LANDING) : -1);
-      // Outward, the hole fades as the cluster arrives. Homeward it has to be
-      // in frame from the first pixel: the rig pulls the camera back through
-      // the distance the outward trip covered, so a hole that is still black at
-      // progress 0.67 does not grow into the frame — it appears in it, already
-      // large. `1 - holeFade` is the outward curve, and reusing it here was
-      // exactly that bug: `leaving` sits above 0.67 for the first third of the
-      // return, so opacity stayed at zero while the camera had already moved.
-      // The homeward leg rebuilds the live disc out of the captured fragments
-      // instead of cross-fading a disc back over them: the same points that
-      // left as material gather along the spiral into the ring they sat on.
+      // Return particles land on this pass's imaged pixels. Grow the shadow
+      // first, then reveal its real gas locally, not a substitute particle disc.
+      disk.setDiscReturn(returning ? discReturnProgress(machine.progress) : -1);
       const gather = !(returning || transferred);
-      const discOpacity = returning
-        ? smoothstep01(clamp01(1 - machine.progress))
+      const discOpacity = returning ? 1
         : transferred ? 1 - handoff : gather ? 1 - rise : 1 - holeFade;
       disk.setOpacity(discOpacity);
-      // Homeward, the gas pulls back off the horizon, so the shadow it was
-      // covering emerges from under it: the hole grows instead of appearing at
-      // full size. `setDiscInner` is the only control that changes the shadow's
-      // radius without touching the camera or the trace. Outward it stays at
-      // ISCO — there the hole leaves by fading, which already reads as a shrink.
-      disk.setDiscInner(
-        returning
-          ? 1.2 + (DISK_INNER / RS - 1.2) * smoothstep01(clamp01(1 - machine.progress))
-          : DISK_INNER / RS,
-      );
+      disk.setDiscInner(DISK_INNER / RS);
       disk.setStationEmission(0.30);
       disk.setStationGain(5);
 
@@ -602,23 +553,20 @@ export function mountStage(container, options) {
         // amount is what fades the stations that are not part of what is on
         // screen.
         layer.setReturning(returning);
-        // The gather runs on the same `rise` as the outward trip. `returning`
-        // only changes the flight path (stations spiral onto their disc anchors
-        // instead of following the cubic). It must NOT freeze these uniforms at
-        // the cluster values: doing that left the cloud exactly where it was and
-        // merely dimmed it out over the arriving disc, which read as a second
-        // disc layer rather than the stars becoming this one.
+        if (returning) layer.setFlow(machine.progress);
+        // Geometry still follows the hold; return light stays star-like until
+        // each point's image-space merge, independent of cylindrical disk masks.
         layer.setClusterAmount(rise);
         // The normal particle population is a resting-state representation,
         // not an in-flight substitute. It returns only after the source cells
         // have reached their station destinations.
         layer.object.visible = !transferred || handoff > 0;
-        layer.setHoleOnly(clamp01(1 - clamp01(rise * 1.6)));
+        layer.setHoleOnly(returning ? 0 : clamp01(1 - clamp01(rise * 1.6)));
 
-        layer.setDiskMatter(clamp01(1 - rise));
+        layer.setDiskMatter(returning ? 0 : clamp01(1 - rise));
         // Settles exactly on the resting hole view (dim = HOLE_STATION_DIM),
         // so the last frame of the gather and the first resting frame match.
-        layer.setDim((HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
+        layer.setDim(returning ? 1 : (HOLE_STATION_DIM + (1 - HOLE_STATION_DIM) * clamp01(rise * 2)) * handoff);
       }
       if (rise > 0.001) dirty = true;
     };
@@ -757,7 +705,7 @@ export function mountStage(container, options) {
       // A landing that happened above only put its blend on the layer; the
       // disc uniforms are authored here, and this is the upload that draws the
       // endpoint. Without it the matrix keeps the entry picture.
-      if (worm.pulseEnd || worm.landed) applyTransition();
+      if (machine.returning || worm.pulseEnd || worm.landed) applyTransition();
 
       currentLod = computeLod();
       if (layer) {
@@ -1688,9 +1636,9 @@ export function mountStage(container, options) {
       return true;
     };
 
-    const clearSelection = (notify) => {
+    const clearSelection = (notify, preserveView = false) => {
       const hadSelection = selectedIndex >= 0 || Boolean(selectedId);
-      if (rig.framing().mode === 'focus') rig.reset();
+      if (!preserveView && rig.framing().mode === 'focus') rig.reset();
       if (!hadSelection) return;
       selectedIndex = -1;
       selectedId = null;
@@ -1745,7 +1693,7 @@ export function mountStage(container, options) {
         phi: framing && Number.isFinite(framing.phi) ? framing.phi : undefined,
         theta: framing && Number.isFinite(framing.theta) ? framing.theta : undefined,
         minRadius: Math.min(layout.minRadius, here),
-        maxRadius: Math.max(layout.maxRadius, here * 2),
+        maxRadius: layout.maxRadius,
       });
       applyTransition();
       dirty = true;
@@ -1766,22 +1714,31 @@ export function mountStage(container, options) {
         if (opts.focusId) focusOrSelect(opts.focusId);
         return true;
       }
+      if (!reducedMotion && machine.progress >= 0.999) {
+        discTransfer.end();
+        disk.setDiscTransfer(-1);
+        if (!prepareDiscTransfer({ returning: true })) {
+          machine.returning = false;
+          return false;
+        }
+        machine.returning = true;
+      }
       clearTimers();
-      clearSelection(false);
+      clearSelection(false, true);
       machine.pendingFocus = opts.focusId ? String(opts.focusId) : null;
       machine.target = 0;
       if (machine.progress < 0.001) machine.progress = 0.001;
       transitioning = true;
       layer.setCluster(null);
-      const saved = machine.savedCamera;
+      // Keep the live view, even outside the hole's usual orbit range. A mode
+      // change must not move the camera away from the captured landing image.
+      const framing = rig.framing();
       const limits = holeOrbitLimits();
       rig.setHome({
-        radius: saved && saved.radius ? saved.radius : undefined,
-        phi: saved && saved.phi ? saved.phi : undefined,
-        theta: saved && Number.isFinite(saved && saved.theta) ? saved.theta : undefined,
-        minRadius: limits.minRadius,
-        maxRadius: limits.maxRadius,
-      });
+        ...framing,
+        minRadius: Math.min(limits.minRadius, framing.radius),
+        maxRadius: Math.max(limits.maxRadius, framing.radius),
+      }, { preserveView: true });
       applyTransition();
       dirty = true;
       requestFrame();
@@ -1791,6 +1748,12 @@ export function mountStage(container, options) {
 
     const finishTransition = () => {
       transitioning = false;
+      if (machine.returning) {
+        machine.returning = false;
+        if (layer) layer.setFlow(-1);
+        disk.setStationSpin(1);
+        applyTransition();
+      }
       if (machine.target > 0.5) {
         machine.mode = 'cluster';
         machine.ui = 'black-hole';
@@ -1928,23 +1891,13 @@ export function mountStage(container, options) {
         layoutCache.set('field', field);
       }
       if (!reducedMotion && !discTransfer.active) {
-        // Exit reconstructs the SAVED hole view, not a screenshot taken from a
-        // focused cluster camera. The rig eases toward this same framing.
-        let sourceCamera = camera;
-        const framing = options && options.holeFraming;
-        if (framing) {
-          sourceCamera = camera.clone();
-          const center = framing.target || { x: 0, y: 0, z: 0 };
-          sourceCamera.position.setFromSphericalCoords(framing.radius, framing.phi, framing.theta);
-          sourceCamera.position.add(new Vector3(center.x, center.y, center.z));
-          sourceCamera.lookAt(center.x, center.y, center.z);
-          sourceCamera.updateMatrixWorld();
-        }
         try {
-          // Capture/build first; install the driven layout only after success.
-          // A readback failure must not strand an ownerless flow=0 layer.
-          disk.update(elapsed, sourceCamera);
-          discTransfer.begin(disk.captureDisc(sourceCamera), field);
+          // Both directions use the live view. Capture/build first so failure
+          // cannot strand an ownerless flow=0 layer or move the camera.
+          disk.update(elapsed, camera);
+          const snapshot = disk.captureDisc(camera);
+          if (options && options.returning) layer.setReturnDisc(buildDiscFragments(snapshot, field));
+          else discTransfer.begin(snapshot, field);
         } catch (error) {
           discTransfer.end();
           disk.setDiscTransfer(-1);
@@ -1955,6 +1908,7 @@ export function mountStage(container, options) {
         }
         disk.setStationSpin(0);
       }
+      if (options && options.returning) return true;
       layer.setCluster(field);
       layer.setFlow(discTransfer.active ? clamp01(machine.progress / DISC_TRANSFER_LANDING) : machine.progress);
       worm.layoutReady = true;
@@ -2055,7 +2009,7 @@ export function mountStage(container, options) {
       const drawn = (worm.kind === 'enter' && (machine.wormCharge > 0.004 || machine.progress > 0.0001)) || (wasExit && (Math.abs(machine.progress - worm.progressBefore) > 0.0001 || worm.blend < 0.999));
       // `armed` is the exit's own window into the entry. Lifting off inside it
       // with nothing drawn is the one release that leaves no hold at all.
-      if (wasExit && worm.armed && !drawn) worm.armed = false;
+      if (wasExit && worm.armed && !drawn) restoreClusterAfterCancel();
       const recoiling = drawn;
       worm.locked = false;
       worm.hiddenAt = 0;
@@ -2071,7 +2025,8 @@ export function mountStage(container, options) {
         // leaving; the hole keeps its destination so the mode never flips.
         worm.recoilTarget = wasExit ? 1 : 0;
         if (wasExit) {
-          machine.returning = false;
+          // Rewind the same live path and point material. The cluster endpoint
+          // clears returning in restoreClusterAfterCancel, not on release.
           machine.target = 1;
         }
         // Where the frame actually stands: the scalar is the frame that has
@@ -2112,7 +2067,7 @@ export function mountStage(container, options) {
 
     /**
      * The exit's one-time preparation: the space hand-over. It reserves a
-     * starting point for the cluster (progress one, camera home) so the exit can
+     * starting point for the cluster (progress one, current view) so the exit can
      * walk the same numbers the entry drove backwards. Nothing visible happens
      * until the clock moves, so a press that never advances has no first frame to
      * take back.
@@ -2132,8 +2087,8 @@ export function mountStage(container, options) {
       worm.armed = true;
       worm.progressBefore = machine.progress;
       worm.target = fromCluster ? 'cluster' : 'field';
-      // A settled cluster returns using its live particles. No readback, new
-      // population or reverse-flight material swap on the first moving frame.
+      // A readback supplies landing coordinates only; the live particles keep
+      // their buffers/material and never swap to a captured disc population.
       // The transfer is checked and cleared below, not used to pick a branch:
       // leaving a stale one active hid the whole cluster layer on the exit
       // (applyTransition drops it once handoff reaches zero) and replaced the
@@ -2148,7 +2103,10 @@ export function mountStage(container, options) {
       }
       // Stand the numbers at the start of the backward walk. The blend does not
       // change, so the first frame is the frame the press landed on.
-      if (fromCluster) exitCluster({});
+      if (fromCluster && !exitCluster({})) {
+        restoreClusterAfterCancel();
+        return;
+      }
       // The cluster leg is reversible under this timeline, so the lock waits for
       // the ring to be full.
       if (worm.target !== 'cluster') worm.locked = true;
@@ -2233,13 +2191,12 @@ export function mountStage(container, options) {
         if (settled) layer.setFlow(-1);
       }
       if (layout && layout.camera) {
+        const framing = rig.framing();
         rig.setHome({
-          radius: layout.camera.radius,
-          phi: layout.camera.phi,
-          theta: layout.camera.theta,
-          minRadius: layout.minRadius,
-          maxRadius: layout.maxRadius,
-        });
+          ...framing,
+          minRadius: Math.min(layout.minRadius, framing.radius),
+          maxRadius: Math.max(layout.maxRadius, framing.radius),
+        }, { preserveView: true });
       }
       applyTransition();
       worm.layoutReady = false;

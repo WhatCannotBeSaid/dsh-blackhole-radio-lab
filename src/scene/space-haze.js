@@ -182,9 +182,10 @@ export function createSpaceHaze(options = {}) {
   object.name = 'bhrl.space-haze';
 
   const toShader = (x, y, z, out) => {
+    // Same (x, -z, y) frame as the hole pass; normalize() removes the RS scale.
     out[0] = Number(x) || 0;
-    out[1] = Number(y) || 0;
-    out[2] = Number(z) || 0;
+    out[1] = -(Number(z) || 0);
+    out[2] = Number(y) || 0;
     return out;
   };
 

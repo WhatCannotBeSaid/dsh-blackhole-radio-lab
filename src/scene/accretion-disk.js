@@ -154,6 +154,7 @@ export function createAccretionDisk(options = {}) {
     // Wind-up under the hold, 0..1. Only the disc pattern reads it.
     uCharge: { value: 0 },
     uDiscTransfer: { value: -1 },
+    uDiscReturn: { value: -1 },
     // Where the disc starts, in Rs units. At rest this is the ISCO; the hold
     // pulls it inward, which is what shrinks the shadow on screen.
     uDiscInner: { value: ISCO_RADIUS / RS },
@@ -683,13 +684,14 @@ export function createAccretionDisk(options = {}) {
       target: renderer.getRenderTarget(), mode: uniforms.uProbeMode.value,
       viewport: uniforms.uViewport.value.clone(), rect: uniforms.uProbeRect.value.clone(),
       visible: object.visible, blending: material.blending,
-      opacity: uniforms.uOpacity.value, transfer: uniforms.uDiscTransfer.value,
+      opacity: uniforms.uOpacity.value, transfer: uniforms.uDiscTransfer.value, returning: uniforms.uDiscReturn.value,
     };
     let identity;
     try {
       uniforms.uProbeMode.value = 66;
       uniforms.uOpacity.value = 1;
       uniforms.uDiscTransfer.value = -1;
+      uniforms.uDiscReturn.value = -1;
       uniforms.uViewport.value.set(width, height);
       uniforms.uProbeRect.value.set(0, 0, 0, 0);
       material.blending = NoBlending;
@@ -710,6 +712,7 @@ export function createAccretionDisk(options = {}) {
       uniforms.uProbeRect.value.copy(previous.rect);
       uniforms.uOpacity.value = previous.opacity;
       uniforms.uDiscTransfer.value = previous.transfer;
+      uniforms.uDiscReturn.value = previous.returning;
       object.visible = previous.visible;
       material.blending = previous.blending;
       target.dispose();
@@ -754,6 +757,9 @@ export function createAccretionDisk(options = {}) {
     setDiscInner,
     captureDisc,
     setDiscTransfer,
+    setDiscReturn(value) {
+      uniforms.uDiscReturn.value = Number.isFinite(value) && value >= 0 ? Math.min(1, value) : -1;
+    },
     setStationSpin,
     isStationSpinSettled,
     getInfo,

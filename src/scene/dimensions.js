@@ -93,11 +93,12 @@ export const DISK_PEAK_RADIUS = (49 / 36) * DISK_INNER;
 export const RING_RADIUS = CRITICAL_IMPACT_PARAMETER;
 
 /**
- * Default camera home, world units. Same framing as phase 1 (r ~ 8.2, a little
- * under 5 degrees above the disc plane, ~6 degrees in azimuth) expressed through
- * the new unit: the camera distance is now ~8.2 b_crit.
+ * Default camera home, world units: r = 11 b_crit, 15 degrees above the disc
+ * plane, ~6 degrees in azimuth. Far enough that the whole disc sits inside the
+ * frame with margin, and still inside the hole view's own orbit ceiling (~12.9
+ * on a 16:9 canvas), so a reset returns to a framing the rig can actually reach.
  */
-export const CAMERA_HOME = Object.freeze({ x: 0.856, y: 0.401, z: 8.146 });
+export const CAMERA_HOME = Object.freeze({ x: 1.1108, y: 2.847, z: 10.567 });
 
 /**
  * Animation time scale: how much coordinate time (in Rs/c units, the unit the

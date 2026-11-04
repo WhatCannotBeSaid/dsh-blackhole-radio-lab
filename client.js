@@ -3599,7 +3599,11 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { className: 'bhrl-boot' },
-                h('span', { className: 'bhrl-boot__disc', 'aria-hidden': 'true' }),
+                h(
+                  'svg',
+                  { className: 'bhrl-boot__disc', viewBox: '0 0 12 12', 'aria-hidden': 'true', focusable: 'false' },
+                  h('circle', { cx: 6, cy: 6, r: 5.5, fill: 'none', stroke: 'currentColor', strokeWidth: 1, pathLength: 100, strokeDasharray: '75 25' }),
+                ),
                 h('span', null, `${t('stageLoading')}…`),
               )
             : null,
@@ -3836,7 +3840,7 @@ window.__ModuleLoader__.load({
   transform: translate(-50%, -50%); font-size: 11px; letter-spacing: 0.08em; color: rgba(206, 218, 238, 0.45);
   pointer-events: none;
 }
-.bhrl-boot__disc { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(255, 160, 100, 0.5); border-top-color: transparent; animation: bhrl-spin 900ms linear infinite; }
+.bhrl-boot__disc { flex: none; width: 12px; height: 12px; color: rgba(255, 160, 100, 0.5); animation: bhrl-spin 900ms linear infinite; }
 .bhrl-fail {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(320px, 80%);
   padding: 14px; border-radius: 10px; border: 1px solid rgba(255, 140, 90, 0.35); background: rgba(8, 9, 14, 0.9);
@@ -3988,7 +3992,8 @@ window.__ModuleLoader__.load({
   color: inherit;
 }
 .bhrl-foot *, .bhrl-foot *::before, .bhrl-foot *::after { box-sizing: border-box; }
-.bhrl-foot.is-wide { padding: 8px 10px 9px; }
+/* Compensate the host sidebar's bottom padding; leave a 0.5px outer gap. */
+.bhrl-foot.is-wide { padding: 8px 0 0; margin-inline: 0; margin-bottom: calc(0.5px - 6px); }
 .bhrl-foot.is-rail { display: flex; align-items: center; justify-content: center; padding: 2px 0; }
 
 /* ---- the station card ----------------------------------------------- *

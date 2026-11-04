@@ -317,10 +317,12 @@ export function createCameraRig(camera, element, options) {
     home.radius = clamp(home.radius, home.minRadius, home.maxRadius);
     if (setOptions && setOptions.animate === false) return;
     mode = 'orbit';
-    goal.target.copy(home.target);
-    goal.radius = home.radius;
-    goal.phi = home.phi;
-    goal.theta = nearestAngle(home.theta, state.theta);
+    // A space handover can adopt this view without finishing an old focus/dolly.
+    const pose = setOptions && setOptions.preserveView ? state : home;
+    goal.target.copy(pose.target);
+    goal.radius = pose.radius;
+    goal.phi = pose.phi;
+    goal.theta = nearestAngle(pose.theta, state.theta);
     notify();
   }
 

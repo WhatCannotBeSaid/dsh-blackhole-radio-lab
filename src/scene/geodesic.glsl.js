@@ -59,6 +59,7 @@
  */
 
 import { TABLE_SIZES } from './ray-tables.js';
+import { DISC_RETURN_GLSL } from './disc-transfer.js';
 
 /**
  * Physical and shading constants shared by the shader and the JS verification
@@ -507,6 +508,8 @@ uniform float uStationPhase;
 // -1: ordinary imaging. 0..1: the captured disc has become moving fragments;
 // this pass owns ONLY the background/shadow, never a second copy of the disc.
 uniform float uDiscTransfer;
+uniform float uDiscReturn;
+${DISC_RETURN_GLSL}
 
 /** Normalised raster coordinates for one advected disc point. */
 vec2 stationUvAt(float r, float phi, float age) {
@@ -1235,6 +1238,10 @@ void main() {
   if (uDiscTransfer >= 0.0 && uProbeMode == 0) {
     holeScale = 1.0 - smoothstep(0.0, 1.0, uDiscTransfer);
   }
+  if (uDiscReturn >= 0.0 && uProbeMode == 0) {
+    // Reverse the departure's whole curve, not a short window of an eased clock.
+    holeScale = 1.0 - smoothstep(0.0, 1.0, 1.0 - min(uDiscReturn / 0.72, 1.0));
+  }
   vec3 traceCamPos = uCamPos / max(holeScale, 0.002);
   float rCam = length(traceCamPos);
   float u = 1.0 / rCam;
@@ -1516,6 +1523,15 @@ void main() {
     // remnant. Running the same progress backwards reveals it before it expands.
     float dissolve = 1.0 - smoothstep(0.0, 0.12, holeScale);
     color = mix(backgroundColor, straightSky, dissolve);
+  }
+
+  if (uDiscReturn >= 0.0 && uProbeMode == 0) {
+    // Reveal the real traced gas exactly where each incoming point merges.
+    float phase = discReturnPhase(fragPos / uViewport);
+    float reveal = smoothstep(phase, phase + 0.10, uDiscReturn);
+    vec3 straightSky = backgroundDiffuse(viewDir) + backgroundStars(viewDir, 1.0);
+    vec3 sky = mix(straightSky, backgroundColor, smoothstep(0.0, 0.12, holeScale));
+    color = mix(sky, color, reveal);
   }
 
   // Visible id: the far patch only counts for what survives the near crossing.

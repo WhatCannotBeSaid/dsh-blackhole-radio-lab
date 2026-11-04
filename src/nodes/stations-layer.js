@@ -40,6 +40,7 @@ import { centered, hash32, mulberry32 } from '../radio/random.js';
 import { DISK_INNER, DISK_OUTER, CRITICAL_IMPACT_PARAMETER, RS } from '../scene/dimensions.js';
 import { STATION_RADIUS } from '../radio/distribution.js';
 import { NOISE_GLSL } from '../scene/glsl.js';
+import { discReturnPhase, discReturnProgress } from '../scene/disc-transfer.js';
 
 const DISK_PARTICLES = 5;
 const FEATURED_PARTICLES = 8;
@@ -90,6 +91,7 @@ const VERTEX_SHADER = /* glsl */ `
   attribute float aStation;
   attribute float aPresence;
   attribute float aCluster;
+  attribute float aReturnAlpha;
   attribute float aMember;
   attribute float aVeil;
   // Favourite is a property of the station, not of the scene: it survives every
@@ -106,6 +108,7 @@ const VERTEX_SHADER = /* glsl */ `
   uniform float uOuter;
   uniform float uBandInner;
   uniform float uBandOuter;
+  uniform float uReturning;
   uniform float uClusterAmount;
   uniform float uClusterRadius;
   uniform float uBurst;
@@ -179,7 +182,8 @@ const VERTEX_SHADER = /* glsl */ `
     float bands = 0.5 + 0.5 * sin(log(r) * 27.0 - uTime * 0.5 + n1 * 3.4);
     float dens = smoothstep(0.20, 0.68, detail + bands * 0.07);
 
-    float cluster = clamp(aCluster, 0.0, 1.0);
+    // Keep airborne stars lit independently of the physical (unlensed) disc band.
+    float cluster = max(clamp(aCluster, 0.0, 1.0), uReturning);
     vCluster = cluster;
 
     // In the cluster the disk density field is irrelevant: every station is a
@@ -210,6 +214,9 @@ const VERTEX_SHADER = /* glsl */ `
     // swell is enough to read as speed, and it costs nothing: the energy below
     // is pulled back by the same factor so the burst does not clip to white.
     sizePx *= 1.0 + uBurst * 0.75;
+    // Keep the initial live star; tighten to a dot as soon as it leaves.
+    float point = uReturning * (1.0 - smoothstep(0.94, 1.0, aCluster));
+    sizePx = mix(sizePx, min(sizePx, 2.2), point);
     gl_PointSize = clamp(sizePx, 1.0, ${MAX_POINT_PX.toFixed(1)});
 
     gl_Position = projectionMatrix * mv;
@@ -285,7 +292,7 @@ const VERTEX_SHADER = /* glsl */ `
     vAlpha = aPresence * matter * dim * boost * lodAlpha * diskFade
       * sizeFade * energy * memberFade * clusterGain * diskLight * liveGain * standIn
       * hoverBoost
-      * (1.0 - uHoleOnly);
+      * (1.0 - uHoleOnly) * aReturnAlpha;
 
 
     // Black-body ladder: dull red at the outer edge, amber in the body, white
@@ -341,6 +348,7 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform vec2 uRes;
   uniform vec2 uHolePx;
   uniform float uHoleRadiusPx;
+  uniform float uReturning;
   uniform float uClusterAmount;
   uniform float uDim;
 
@@ -371,7 +379,9 @@ const FRAGMENT_SHADER = /* glsl */ `
     // A slightly ragged edge keeps the sprites from looking like stamps.
     eDisk *= 1.0 + 0.10 * sin(vSeed * 31.0 + along * 6.0);
     float eStar = d * (1.0 + 0.05 * sin(vSeed * 23.0));
-    float e = mix(eDisk, eStar, vCluster);
+    // Homeward matter stays round all the way to the live disc handoff.
+    float shape = max(vCluster, uReturning);
+    float e = mix(eDisk, eStar, shape);
     if (e > 1.0) discard;
 
     vec2 screen = vec2((vNdc.x * 0.5 + 0.5) * uRes.x, (0.5 - vNdc.y * 0.5) * uRes.y);
@@ -389,7 +399,7 @@ const FRAGMENT_SHADER = /* glsl */ `
     // Kept under one on purpose: at 0.40 + 0.60 the cluster's own core summed
     // past 1.0 and every dense body had a white centre with no gradient left in
     // it. This is the second half of "slightly brighter than the hole".
-    float profile = mix(halo * 0.50 + core * 0.34, starHalo * 0.34 + starCore * 0.42, vCluster);
+    float profile = mix(halo * 0.50 + core * 0.34, starHalo * 0.34 + starCore * 0.42, shape);
     vec3 color = vColor * (0.86 + 0.30 * core + vSelected * 0.15);
     float alpha = profile * vAlpha * mask * uDim;
     if (alpha <= 0.003) discard;
@@ -519,6 +529,9 @@ export function createStationsLayer(stations, options) {
   const favouriteFlags = new Float32Array(particleTotal);
   /** Local offset per particle: tangent, radial, vertical. */
   const offsets = new Float32Array(particleTotal * 3);
+  const returnScatter = new Float32Array(particleTotal * 3);
+  const returnAlpha = new Float32Array(particleTotal).fill(1);
+  let returnDisc = null;
 
   let cursor = 0;
   for (let i = 0; i < count; i += 1) {
@@ -573,6 +586,9 @@ export function createStationsLayer(stations, options) {
       tints[cursor * 3 + 1] = rgb[1];
       tints[cursor * 3 + 2] = rgb[2];
       seeds[cursor] = (hash32(seed, i, k, 'seed') % 10000) / 10000;
+      for (let axis = 0; axis < 3; axis++) {
+        returnScatter[cursor * 3 + axis] = (hash32(seed, i, k, axis, 'return') % 10000) / 5000 - 1;
+      }
       tiers[cursor] = featured ? 1 : 0;
       matches[cursor] = 1;
       stationIds[cursor] = i;
@@ -597,6 +613,7 @@ export function createStationsLayer(stations, options) {
   geometry.setAttribute('aStation', new BufferAttribute(stationIds, 1));
   geometry.setAttribute('aPresence', new BufferAttribute(presences, 1));
   geometry.setAttribute('aCluster', new BufferAttribute(clusterMix, 1));
+  geometry.setAttribute('aReturnAlpha', new BufferAttribute(returnAlpha, 1));
   geometry.setAttribute('aMember', new BufferAttribute(memberFlags, 1));
   geometry.setAttribute('aVeil', new BufferAttribute(veilFlags, 1));
   geometry.setAttribute('aFav', new BufferAttribute(favouriteFlags, 1));
@@ -618,6 +635,7 @@ export function createStationsLayer(stations, options) {
     uRes: { value: [1, 1] },
     uHolePx: { value: [0, 0] },
     uHoleRadiusPx: { value: 1 },
+    uReturning: { value: 0 },
     uClusterAmount: { value: 0 },
     uClusterRadius: { value: clusterRadius },
     // Single-peak envelope of the burst, 0 on the disc and on the cluster, 1 at
@@ -780,7 +798,8 @@ export function createStationsLayer(stations, options) {
     }
 
     const blend = smoothstep01(clusterBlend[stationIndex]);
-    if (blend <= 0.0001) {
+    returnAlpha[particle] = 1;
+    if (blend <= 0.0001 && !(returning && returnDisc)) {
       positions[particle * 3] = diskX;
       positions[particle * 3 + 1] = diskY;
       positions[particle * 3 + 2] = diskZ;
@@ -801,10 +820,35 @@ export function createStationsLayer(stations, options) {
     const clusterYW = clusterY[stationIndex] + ny * knot;
     const clusterZW = clusterZ[stationIndex] + nz * knot;
 
+    if (returning && returnDisc) {
+      const p = particle * 3;
+      const gather = discReturnProgress(clusterBlend[stationIndex]);
+      const phase = returnDisc.phase[particle];
+      const flight = smoothstep01((gather - 0.16) / (phase - 0.16));
+      const spread = smoothstep01(gather / 0.12) * (1 - flight) * Math.min(1.5, clusterRadius * 0.08);
+      const dx = clusterXW - returnDisc.target[p];
+      const dy = clusterYW - returnDisc.target[p + 1];
+      const dz = clusterZW - returnDisc.target[p + 2];
+      const right = returnDisc.right, up = returnDisc.up;
+      const sx = dx * right.x + dy * right.y + dz * right.z;
+      const sy = dx * up.x + dy * up.y + dz * up.z;
+      const arc = Math.sin(Math.PI * flight) * 0.18;
+      positions[p] = clusterXW - dx * flight + (-sy * right.x + sx * up.x) * arc + returnScatter[p] * spread;
+      positions[p + 1] = clusterYW - dy * flight + (-sy * right.y + sx * up.y) * arc + returnScatter[p + 1] * spread;
+      positions[p + 2] = clusterZW - dz * flight + (-sy * right.z + sx * up.z) * arc + returnScatter[p + 2] * spread;
+      returnAlpha[particle] = 1 - smoothstep01((gather - phase) / 0.10);
+      return;
+    }
+
     const point = sampleFlight(diskX, diskY, diskZ, clusterXW, clusterYW, clusterZW, blend);
-    positions[particle * 3] = point.x;
-    positions[particle * 3 + 1] = point.y;
-    positions[particle * 3 + 2] = point.z;
+    // Same idea as the outgoing source cells: independent, reversible volume
+    // around the existing path; both live endpoints and station anchors stay put.
+    const spread = returning
+      ? smoothstep01(blend / 0.06) * (1 - smoothstep01((blend - 0.55) / 0.45)) * Math.min(1.5, clusterRadius * 0.08)
+      : 0;
+    positions[particle * 3] = point.x + returnScatter[particle * 3] * spread;
+    positions[particle * 3 + 1] = point.y + returnScatter[particle * 3 + 1] * spread;
+    positions[particle * 3 + 2] = point.z + returnScatter[particle * 3 + 2] * spread;
   }
 
   /** Station centre (no sprite offset), used for picking, labels and marker. */
@@ -835,6 +879,7 @@ export function createStationsLayer(stations, options) {
         particle += n;
       }
       geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.aReturnAlpha.needsUpdate = true;
       writeStationAnchors(0, count);
     }
     if (dirtyMatches || dirtyCluster || dirtyMembers) {
@@ -1139,10 +1184,29 @@ export function createStationsLayer(stations, options) {
      * exactly the kind of drift that made the old crossing read as two effects
      * playing at once. While this is set, the timeline IS the clock.
      */
+    // ponytail: one fixed-view map per return; reproject if mid-flight camera/viewport edits must be supported.
+    setReturnDisc(data) {
+      if (!data?.count) throw new Error('Return disc has no imaged landing cells');
+      const cells = Array.from({ length: count }, () => []);
+      for (let i = 0; i < data.count; i++) cells[data.station[i]]?.push(i);
+      returnDisc = { target: new Float32Array(particleTotal * 3), phase: new Float32Array(particleTotal), right: data.right, up: data.up };
+      let particle = 0;
+      for (let station = 0; station < count; station++) {
+        const bucket = cells[station], n = perStation[station];
+        for (let k = 0; k < n; k++, particle++) {
+          const cell = bucket.length ? bucket[Math.floor((k + 0.5) * bucket.length / n)] : particle % data.count;
+          returnDisc.target.set(data.source.subarray(cell * 3, cell * 3 + 3), particle * 3);
+          returnDisc.phase[particle] = discReturnPhase(data.uv[cell * 2], data.uv[cell * 2 + 1]);
+        }
+      }
+      dirtyPositions = dirtyBuffers = animating = true;
+    },
+
     setReturning(value) {
       const next = value === true;
       if (next === returning) return;
       returning = next;
+      uniforms.uReturning.value = returning ? 1 : 0;
       dirtyPositions = dirtyBuffers = animating = true;
     },
 
@@ -1150,6 +1214,11 @@ export function createStationsLayer(stations, options) {
       const next = Number(value);
       const wanted = Number.isFinite(next) && next >= 0 ? clamp01(next) : -1;
       if (wanted === flow) return;
+      // Retire the last driven endpoint before independent easing resumes.
+      if (wanted < 0 && flow >= 0) {
+        for (let i = 0; i < count; i++) clusterBlend[i] = clusterMembers[i] === 1 ? flow : 0;
+        dirtyPositions = dirtyCluster = true;
+      }
       flow = wanted;
       animating = true;
       dirtyBuffers = true;

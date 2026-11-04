@@ -288,17 +288,18 @@ export function clusterRadius(n) {
 }
 
 /**
- * Default camera framing for the field: outside the shell, high enough that the
- * whole arrangement sits in frame and low enough that the depth reads.
+ * Default camera framing for the field: outside the shell, 15 degrees above the
+ * plane so the whole arrangement sits in frame with margin while the depth of
+ * the knots still reads.
  *
- * 3.33x the extent puts the projected diameter near 78% of the viewport height
- * at the stage's 42 degree field of view.
+ * 3.9x the extent puts the projected diameter near two thirds of the viewport
+ * height at the stage's 42 degree field of view.
  */
 export function clusterCamera(radius) {
   const r = Math.max(1, Number(radius) || 1);
   return {
-    radius: r * 2.9,
-    phi: 1.16,
+    radius: r * 3.9,
+    phi: 1.3090,
     theta: 0.52,
   };
 }
