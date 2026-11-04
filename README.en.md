@@ -6,7 +6,7 @@
 
 A 3-D black-hole stage for internet radio: over twenty thousand real stations orbit a hole you can orbit, zoom into and play.
 
-[中文](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Changelog](CHANGELOG.en.md) · v1.2.0
+[中文](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Changelog](CHANGELOG.en.md) · v1.2.1
 
 </div>
 
@@ -131,6 +131,7 @@ Anything omitted falls back to `DEFAULTS` in `index.js`. For debugging you can a
 - The catalogue comes from the public [Radio Browser](https://www.radio-browser.info) API. The bundled snapshot is fetched, probed and balanced per country and genre by `tools/build-catalog.mjs`; its build time and station count are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 - On the user side the snapshot is rebuilt once a week while DSH is running and written to `$DSH_HOME/cache/blackhole-radio-lab/`. Nothing runs when DSH is closed; a failure is logged and retried six hours later.
 - Playback connects the browser straight to the station's stream, and the track title comes from that stream's ICY block (the host reads exactly one block and disconnects). Those connections expose your IP to the station; the author's server is not involved and sees nothing.
+- The host's track probe only leaves for public hosts: loopback, private and link-local addresses are refused in every spelling (including IPv4-mapped forms such as `::ffff:127.0.0.1`), and so is any name whose lookup answers with one of them. Redirects are checked hop by hop, at most five deep, and a probe started by another site is answered with 403. Library writes likewise require a same-origin request with a JSON body.
 - Favourites, liked songs, volume and the last successful station are written only to `$DSH_HOME/blackhole-radio-lab/library.json`; failed-stream records live in this browser's IndexedDB. Nothing is uploaded.
 - No remote scripts, no CDN: Three.js is the plugin's own private dependency.
 
@@ -144,7 +145,7 @@ The plugin has two halves: a dependency-free Host half (`index.js` + `src/host/`
 | `src/host/library.js` | Local record of favourites, songs and playback preferences (atomic writes) |
 | `src/host/catalog-builder.js` | Catalogue builder: fetch, probe, balance (shared by CLI and host) |
 | `src/host/catalog-refresh.js` | Weekly background refresh and fallback rules |
-| `src/host/now-playing.js` | ICY metadata probe (a single block, then disconnect) |
+| `src/host/now-playing.js` | ICY metadata probe (one block, then disconnect; redirects and resolved addresses checked hop by hop) |
 | `client.js` | Browser entry: React components, styles, slot registration, lazy loading, teardown |
 | `src/stage.js` | Render entry: renderer / scene / camera, rAF, pointer state machine, wormhole |
 | `src/scene/` | Horizon, photon ring, disk, starfield, orbit camera, shared GLSL |
@@ -170,7 +171,7 @@ A chunk's URL derives from the **entry bundle's** revision, so the build bumps `
 ```bash
 npm install      # three + esbuild
 npm run build    # rebuild client.stage.js and client.radio.js
-npm test         # contract tests for the transition and the artifacts
+npm test         # contract tests: transitions, player, track probe, artifacts
 ```
 
 - **Edit `src/` only, then `npm run build`.** The two `client.*.js` files are artifacts.
@@ -180,7 +181,7 @@ npm test         # contract tests for the transition and the artifacts
 
 ### What the tests do and do not cover
 
-`npm test` is plain Node, no browser: 40 transition cases (immediate motion on press, recoil on release, re-press mid-recoil without a jump, one hold equals one crossing, one-directional inward spiral on the way back, near-zero cancellation), the adaptive pixel-ratio budget and its fallback, 89 real source-cell and projection mappings, the real SVG ring's timing, and a loader smoke test for both chunk artifacts.
+`npm test` is plain Node, no browser: 61 transition cases (immediate motion on press, recoil on release, re-press mid-recoil without a jump, one hold equals one crossing, one-directional inward spiral on the way back, near-zero cancellation), 19 player fallback and failure-quarantine cases, 17 track-probe cases (private literals and DNS answers, hop-by-hop redirects, cross-site requests, probe timeout), the adaptive pixel-ratio budget and its fallback, 89 real source-cell and projection mappings, the real SVG ring's timing, and a loader smoke test for both chunk artifacts.
 
 It does **not** cover the GPU or the browser: shader compilation, real frame rate and the look of the HDR tone mapping still need a human on real hardware.
 
@@ -191,6 +192,7 @@ It does **not** cover the GPU or the browser: shader compilation, real frame rat
 - Closing the window silences playback on `pagehide`. While the window stays hidden and audible, the page probes the local host every three seconds and stops after two unanswered probes; a probe that times out at two and a half seconds counts as unanswered.
 - System media controls step aside for another player by metadata identity; an external takeover that only replaces handlers and leaves the metadata alone cannot be detected.
 - The live-fetch path takes at most 5,000 stations per run (paging plus a time budget); the bundled snapshot is far larger. A snapshot older than 30 days, or one that suddenly shrinks, falls back to live fetching.
+- If the local DNS resolves station names to private addresses (a self-built sinkhole, some accelerators), track probes are refused and the card shows an empty title; playback connects from the browser and is unaffected.
 - `reducedMotion` shortens transitions rather than removing them entirely.
 - At the closest zoom, dense regions still hide some labels behind their neighbours.
 

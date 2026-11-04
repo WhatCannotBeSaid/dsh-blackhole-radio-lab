@@ -294,6 +294,16 @@ async function answerNowPlaying(resolver, req, res) {
     return;
   }
 
+  // A poll makes the Host fetch a stream of somebody else's choosing, so only a
+  // deliberate same-origin request may ask for one. Without this, any page in
+  // the browser can point an <img> at this route and use the Host as a proxy —
+  // and hold its six read slots while doing it.
+  const fetchSite = String((req.headers && req.headers['sec-fetch-site']) || '').toLowerCase();
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    sendJson(res, 403, { error: 'cross-site', title: '' }, method === 'HEAD');
+    return;
+  }
+
   let requestUrl;
   try {
     requestUrl = new URL(String(req.url ?? ''), 'http://127.0.0.1');

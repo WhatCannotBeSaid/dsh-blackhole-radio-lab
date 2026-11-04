@@ -6,7 +6,7 @@
 
 一块给网络电台用的 3D 黑洞舞台：两万多台真实电台绕着一颗可以环绕、可以播放的黑洞运行。
 
-[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · [变更日志](CHANGELOG.md) · v1.2.0
+[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · [变更日志](CHANGELOG.md) · v1.2.1
 
 </div>
 
@@ -131,6 +131,7 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 - 电台目录来自 [Radio Browser](https://www.radio-browser.info) 的公开 API。发布包里的快照由 `tools/build-catalog.mjs` 抓取、逐条探活、按国家与流派保底筛洗而成，构建时间与台数写在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 - 用户侧每周在 DSH 运行期间后台重建一次快照，写入 `$DSH_HOME/cache/blackhole-radio-lab/`；DSH 没开就不跑，失败只记日志、六小时后再试。
 - 播放时浏览器直接连电台的流地址，曲目信息来自该流的 ICY 元数据块（Host 只取一个块即断开）。这些连接会把你的 IP 暴露给对应电台，作者服务器不参与、也看不到。
+- Host 的曲目查询只发往公网：回环、私网、链路本地地址的任何写法（含 `::ffff:127.0.0.1` 这类 IPv4 映射形式）都拒绝，域名解析结果里出现私网同样拒绝；重定向逐跳校验、最多 5 跳；别的网站发起的查询直接 403。收藏写入同样要求同源来源与 JSON 正文。
 - 收藏、喜欢的歌曲、音量与最后成功播放站保存在本机 `$DSH_HOME/blackhole-radio-lab/library.json`；失效源记录保存在当前浏览器 IndexedDB，不上传。
 - 插件不加载远端脚本，不引 CDN，Three.js 是包内私有依赖。
 
@@ -144,7 +145,7 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 | `src/host/library.js` | 收藏、歌曲与播放偏好的本机记录（原子写） |
 | `src/host/catalog-builder.js` | 目录构建：抓取、探活、保底筛洗（CLI 与 Host 共用） |
 | `src/host/catalog-refresh.js` | 每周后台刷新调度与回落规则 |
-| `src/host/now-playing.js` | ICY 元数据探测（只读一个元数据块） |
+| `src/host/now-playing.js` | ICY 元数据探测（只读一个块；逐跳校验重定向与解析出的地址） |
 | `client.js` | 浏览器入口：React 组件、样式、槽位注册、懒加载、卸载清理 |
 | `src/stage.js` | 渲染入口：renderer / 场景 / 相机、rAF、指针状态机、黑洞↔星团形态转换 |
 | `src/scene/` | 黑体、光子环、吸积盘、星场、轨道相机、共用 GLSL |
@@ -170,7 +171,7 @@ chunk 的 URL 取自**入口包**的 revision，所以构建脚本会在产物�
 ```bash
 npm install      # three + esbuild
 npm run build    # 重建 client.stage.js 与 client.radio.js
-npm test         # 转场与产物的契约测试
+npm test         # 契约测试：转场、播放器、曲目查询、产物
 ```
 
 - **只改 `src/`，然后 `npm run build`。** 两个 `client.*.js` 是产物。
@@ -180,7 +181,7 @@ npm test         # 转场与产物的契约测试
 
 ### 测试覆盖到哪
 
-`npm test` 是纯 Node 的契约测试，不需要浏览器：44 个转场用例（含按下即动、松手回抽、回弹复按不跳变、一次长按只跨越一次、左右键同一 2.3 s 时钟、右键短按打开收藏列表、回程单向旋卷与近零进度取消）、自适应像素比的预算与回落、89 组真实源码取色与投影映射、真实 SVG 环的时序、以及两个产物 chunk 的 loader 注册冒烟。
+`npm test` 是纯 Node 的契约测试，不需要浏览器：61 个转场用例（含按下即动、松手回抽、回弹复按不跳变、一次长按只跨越一次、左右键同一 2.3 s 时钟、右键短按打开收藏列表、回程单向旋卷与近零进度取消）、19 个播放器降级与失效隔离用例、17 个曲目查询用例（私网字面量与 DNS 解析、逐跳重定向、跨站请求、查询超时）、自适应像素比的预算与回落、89 组真实源码取色与投影映射、真实 SVG 环的时序、以及两个产物 chunk 的 loader 注册冒烟。
 
 它**不**覆盖 GPU 与浏览器观感：着色器编译、实际帧率、HDR 色调映射的观感只能靠人眼在真机上看。
 
@@ -191,6 +192,7 @@ npm test         # 转场与产物的契约测试
 - 关闭窗口时 `pagehide` 立即停止播放；最小化但仍出声时每 3 秒探活本机后端，连续 2 次未应答才停，单次探测 2.5 秒超时也算未应答。
 - 系统媒体控制以 metadata 身份避让其他播放器，无法识别只更换 handler 而不更新 metadata 的外部接管。
 - 实时抓取路径每次最多取 5,000 台（分页 + 时间预算），内置快照远大于此；快照过期 30 天或台数骤减时会回落实时抓取。
+- 本地 DNS 把电台域名解析到私网时（自建 sinkhole、部分加速器），曲目查询会被拒绝，卡片只留空标题；播放走浏览器直连，不受影响。
 - `reducedMotion` 下转场时间更短，不是完全无动画。
 - 缩放到最近处时，密集区域的台名仍会互相让位，极端密度下会有标签不显示。
 

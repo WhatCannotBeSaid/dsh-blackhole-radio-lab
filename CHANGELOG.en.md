@@ -2,6 +2,44 @@
 
 Versions follow [Semantic Versioning](https://semver.org/). The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [1.2.1] - 2026-11-04
+
+### Security: a track probe can no longer reach the local network
+
+- The private-address check used to be a spelling match only, so a public name that resolved to loopback slipped through. Every hop is now checked twice: literals first, then DNS, and one private answer in the lookup refuses the name — including IPv4-mapped forms such as `::ffff:127.0.0.1` and `::ffff:7f00:1`. A lookup that fails is refused too, instead of the old "cannot resolve, let it through".
+- Redirects are followed by hand with `redirect: 'manual'`: each 3xx target is checked before the next request goes out, five hops at most, after which the read ends as `redirect-blocked`. With `redirect: 'follow'` only the final URL was re-checked, and the request into the local network had already been sent.
+- The DNS lookup shares the read's six-second cap, so a hung resolver no longer holds a concurrency slot.
+- `/blackhole-radio-lab/now-playing` now checks `sec-fetch-site`: a probe started by another site is answered with 403, the same rule the library write already used.
+- New `tools/test-now-playing.mjs` (17 cases), wired into `npm test`.
+
+### Cluster → hole: a per-point phased arrival
+
+- The return no longer cross-fades the disk against the fragments. The shadow reaches its final size first (progress 0.72), the first star lands at 0.74, and the disk fades in locally at the traced gas positions instead of a stand-in disc drawn over them.
+- Each point carries its own phase and stays round the whole way: stars in flight, disk pixels where they land.
+- `discReturnProgress` inverts the timeline's ease and `discReturnPhase` interleaves locally, with no angular wipe cutting through the light band.
+- The hole view's far stop is no longer derived from the shadow's size; both spaces share the field layout's limit, so opening the sidebar no longer shrinks the hole's usable distance.
+- `client.stage.js` rebuilt by `npm run build`.
+
+### Camera and framing
+
+- Default framing is r = 11 b_crit, 15° above the disc plane and 6° in azimuth, putting the whole disc in frame with margin; the cluster frames at 3.9× its radius and the same 15°.
+- The camera rig accepts `preserveView`: a space handover keeps the current pose instead of flying back to the old focus first.
+
+### Fixes
+
+- Haze particles now use the same `(x, -z, y)` frame as the hole; the previous mapping pointed them the wrong way.
+- The loading spinner is an SVG ring with a fixed `pathLength` instead of a rotating CSS border, which no longer depends on how the browser joins border corners.
+- The wide footer card's padding now compensates the host sidebar's bottom padding, leaving a 0.5 px outer gap.
+
+### Tests
+
+- Transition cases 40 → 61: per-point phase, shadow-then-reveal ordering, cancelling mid-return, `preserveView`, space handover and the framing limit.
+- 17 new track-probe cases; `npm test` is green (61 + 19 + 17 + the loader smoke test).
+
+### Validation boundary
+
+- The automated tests do not cover the GPU: shader compilation, real frame rate and the look of the HDR tone mapping still need a human on real hardware.
+
 ## [1.2.0] - 2026-11-01
 
 ### Cluster → hole: a continuous spiralling return

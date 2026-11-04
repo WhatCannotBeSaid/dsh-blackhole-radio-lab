@@ -24,6 +24,9 @@
  * module answers "what does the stream say", never "is that a song".
  */
 
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+
 /** Give up on a stream that has not produced a metadata block by then. */
 export const NOW_PLAYING_TIMEOUT_MS = 6000;
 
@@ -41,6 +44,9 @@ const MAX_CACHE_ENTRIES = 64;
 
 /** How many stream reads may be open at once across the whole Host. */
 const MAX_PENDING_READS = 6;
+
+/** How many CDN hops a stream may take before it is treated as a loop. */
+const MAX_REDIRECTS = 5;
 
 const USER_AGENT = 'blackhole-radio-lab/0.4 (+now-playing)';
 
@@ -74,7 +80,7 @@ function isPrivateIPv4(octets) {
  */
 export function isPrivateHost(hostname) {
   if (typeof hostname !== 'string' || !hostname) return true;
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const host = hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase();
   if (PRIVATE_HOST.test(host)) return true;
   // IPv6 literals: loopback, unique-local (fc00::/7), link-local (fe80::/10),
   // and v4-mapped forms of the ranges below.
@@ -107,6 +113,117 @@ function numberPart(part) {
   if (part.startsWith('0x')) return Number.parseInt(part.slice(2), 16);
   if (part.length > 1 && part.startsWith('0')) return Number.parseInt(part, 8);
   return Number.parseInt(part, 10);
+}
+
+/** One resolved address, in the same ranges as {@link isPrivateIPv4}. */
+function isPrivateAddress(address) {
+  if (typeof address !== 'string') return true;
+  const family = isIP(address);
+  if (family === 4) {
+    return isPrivateIPv4(address.split('.').map((part) => Number(part)));
+  }
+  if (family !== 6) return true;
+  const groups = expandIPv6(address.toLowerCase());
+  if (!groups) return true;
+  const bytes = groups.flatMap((group) => {
+    const value = Number.parseInt(group || '0', 16);
+    return [(value >> 8) & 0xff, value & 0xff];
+  });
+  if (bytes.length !== 16) return true;
+  // `::` and `::1`.
+  if (bytes.every((byte) => byte === 0)) return true;
+  if (bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1) return true;
+  // `::ffff:a.b.c.d` and its hex spellings (`::ffff:7f00:1`), which the browser
+  // and the OS both treat as that IPv4 address.
+  if (bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
+    return isPrivateIPv4(bytes.slice(12));
+  }
+  if ((bytes[0] & 0xfe) === 0xfc) return true; // fc00::/7 unique-local
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link-local
+  return false;
+}
+
+/** The eight hextets of an IPv6 address, or `null` when it does not parse. */
+function expandIPv6(address) {
+  let text = address;
+  // `::ffff:127.0.0.1` carries its last 32 bits as dotted decimal.
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (dotted) {
+    const parts = dotted[1].split('.').map(Number);
+    if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+    const high = ((parts[0] << 8) | parts[1]).toString(16);
+    const low = ((parts[2] << 8) | parts[3]).toString(16);
+    text = `${text.slice(0, dotted.index)}${high}:${low}`;
+  }
+  const [left = '', right] = text.split('::');
+  const head = left ? left.split(':') : [];
+  const tail = right ? right.split(':') : [];
+  const groups = right === undefined ? head : [...head, ...new Array(8 - head.length - tail.length).fill('0'), ...tail];
+  if (groups.length !== 8) return null;
+  return groups.every((group) => /^[0-9a-f]{1,4}$/.test(group)) ? groups : null;
+}
+
+/**
+ * Resolve a hostname and refuse it when any answer is this machine or a
+ * private network.
+ *
+ * {@link isPrivateHost} reads spellings, not answers: `127.0.0.1.nip.io` and
+ * `localtest.me` are public names that resolve to loopback, so the literal
+ * check cannot see them. The lookup is the only place the real address exists.
+ *
+ * ponytail: the fetch still connects by name, so a name that answers publicly
+ * now and privately at connect time (DNS rebinding) gets through; pin the
+ * resolved address in the connection when a custom dispatcher is worth it.
+ *
+ * @returns {Promise<boolean>} true when the name must not be fetched
+ */
+async function resolvesToPrivate(hostname, lookupImpl, signal) {
+  let answers;
+  try {
+    // The lookup is raced against the read's own timeout: a hung getaddrinfo
+    // would otherwise hold a pending slot and a libuv thread for as long as
+    // the resolver takes.
+    answers = await abortable(lookupImpl(hostname, { all: true, verbatim: true }), signal);
+  } catch (error) {
+    if (signal && signal.aborted) throw error;
+    // A name that does not resolve now may still resolve for the fetch, which
+    // asks the resolver again: one authoritative server can answer this check
+    // with SERVFAIL and the connection with a private address. Refusing on
+    // failure is the only answer that cannot be talked around.
+    return true;
+  }
+  const list = Array.isArray(answers) ? answers : [];
+  return list.some((entry) => isPrivateAddress(entry && entry.address));
+}
+
+/** Wait for `promise`, or reject as soon as `signal` aborts. */
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason || new Error('aborted'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason || new Error('aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/**
+ * Where a redirect may land, or `null` when it must not be followed.
+ *
+ * @param base the URL that answered
+ * @param location its `location` header
+ */
+function nextHop(base, location) {
+  let next;
+  try {
+    next = new URL(location, base);
+  } catch {
+    return null;
+  }
+  if (next.protocol !== 'http:' && next.protocol !== 'https:') return null;
+  if (next.username || next.password) return null;
+  if (!next.hostname || isPrivateHost(next.hostname)) return null;
+  return next.href;
 }
 
 /**
@@ -177,40 +294,59 @@ function cancelledBody(response) {
  */
 export async function readNowPlaying(url, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
+  const lookupImpl = typeof options.lookupImpl === 'function' ? options.lookupImpl : dnsLookup;
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : NOW_PLAYING_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let reader = null;
 
   try {
-    const response = await fetchImpl(url, {
-      redirect: 'follow',
-      cache: 'no-store',
-      headers: {
-        // Some icecast servers only send metadata when this header is present,
-        // and a few are case-sensitive about it.
-        'Icy-MetaData': '1',
-        'user-agent': USER_AGENT,
-        accept: 'audio/*,application/ogg,*/*',
-      },
-      signal: controller.signal,
-    });
-    if (!response) return { title: '', metaint: 0, reason: 'no-response' };
-    // A redirect is followed, because plenty of streams move to their CDN, but
-    // where it landed is checked again: a public URL may not bounce the Host
-    // into its own network.
-    if (response.url && response.url !== url) {
-      let host = '';
+    // Redirects are followed by hand, because a stream URL may move to its CDN
+    // and a public URL must not bounce the Host into its own network. Checking
+    // only the final `response.url` would be too late: the request to the
+    // private hop has already been sent by then.
+    let current = url;
+    let response = null;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      // The first hop is normally the already-validated query value, but this
+      // function is exported: every hop is checked the same way.
+      let hopUrl = null;
       try {
-        host = new URL(response.url).hostname;
+        hopUrl = new URL(current);
       } catch {
-        host = '';
+        return { title: '', metaint: 0, reason: 'host not allowed' };
       }
-      if (!host || isPrivateHost(host)) {
-        await cancelledBody(response);
-        return { title: '', metaint: 0, reason: 'redirect-blocked' };
+      if (hopUrl.protocol !== 'http:' && hopUrl.protocol !== 'https:') {
+        return { title: '', metaint: 0, reason: 'host not allowed' };
       }
+      if (hopUrl.username || hopUrl.password || isPrivateHost(hopUrl.hostname)) {
+        return { title: '', metaint: 0, reason: 'host not allowed' };
+      }
+      if (await resolvesToPrivate(hopUrl.hostname, lookupImpl, controller.signal)) {
+        return { title: '', metaint: 0, reason: 'host not allowed' };
+      }
+      response = await fetchImpl(current, {
+        redirect: 'manual',
+        cache: 'no-store',
+        headers: {
+          // Some icecast servers only send metadata when this header is present,
+          // and a few are case-sensitive about it.
+          'Icy-MetaData': '1',
+          'user-agent': USER_AGENT,
+          accept: 'audio/*,application/ogg,*/*',
+        },
+        signal: controller.signal,
+      });
+      if (!response) return { title: '', metaint: 0, reason: 'no-response' };
+      if (response.status < 300 || response.status >= 400) break;
+      const location = response.headers.get('location');
+      await cancelledBody(response);
+      const next = location ? nextHop(current, location) : null;
+      if (!next) return { title: '', metaint: 0, reason: 'redirect-blocked' };
+      current = next;
+      response = null;
     }
+    if (!response) return { title: '', metaint: 0, reason: 'redirect-blocked' };
     if (!response.ok) {
       await cancelledBody(response);
       return { title: '', metaint: 0, reason: `status ${response.status}` };
@@ -280,6 +416,7 @@ export async function readNowPlaying(url, options = {}) {
  */
 export function createNowPlayingResolver(options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
+  const lookupImpl = options.lookupImpl;
   const ttlMs = Number.isFinite(options.ttlMs) ? options.ttlMs : NOW_PLAYING_TTL_MS;
   const maxEntries = Number.isFinite(options.maxEntries) ? options.maxEntries : MAX_CACHE_ENTRIES;
   const clock = typeof options.now === 'function' ? options.now : () => Date.now();
@@ -316,7 +453,7 @@ export function createNowPlayingResolver(options = {}) {
       // fan-out, and a caller that is over the bound is told to come back.
       if (pending.size >= MAX_PENDING_READS) return { title: '', metaint: 0, reason: 'busy', cached: false };
 
-      const task = readNowPlaying(url, { fetchImpl })
+      const task = readNowPlaying(url, { fetchImpl, lookupImpl })
         .then((value) => {
           remember(url, value);
           return { ...value, cached: false };
