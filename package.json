@@ -1,6 +1,6 @@
 {
   "name": "dsh-blackhole-radio-lab",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "A 3D black-hole radio stage for DeepSeek Harness: orbit, zoom and play 24,000+ internet radio stations",
   "type": "module",
   "main": "index.js",
