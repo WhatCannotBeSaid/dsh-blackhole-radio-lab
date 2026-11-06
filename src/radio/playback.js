@@ -71,7 +71,13 @@ export function createPlaybackCore(options) {
   const cancel = opts.clearTimeout || clearTimeout;
   const startupMs = Number.isFinite(opts.startupMs) ? opts.startupMs : 15000;
   const stallMs = Number.isFinite(opts.stallMs) ? opts.stallMs : 15000;
-  const maxRetries = Number.isFinite(opts.maxRetries) ? Math.max(0, opts.maxRetries) : 1;
+  // Reconnection waits instead of hammering the moment a stream drops: 1s, 2s,
+  // then 4s between attempts. The default is three retries, matching
+  // `retryDelays`; a caller may override either the count or the schedule.
+  const retryDelays = Array.isArray(opts.retryDelays) && opts.retryDelays.length > 0
+    ? opts.retryDelays.map((n) => (Number.isFinite(n) ? Math.max(0, n) : 0))
+    : [1000, 2000, 4000];
+  const maxRetries = Number.isFinite(opts.maxRetries) ? Math.max(0, opts.maxRetries) : retryDelays.length;
 
   function clearTimer() {
     if (timer !== null) cancel(timer);
@@ -105,8 +111,19 @@ export function createPlaybackCore(options) {
     if (disposed || !url || (status !== 'loading' && status !== 'playing')) return;
     clearTimer();
     if (retries >= maxRetries) return fail(reason);
+    const delay = retryDelays[Math.min(retries, retryDelays.length - 1)] || 0;
     retries += 1;
-    startAttempt(true);
+    if (delay <= 0) {
+      startAttempt(true);
+      return;
+    }
+    // Hold the slot while waiting so a stray `stalled` cannot arm a second
+    // retry, and let any user action (a generation bump) cancel the attempt.
+    const token = generation;
+    timer = schedule(() => {
+      timer = null;
+      if (token === generation && !disposed) startAttempt(true);
+    }, delay);
   }
 
   function arm(delay, reason) {

@@ -54,4 +54,4 @@ export { createPlaybackCore, SLOW_LOAD_MS } from './playback.js';
 export { bindMediaSession } from './media-session.js';
 export { pollMetadata } from './metadata-poll.js';
 export { createHostWatch, HOST_PROBE_INTERVAL_MS, HOST_PROBE_MISSES } from './host-watch.js';
-export { openRadioCache, CATALOG_TTL_MS, BLACKLIST_LIMIT } from './cache.js';
+export { openRadioCache, CATALOG_TTL_MS } from './cache.js';

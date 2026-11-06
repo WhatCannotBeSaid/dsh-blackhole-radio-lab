@@ -141,7 +141,7 @@ async function fetchPage(offset, o) {
     const host = o.hosts[attempt % o.hosts.length];
     const query =
       `https://${host}/json/stations/search?limit=${PAGE_SIZE}&offset=${offset}` +
-      '&order=clickcount&reverse=true&hidebroken=true';
+      '&order=clickcount&reverse=true&hidebroken=false';
     const abort = createAbort(20000, o.signal);
     try {
       const res = await o.fetchImpl(query, {

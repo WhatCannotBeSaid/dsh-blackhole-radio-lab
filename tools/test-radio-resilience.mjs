@@ -3,23 +3,22 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createPlaybackCore } from '../src/radio/playback.js';
-import { activeFailures, FAILURE_COOLDOWN_MS } from '../src/radio/cache.js';
 import { createRadioStore } from '../src/radio/store.js';
 import { bindMediaSession } from '../src/radio/media-session.js';
 import { pollMetadata } from '../src/radio/metadata-poll.js';
 import { createHostWatch } from '../src/radio/host-watch.js';
 function fixture(play = () => Promise.resolve()) {
-  const timers = new Map(); let next = 0; const events = new Map();
+  const timers = new Map(); let next = 0; const events = new Map(); const delays = [];
   const audio = { play, pause() {}, addEventListener(k, fn) { events.set(k, fn); }, removeAttribute() {}, load() {} };
-  const core = createPlaybackCore({ createAudio: () => audio, setTimeout(fn) { timers.set(++next, fn); return next; }, clearTimeout(id) { timers.delete(id); } });
-  return { core, audio, timers, emit: (name) => events.get(name)?.(), tick() { const [id, fn] = timers.entries().next().value; timers.delete(id); fn(); } };
+  const core = createPlaybackCore({ createAudio: () => audio, setTimeout(fn, delay) { delays.push(delay); timers.set(++next, fn); return next; }, clearTimeout(id) { timers.delete(id); } });
+  return { core, audio, timers, delays, emit: (name) => events.get(name)?.(), tick() { const [id, fn] = timers.entries().next().value; timers.delete(id); fn(); } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function runtime(fetch, extra = {}) {
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
   const body = source.slice(source.indexOf('    function createSharedState() {'), source.indexOf('    function useShared('));
   return vm.runInNewContext(`let libraryWriteInFlight = null; ${body}; createSharedState()`, {
-    fetch, console, setTimeout, clearTimeout, AbortSignal, AbortController, LIBRARY_URL: '/test', LIBRARY_READ_MS: 8000, LIBRARY_WRITE_MS: 400, KEEPALIVE_MAX_CHARS: 49152, isBrokenStream: () => false,
+    fetch, console, setTimeout, clearTimeout, AbortSignal, AbortController, LIBRARY_URL: '/test', SESSION_COOLDOWN_MS: 10 * 60 * 1000, LIBRARY_READ_MS: 8000, LIBRARY_WRITE_MS: 400, KEEPALIVE_MAX_CHARS: 49152, isBrokenStream: () => false,
     ...extra,
   });
 }
@@ -42,10 +41,21 @@ test('real shared hydration preserves user volume, and ignores old lifetime resp
   resolve({ ok: true, json: async () => ({ playback: { volume: .1 } }) }); await old;
   assert.equal(g.core.getVolume(), .6); assert.equal(shared.libraryHydrated, false); shared.dispose();
 });
-test('startup retries once, same station, then finite failure', () => {
-  const f = fixture(); f.core.play('a', 'https://test/a'); f.tick();
-  assert.equal(f.core.getState().stationId, 'a'); assert.equal(f.core.getState().status, 'loading');
-  f.tick(); assert.equal(f.core.getState().error, 'startup-timeout'); assert.equal(f.timers.size, 0); f.core.dispose();
+test('startup retries three times with backoff, then finite failure', () => {
+  const f = fixture(); f.core.play('a', 'https://test/a');
+  // Each attempt schedules a startup timeout; a retry then waits for its
+  // backoff before the next attempt. Four attempts = three retries, then fail.
+  let ticks = 0;
+  while (f.timers.size > 0 && ticks < 20) { f.tick(); ticks += 1; }
+  assert.equal(f.core.getState().stationId, 'a');
+  assert.equal(f.core.getState().status, 'error');
+  assert.equal(f.core.getState().error, 'startup-timeout');
+  assert.equal(f.timers.size, 0);
+  // Four attempts (three retries): a 15s startup guard each, with 1s / 2s / 4s
+  // waits between them. This fails if the retry count or the backoff changes.
+  assert.equal(f.delays.filter((d) => d === 15000).length, 4);
+  assert.deepEqual(f.delays.filter((d) => d !== 15000), [1000, 2000, 4000]);
+  f.core.dispose();
 });
 test('stall watchdog is bounded and cancelled by progress/pause', () => {
   const f = fixture(); f.core.play('a', 'https://test/a'); f.emit('playing'); f.emit('stalled');
@@ -59,11 +69,6 @@ test('old rejection cannot corrupt a new station; browser block does not retry',
   reject({ name: 'NotSupportedError' }); await flush(); assert.equal(f.core.getState().stationId, 'b'); assert.equal(f.core.getState().status, 'loading'); f.core.dispose();
   const g = fixture(() => Promise.reject({ name: 'NotAllowedError' })); g.core.play('a', 'https://test/a'); await flush();
   assert.equal(g.core.getState().error, 'blocked-by-browser'); assert.equal(g.timers.size, 0); g.core.dispose();
-});
-test('failed sources expire; legacy permanent ids are released', () => {
-  const now = 1e9;
-  assert.deepEqual(activeFailures({ ids: ['old'] }, now), []);
-  assert.deepEqual(activeFailures({ failures: [{ id: 'a', at: now - 1 }, { id: 'b', at: now - FAILURE_COOLDOWN_MS }] }, now).map(x => x.id), ['a']);
 });
 test('volume and last successful station round trip even with no selection', () => {
   const a = { id: 'a', name: 'A', metadata: { source: 'radio-browser' } };
@@ -193,8 +198,10 @@ test('a fatal attached source fails the attempt, a network one is retried', () =
   });
   again.play('b', 'https://test/b.m3u8');
   report('network');
+  // A network drop is retried, but after a backoff delay rather than
+  // synchronously: the element is not re-attached inside this turn.
   assert.equal(again.getState().status, 'loading');
-  assert.equal(attaches, 3);
+  assert.equal(attaches, 2);
   again.dispose();
 });
 test('a failed station hands the listen to a live one, capped at three skips', () => {
@@ -214,6 +221,25 @@ test('a failed station hands the listen to a live one, capped at three skips', (
   // shuffling through the whole catalogue.
   shared.skipFailedStation('b'); shared.skipFailedStation('c'); shared.skipFailedStation('d');
   assert.equal(played.length, 3);
+  shared.dispose();
+});
+test('a cooling station is held out until its in-memory cooldown lapses', () => {
+  const stations = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  const shared = runtime(async () => ({ ok: false }), {
+    AUTO_SKIP_LIMIT: 3,
+    playablePool: () => stations,
+    streamOf: (station) => `https://test/${station.id}`,
+  });
+  shared.ensureStore(createRadioStore).index(stations);
+  const played = [];
+  shared.playback = { play(id) { played.push(id); } };
+  const now = Date.now();
+  shared.blacklist.set('b', now + 60000);
+  shared.blacklist.set('c', now + 60000);
+  shared.blacklist.set('d', now - 1);
+  // b and c are still cooling, d's cooldown has lapsed: only d may be picked.
+  shared.skipFailedStation('a');
+  assert.equal(played[0], 'd');
   shared.dispose();
 });
 

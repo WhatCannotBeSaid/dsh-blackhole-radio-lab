@@ -6,9 +6,9 @@
  *
  *   catalog    the last successful Radio Browser rows, so a cold start paints
  *              the scene before the network answers (or when it does not).
- *   blacklist  station ids whose stream failed to play. A station that could
- *              not be played once is filtered out of the next load instead of
- *              being offered again.
+ *   blacklist  the legacy failure record, kept only so one boot can purge it.
+ *              Failures now live in memory for the session; nothing is written
+ *              here any more.
  *
  * IndexedDB is the store because the catalogue is far past `localStorage`'s
  * 5 MB ceiling: 5,000 rows run to roughly 6 MB, and structured cloning is
@@ -24,9 +24,6 @@
 
 /** How long a cached catalogue is considered current. */
 export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-
-/** How many failed station ids are remembered; the oldest fall off first. */
-export const BLACKLIST_LIMIT = 500;
 
 const DB_NAME = 'dsh-blackhole-radio-lab';
 const DB_VERSION = 1;
@@ -160,30 +157,12 @@ function writeKey(db, key, value) {
 }
 
 /**
- * Failed sources are quarantined, never permanently removed.
- *
- * Ten minutes, not six hours: most "failures" are one bad moment on the
- * station's side or a hiccup on this side, and a six-hour sentence made the
- * radio feel broken for the rest of the evening. Short enough to give a
- * recovered source another chance, long enough that a genuinely dead one is
- * not hammered by every shuffle.
- */
-export const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
-
-export function activeFailures(record, now = Date.now()) {
-  const entries = record && Array.isArray(record.failures) ? record.failures : [];
-  return entries.filter((entry) => entry && typeof entry.id === 'string' && entry.id &&
-    Number.isFinite(entry.at) && entry.at <= now && now - entry.at < FAILURE_COOLDOWN_MS);
-}
-
-/**
  * Open the cache, or resolve `null` when this environment has none.
  *
  * @returns {Promise<null | {
  *   readCatalog: () => Promise<null | { rows: object[], fetchedAt: number, version: number }>,
  *   writeCatalog: (rows: object[], fetchedAt?: number) => Promise<boolean>,
- *   readBlacklist: () => Promise<Set<string>>,
- *   addBlacklisted: (id: string) => Promise<boolean>,
+ *   clearBlacklistAll: () => Promise<boolean>,
  * }>}
  */
 export async function openRadioCache() {
@@ -214,35 +193,9 @@ export async function openRadioCache() {
       return writeKey(db, key || CATALOG_KEY, { rows, fetchedAt: stamp, version: 1 });
     },
 
-    /** Station ids that must not be offered again. */
-    async readBlacklist() {
-      return new Set(activeFailures(await readKey(db, BLACKLIST_KEY)).map((entry) => entry.id));
-    },
-
-    async clearBlacklisted(id) {
-      return enqueueWrite(async () => {
-        const failures = activeFailures(await readKey(db, BLACKLIST_KEY)).filter((entry) => entry.id !== String(id));
-        return writeKey(db, BLACKLIST_KEY, { failures });
-      });
-    },
-
-    /**
-     * Remember one failed station. Idempotent, and bounded: the oldest ids fall
-     * off once {@link BLACKLIST_LIMIT} is reached, so a long-lived profile does
-     * not accumulate forever.
-     *
-     * Serialised through {@link enqueueWrite}: the read and the write are two
-     * transactions, and two failures reported at once must not overwrite each
-     * other's id.
-     */
-    async addBlacklisted(id) {
-      const key = String(id || '').trim();
-      if (!key) return false;
-      return enqueueWrite(async () => {
-        const failures = activeFailures(await readKey(db, BLACKLIST_KEY)).filter((entry) => entry.id !== key);
-        failures.push({ id: key, at: Date.now() });
-        return writeKey(db, BLACKLIST_KEY, { failures: failures.slice(-BLACKLIST_LIMIT) });
-      });
+    /** Drop the legacy failure record once, when the memory-policy boot adopts it. */
+    async clearBlacklistAll() {
+      return enqueueWrite(async () => writeKey(db, BLACKLIST_KEY, { failures: [] }));
     },
   };
 }

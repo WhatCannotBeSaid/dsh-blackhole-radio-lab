@@ -90,7 +90,7 @@ export const RADIO_BROWSER_DEFAULTS = Object.freeze({
    */
   order: 'clickcount',
   /** Query parameters every station request shares. */
-  hidebroken: true,
+  hidebroken: false,
   /**
    * `curl` / `https` — the API's own preference for identifiable clients.
    * The browser cannot set User-Agent, and the field is only advisory.
@@ -130,13 +130,7 @@ function normalizeRealOptions(options) {
       clampNumber(source.featuredCount, RADIO_BROWSER_DEFAULTS.featuredCount, 4, Math.min(40, limit)),
     ),
     order: typeof source.order === 'string' && source.order.length > 0 ? source.order : RADIO_BROWSER_DEFAULTS.order,
-    hidebroken: source.hidebroken !== false,
-    /**
-     * Station ids the panel must not offer: streams that failed to play in an
-     * earlier session. Kept as a Set so the page loop tests membership without
-     * an array scan per row.
-     */
-    blacklist: normalizeBlacklist(source.blacklist),
+    hidebroken: source.hidebroken === true,
     concurrency: Math.round(clampNumber(source.concurrency, RADIO_BROWSER_DEFAULTS.concurrency, 1, 8)),
     userAgent: typeof source.userAgent === 'string' && source.userAgent.length > 0
       ? source.userAgent
@@ -146,27 +140,6 @@ function normalizeRealOptions(options) {
     // `collectRows` checked a signal that never arrived and could not abort.
     signal: source.signal || null,
   };
-}
-
-/** Accept either a Set or an array of ids; anything else means "nothing blocked". */
-function normalizeBlacklist(value) {
-  if (value instanceof Set) {
-    const ids = new Set();
-    for (const id of value) {
-      const key = String(id || '').trim();
-      if (key) ids.add(key);
-    }
-    return ids;
-  }
-  if (Array.isArray(value)) {
-    const ids = new Set();
-    for (const id of value) {
-      const key = String(id || '').trim();
-      if (key) ids.add(key);
-    }
-    return ids;
-  }
-  return new Set();
 }
 
 function hashText(text) {
@@ -390,7 +363,7 @@ async function collectRows(opts, signal) {
       let added = 0;
       for (const row of result.page) {
         const id = row && row.stationuuid ? String(row.stationuuid) : '';
-        if (id.length === 0 || seen.has(id) || opts.blacklist.has(id)) continue;
+        if (id.length === 0 || seen.has(id)) continue;
         seen.add(id);
         rows.push(row);
         added += 1;
@@ -621,13 +594,10 @@ export function createMockRadioRepository(options) {
 export function createRepositoryFromRows(rows, options) {
   const opts = normalizeRealOptions(options);
   const source = Array.isArray(rows) ? rows : [];
-  // A station whose stream failed to play is filtered before mapping, so it
-  // cannot reach the scene, the search index or the genre counts at all.
-  const usableRows =
-    opts.blacklist.size > 0
-      ? source.filter((row) => !opts.blacklist.has(String((row && row.stationuuid) || '')))
-      : source;
-  const mapped = mapStations(usableRows);
+  // Failure memory is session-only and applied at play time (see client.js);
+  // filtering here would keep a station out for good, which is exactly what a
+  // single bad moment must not do.
+  const mapped = mapStations(source);
   let stations = mapped.stations.slice(0, opts.limit);
 
   if (stations.length === 0) return null;
@@ -667,7 +637,6 @@ export function createRepositoryFromRows(rows, options) {
         order: opts.order,
         received: source.length,
         usable: stations.length,
-        blocked: source.length - usableRows.length,
         dropped: mapped.dropped,
         duplicateIds: mapped.duplicateIds,
         featured: featuredCount,
