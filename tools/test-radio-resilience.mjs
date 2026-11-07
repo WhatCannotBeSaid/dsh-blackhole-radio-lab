@@ -1,5 +1,6 @@
 import test from 'node:test';
 import vm from 'node:vm';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createPlaybackCore } from '../src/radio/playback.js';
@@ -7,6 +8,8 @@ import { createRadioStore } from '../src/radio/store.js';
 import { bindMediaSession } from '../src/radio/media-session.js';
 import { pollMetadata } from '../src/radio/metadata-poll.js';
 import { createHostWatch } from '../src/radio/host-watch.js';
+import { buildCatalog } from '../src/host/catalog-builder.js';
+import { createRepositoryFromRows } from '../src/radio/repository.js';
 function fixture(play = () => Promise.resolve()) {
   const timers = new Map(); let next = 0; const events = new Map(); const delays = [];
   const audio = { play, pause() {}, addEventListener(k, fn) { events.set(k, fn); }, removeAttribute() {}, load() {} };
@@ -18,7 +21,7 @@ function runtime(fetch, extra = {}) {
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
   const body = source.slice(source.indexOf('    function createSharedState() {'), source.indexOf('    function useShared('));
   return vm.runInNewContext(`let libraryWriteInFlight = null; ${body}; createSharedState()`, {
-    fetch, console, setTimeout, clearTimeout, AbortSignal, AbortController, LIBRARY_URL: '/test', SESSION_COOLDOWN_MS: 10 * 60 * 1000, LIBRARY_READ_MS: 8000, LIBRARY_WRITE_MS: 400, KEEPALIVE_MAX_CHARS: 49152, isBrokenStream: () => false,
+    fetch, console, setTimeout, clearTimeout, AbortSignal, AbortController, LIBRARY_URL: '/test', LIBRARY_READ_MS: 8000, LIBRARY_WRITE_MS: 400, KEEPALIVE_MAX_CHARS: 49152,
     ...extra,
   });
 }
@@ -204,43 +207,81 @@ test('a fatal attached source fails the attempt, a network one is retried', () =
   assert.equal(attaches, 2);
   again.dispose();
 });
-test('a failed station hands the listen to a live one, capped at three skips', () => {
-  const stations = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+test('a failed stream stays selected, stays indexed and can be retried immediately', () => {
+  const stations = [{ id: 'a' }, { id: 'b' }];
   const shared = runtime(async () => ({ ok: false }), {
-    AUTO_SKIP_LIMIT: 3,
     playablePool: () => stations,
     streamOf: (station) => `https://test/${station.id}`,
   });
-  shared.ensureStore(createRadioStore).index(stations);
-  const played = [];
-  shared.playback = { play(id) { played.push(id); } };
-  shared.skipFailedStation('a');
-  assert.equal(played.length, 1);
-  assert.notEqual(played[0], 'a');
-  // The streak is bounded: with nothing alive the card stops instead of
-  // shuffling through the whole catalogue.
-  shared.skipFailedStation('b'); shared.skipFailedStation('c'); shared.skipFailedStation('d');
-  assert.equal(played.length, 3);
-  shared.dispose();
+  const store = shared.ensureStore(createRadioStore); store.index(stations); store.select('a');
+  const f = fixture(); shared.ensurePlayback(() => f.core);
+  try {
+    f.core.play('a', 'https://test/a');
+    f.audio.error = { code: 3 }; f.emit('error');
+    assert.equal(f.core.getState().status, 'error');
+    assert.equal(f.core.getState().error, 'decode');
+    assert.equal(f.core.getState().stationId, 'a');
+    assert.equal(store.getSelected().id, 'a');
+    assert.equal(store.getStation('a').id, 'a');
+    assert.equal('blacklist' in shared, false);
+    assert.equal(f.timers.size, 0);
+    f.core.play('a', 'https://test/a'); f.emit('playing');
+    assert.equal(f.core.getState().status, 'playing');
+    assert.equal(f.core.getState().stationId, 'a');
+  } finally { shared.dispose(); }
 });
-test('a cooling station is held out until its in-memory cooldown lapses', () => {
-  const stations = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
-  const shared = runtime(async () => ({ ok: false }), {
-    AUTO_SKIP_LIMIT: 3,
-    playablePool: () => stations,
-    streamOf: (station) => `https://test/${station.id}`,
+test('catalogue checks never exclude a station, even with probing explicitly enabled', async () => {
+  const candidates = [
+    { stationuuid: 'original', name: 'Gotanno FM 89.2', url_resolved: 'https://example.test/stream', lastcheckok: 0 },
+    { stationuuid: 'alias', name: 'Gotanno Radio micro FM station', url_resolved: 'https://example.test/stream' },
+  ];
+  let requests = 0;
+  const fetchImpl = async () => { requests += 1; return new Response('', { status: 503 }); };
+  const normal = await buildCatalog({ candidates, fetchImpl });
+  assert.equal(requests, 0, 'ordinary builds must not probe streams');
+  assert.equal(normal.snapshot.healthy, null, 'unchecked stations are not reported as healthy');
+  assert.equal(normal.snapshot.selectionPolicy, 'no-health-filter');
+  const checked = await buildCatalog({ candidates, fetchImpl, check: true });
+  assert.equal(requests, 2);
+  assert.equal(checked.stats.healthy, 0);
+  assert.deepEqual(checked.snapshot.stations.map(row => row.stationuuid), ['original', 'alias']);
+  const repository = createRepositoryFromRows(candidates);
+  assert.equal(repository.search('Gotanno FM 89.2')[0]?.id, 'original');
+});
+
+test('snapshot fetch bypasses old HTTP cache and rejects the legacy selection policy', async () => {
+  const body = { builtAt: new Date().toISOString(), stations: [{ name: 'Gotanno FM 89.2' }] };
+  let requests = 0;
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  const fetchSnapshot = vm.runInNewContext(source.slice(source.indexOf('    async function fetchCatalogSnapshot('), source.indexOf('    const HLS_CHUNK')) + '; fetchCatalogSnapshot', {
+    AbortSignal, SNAPSHOT_MAX_AGE_MS: 30 * 86400000,
+    fetch: async (url, options) => { requests += 1; assert.equal(url, '/blackhole-radio-lab/catalog'); assert.equal(options.cache, 'reload'); return { ok: true, json: async () => body }; },
   });
-  shared.ensureStore(createRadioStore).index(stations);
-  const played = [];
-  shared.playback = { play(id) { played.push(id); } };
-  const now = Date.now();
-  shared.blacklist.set('b', now + 60000);
-  shared.blacklist.set('c', now + 60000);
-  shared.blacklist.set('d', now - 1);
-  // b and c are still cooling, d's cooldown has lapsed: only d may be picked.
-  shared.skipFailedStation('a');
-  assert.equal(played[0], 'd');
-  shared.dispose();
+  assert.equal(await fetchSnapshot({}), null);
+  body.selectionPolicy = 'no-health-filter';
+  assert.equal((await fetchSnapshot({})).rows, body.stations);
+  assert.equal(requests, 2);
+});
+
+test('fresh legacy host cache is rejected and refreshed rather than shadowing the repaired bundle', () => {
+  const repaired = { selectionPolicy: 'no-health-filter', builtAt: new Date().toISOString(), stations: [{ name: 'Gotanno FM 89.2' }] };
+  const legacy = { ...repaired, stations: [{ name: 'Old filtered directory' }] }; delete legacy.selectionPolicy;
+  const files = { bundle: JSON.stringify(repaired), cache: gzipSync(JSON.stringify(legacy)) };
+  const snapshotCache = new Map();
+  const sandbox = {
+    Buffer, gzipSync, gunzipSync, snapshotCache, CATALOG_PATH: 'bundle', CATALOG_GZ_PATH: '', CACHE_GZ: 'cache', SNAPSHOT_MAX_AGE_MS: 30 * 86400000,
+    readFileSync: (file) => files[file], statSync: (file) => ({ mtimeMs: Date.now(), size: Buffer.byteLength(files[file]) }),
+  };
+  const host = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  const choose = vm.runInNewContext(host.slice(host.indexOf('function readSnapshotPair('), host.indexOf('const DEFAULTS =')) + '; readCatalog', sandbox);
+  const refresh = readFileSync(new URL('../src/host/catalog-refresh.js', import.meta.url), 'utf8');
+  const stale = vm.runInNewContext(refresh.slice(refresh.indexOf('function isCacheReadable('), refresh.indexOf('/** Remove temporary files')).replace('export function isCacheStale', 'function isCacheStale') + '; isCacheStale', sandbox);
+  assert.equal(JSON.parse(choose().json).stations[0].name, 'Gotanno FM 89.2');
+  assert.equal(stale(7), true);
+  const current = { ...repaired, stations: [...repaired.stations, { name: 'New station' }] };
+  files.cache = gzipSync(JSON.stringify(current)); snapshotCache.clear();
+  assert.equal(JSON.parse(choose().json).stations.length, 2, 'new unfiltered cache still wins');
+  assert.equal(stale(7), false);
 });
 
 test('resuming an attached source asks the element to play again', () => {

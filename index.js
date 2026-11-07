@@ -93,6 +93,8 @@ function readSnapshotPair(jsonPath, gzPath) {
     if (!json && gz) json = gunzipSync(gz).toString('utf8');
     if (!gz) gz = gzipSync(Buffer.from(json, 'utf8'), { level: 9 });
     const parsed = JSON.parse(json);
+    // Old health-filtered snapshots must not override the repaired directory.
+    if (parsed?.selectionPolicy !== 'no-health-filter') return null;
     const entry = {
       json,
       gz,

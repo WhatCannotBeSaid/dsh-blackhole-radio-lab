@@ -40,7 +40,7 @@ const DEFAULT_DEADLINE_MS = 120 * 60 * 1000;
 function isCacheReadable(file) {
   try {
     const parsed = JSON.parse(gunzipSync(readFileSync(file)).toString('utf8'));
-    return Array.isArray(parsed.stations) && parsed.stations.length > 0;
+    return parsed.selectionPolicy === 'no-health-filter' && Array.isArray(parsed.stations) && parsed.stations.length > 0;
   } catch {
     return false;
   }

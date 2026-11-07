@@ -109,8 +109,8 @@ window.__ModuleLoader__.load({
     /**
      * Fetch the build-time catalogue the host publishes at `/catalog`.
      *
-     * The snapshot is health-checked at build time and far larger than one live
-     * fetch, so it is preferred over the network path. Every failure — a host
+     * The snapshot is larger than one live fetch and does not exclude stations
+     * based on failed checks. Every failure — a host
      * without the route, a malformed file, a stale build — returns null and
      * lets the caller fall through to Radio Browser exactly as before.
      */
@@ -119,12 +119,13 @@ window.__ModuleLoader__.load({
       const timeout = Number.isFinite(configured) && configured > 0 ? Math.min(configured, 15000) : 15000;
       try {
         const res = await fetch('/blackhole-radio-lab/catalog', {
+          cache: 'reload',
           headers: { accept: 'application/json' },
           signal: AbortSignal.timeout(timeout),
         });
         if (!res.ok) return null;
         const body = await res.json();
-        if (!body || !Array.isArray(body.stations) || body.stations.length === 0) return null;
+        if (body?.selectionPolicy !== 'no-health-filter' || !Array.isArray(body.stations) || body.stations.length === 0) return null;
         const builtAt = Date.parse(body.builtAt || '');
         if (!Number.isFinite(builtAt) || Date.now() - builtAt > SNAPSHOT_MAX_AGE_MS) return null;
         return { rows: body.stations, builtAt: body.builtAt, fetchedAt: builtAt };
@@ -133,40 +134,10 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /**
-     * Which playback failures mean "this station is broken" rather than "this
-     * environment could not play it right now".
-     *
-     * A missing Audio element, an autoplay block and a paused load are states
-     * a later attempt can survive, and blacklisting them would quietly delete
-     * working stations from every future catalogue. Only a source the media
-     * stack rejects outright is worth remembering.
-     *
-     * `network` belongs here because the core already retried (1s/2s/4s) before
-     * giving up: a run of network failures means the stream is not serving.
-     * `startup-timeout` and `stall-timeout` mean it never started or stopped
-     * mid-listen after the same retries — a dead station the card should skip,
-     * not keep offering.
-     */
-    const BROKEN_STREAM_ERRORS = new Set(['decode', 'unsupported-or-unreachable', 'bad-url', 'network', 'startup-timeout', 'stall-timeout']);
-
-    function isBrokenStream(reason) {
-      if (BROKEN_STREAM_ERRORS.has(reason)) return true;
-      // play() rejects with NotSupportedError when the format is not playable;
-      // AbortError and NotAllowedError are environment, not station.
-      return reason === 'play-failed:NotSupportedError';
-    }
-
     /** Chunk that carries hls.js; fetched the first time a station needs it. */
     const HLS_CHUNK = './client.hls.js';
     /** A URL that is an HLS playlist rather than a media file. */
     const HLS_URL = /\.m3u8(\?|#|$)/i;
-    /** How many dead stations one listen may skip before it stops trying. */
-    const AUTO_SKIP_LIMIT = 3;
-    /** A listen that lasted this long counts as a success when it later drops. */
-    const SETTLED_MS = 5000;
-    /** How long a failed station sits out in memory before it may be picked again. */
-    const SESSION_COOLDOWN_MS = 10 * 60 * 1000;
 
     /**
      * Build the stream attacher the playback core asks before every attempt.
@@ -513,13 +484,6 @@ window.__ModuleLoader__.load({
         playback: null,
         /** The IndexedDB handle, or null when this browser has no cache. */
         cache: null,
-        /**
-         * Station id -> expiry time (ms) for stations that failed to play this
-         * session. Session-only: never written to disk. An id is held out of
-         * rotation until its expiry, then offered again, so one bad moment
-         * cools a station off without banning it.
-         */
-        blacklist: new Map(),
         /** The radio chunk, once loaded: it owns the host-liveness logic. */
         radioChunk: null,
         /** "Is the host still there?" watch, or null until the chunk arrives. */
@@ -569,7 +533,7 @@ window.__ModuleLoader__.load({
               shared.cache = cache;
               // Purge the legacy on-disk blacklist once, so stations wrongly
               // quarantined by the old rule can come back. Nothing is written
-              // to it afterwards: failures live only in `shared.blacklist`.
+              // to it afterwards: failures never exclude stations.
               if (cache && typeof cache.clearBlacklistAll === 'function') {
                 try {
                   await cache.clearBlacklistAll();
@@ -593,7 +557,7 @@ window.__ModuleLoader__.load({
               // The catalogue is cached per query shape: a larger limit or a
               // different order must fetch its own answer instead of reusing
               // the previous shape's rows for a day.
-              const catalogKey = `catalog:v2:${conf.sourceLimit || 5000}:${conf.sourcePageSize || 500}:${conf.sourceOrder || 'clickcount'}`;
+              const catalogKey = `catalog:v3:${conf.sourceLimit || 5000}:${conf.sourcePageSize || 500}:${conf.sourceOrder || 'clickcount'}`;
 
               // A catalogue younger than the TTL paints the scene without a
               // network round trip. Anything older is refetched; the cached
@@ -618,15 +582,14 @@ window.__ModuleLoader__.load({
               }
 
               if (!repository) {
-                // Second choice: the build-time snapshot. It is already
-                // health-checked, so a fresh install gets a large working
-                // catalogue without waiting on thousands of live probes.
+                // Second choice: the build-time directory, without requiring
+                // streams to pass a health check before they can be searched.
                 const mode = conf.sourceMode || 'auto';
                 if (mode !== 'mock' && mode !== 'live') {
                   const snapshot = await fetchCatalogSnapshot(conf);
                   if (snapshot) {
-                    // The snapshot was already curated and health-checked; use
-                    // all of it instead of re-applying the live-fetch limit.
+                    // Use the whole snapshot instead of re-applying the
+                    // live-fetch limit.
                     const snapshotOptions = Object.assign({}, repoOptions, { limit: snapshot.rows.length });
                     const snapshotRepository = radio.createRepositoryFromRows(snapshot.rows, snapshotOptions);
                     if (snapshotRepository && snapshotRepository.list().length > 0) {
@@ -823,10 +786,8 @@ window.__ModuleLoader__.load({
           if (!shared.playback && typeof createPlayback === 'function') {
             shared.playback = options ? createPlayback(options) : createPlayback();
             if (shared.radio && shared.libraryHydrated) shared.playback.setVolume(shared.radio.playbackMemory().volume);
-            // A stream that failed is skipped for the rest of this session (see
-            // `skipFailedStation`); the memory is never persisted. A browser
-            // autoplay block and a station without a stream are policy/answer,
-            // not a broken station, so neither is skipped.
+            // Failures stay on the selected station as errors. Never blacklist
+            // or switch stations automatically; a manual retry remains available.
             if (shared.playback && typeof shared.playback.subscribe === 'function') {
               shared.playback.subscribe((state) => {
                 if (!state) return;
@@ -834,26 +795,6 @@ window.__ModuleLoader__.load({
                   if (shared.libraryHydrated) shared.radio.rememberVolume(state.volume);
                   if (state.status === 'playing') shared.radio.rememberPlayed(state.stationId);
                 }
-                if (state.status === 'playing' && state.stationId) {
-                  shared.blacklist.delete(String(state.stationId));
-                  // Only a listen that actually lasted counts as a success. A
-                  // station that reaches `playing` and dies two seconds later
-                  // must not hand the streak a fresh three skips, or a flapping
-                  // source would shuffle the catalogue forever.
-                  shared.playingAt = Date.now();
-                }
-                if (state.status !== 'error' || !state.stationId) return;
-                const reason = String(state.error || '');
-                if (!isBrokenStream(reason)) return;
-                if (shared.playingAt && Date.now() - shared.playingAt > SETTLED_MS) {
-                  shared.autoSkips = 0;
-                  shared.autoSkippedId = '';
-                }
-                const id = String(state.stationId);
-                // Session-only: hold it out of rotation for a cooldown, then let
-                // it back in. No disk write, so one failure does not ban it.
-                shared.blacklist.set(id, Date.now() + SESSION_COOLDOWN_MS);
-                shared.skipFailedStation(id);
               });
             }
           }
@@ -867,47 +808,6 @@ window.__ModuleLoader__.load({
         hlsChunk: null,
         /** True while that fetch is in flight, so one failure does not stack loads. */
         hlsLoading: false,
-        /** Consecutive stations this session skipped because they failed. */
-        autoSkips: 0,
-        /** The station id already skipped, so one dead source is skipped once. */
-        autoSkippedId: '',
-        /** When the last successful listen started; `0` until one does. */
-        playingAt: 0,
-        /**
-         * Leave a failed station behind instead of parking on it.
-         *
-         * A dead source used to sit on the card until the user pressed next,
-         * which is what made a few broken streams feel like a broken radio.
-         * One skip per failure, three per streak: a catalogue with nothing
-         * alive still stops and shows the error rather than shuffling forever.
-         * The skipped station is already in the session failure set, so it
-         * is not offered again; this only picks what replaces it.
-         */
-        skipFailedStation(failedId) {
-          const store = shared.radio;
-          const playback = shared.playback;
-          const id = String(failedId || '');
-          if (!store || !playback || !id) return;
-          if (shared.autoSkips >= AUTO_SKIP_LIMIT) return;
-          if (shared.autoSkippedId === id) return;
-          if (typeof playablePool !== 'function' || typeof streamOf !== 'function') return;
-          const pool = playablePool(store);
-          if (!pool || pool.length === 0) return;
-          const now = Date.now();
-          const alive = pool.filter((station) => {
-            const key = String(station.id);
-            return key !== id && (shared.blacklist.get(key) || 0) <= now;
-          });
-          const bag = alive.length > 0 ? alive : pool.filter((station) => String(station.id) !== id);
-          if (bag.length === 0) return;
-          const next = bag[Math.floor(Math.random() * bag.length)];
-          const nextStream = streamOf(next);
-          if (!nextStream) return;
-          shared.autoSkippedId = id;
-          shared.autoSkips += 1;
-          if (typeof store.select === 'function') store.select(next);
-          playback.play(next.id, nextStream);
-        },
         /**
          * The small amount of the data chunk the panel itself needs: genre
          * labels and colours for list headers, and the station-key function so
@@ -1051,10 +951,8 @@ window.__ModuleLoader__.load({
           shared.radio = null;
           shared.data = null;
           shared.env = null;
-          // The cache handle and the blocked ids belong to this session's
-          // data path; a dispose that kept them would outlive its owner.
+          // The cache handle belongs to this session's data path.
           shared.cache = null;
-          shared.blacklist = new Map();
         },
       };
 

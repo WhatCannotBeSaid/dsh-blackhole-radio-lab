@@ -130,12 +130,15 @@ const DROPS = [
   ['missing both addresses', { ...CAPTURE, url: '', url_resolved: '' }],
   ['non-http address', { ...CAPTURE, url: '', url_resolved: 'javascript:alert(1)' }],
   ['relative address', { ...CAPTURE, url: '', url_resolved: '/stream.mp3' }],
-  ['last check failed', { ...CAPTURE, lastcheckok: 0 }],
+
 ];
 for (const [label, row] of DROPS) {
   check(`drops row: ${label}`, mapStation(row) === null);
 }
 check('drops null rows', mapStation(null) === null);
+const failedCheck = mapStation({ ...CAPTURE, lastcheckok: 0 });
+check('keeps a station after a failed upstream check', failedCheck !== null);
+check('preserves the failed check as metadata only', failedCheck?.metadata.lastCheckOk === false);
 
 const mixed = mapStations([CAPTURE, ...DROPS.map(([, row]) => row), CAPTURE]);
 check('mapStations keeps the one valid row', mixed.stations.length === 1, `got ${mixed.stations.length}`);

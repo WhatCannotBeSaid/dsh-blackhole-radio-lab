@@ -4,7 +4,7 @@
  * The two callers differ only in where the result goes: `npm run build:catalog`
  * writes the snapshot that ships inside the package, the Host writes the user
  * cache the `/catalog` route prefers. Everything slow or subtle — paging over
- * mirrors, probing streams, keeping country and genre floors — lives here, so a
+ * mirrors, diagnostic probes, keeping country and genre floors — lives here, so a
  * fix cannot land in one path and miss the other.
  *
  * The builder is pure with respect to the filesystem: it returns the snapshot
@@ -31,7 +31,7 @@ const FETCH_CONCURRENCY = 4;
 export const BUILDER_DEFAULTS = Object.freeze({
   target: 12000,
   fetch: 16200,
-  check: true,
+  check: false,
   concurrency: 12,
   timeoutMs: 3500,
   countryFloor: 6,
@@ -72,7 +72,7 @@ function normalize(options) {
   return {
     target,
     fetch: Math.max(target, integer(input.fetch, Math.round(target * 1.35), 200, 60000)),
-    check: input.check !== false,
+    check: input.check === true,
     concurrency: integer(input.concurrency, BUILDER_DEFAULTS.concurrency, 1, 64),
     timeoutMs: integer(input.timeoutMs, BUILDER_DEFAULTS.timeoutMs, 500, 30000),
     countryFloor: integer(input.countryFloor, BUILDER_DEFAULTS.countryFloor, 0, 200),
@@ -245,7 +245,7 @@ async function probe(row, o) {
   }
 }
 
-/** Probe every candidate; failures are simply excluded. */
+/** Optional diagnostics only; failures never affect catalogue selection. */
 async function healthCheck(rows, o) {
   if (!o.check) return rows.map((row) => ({ row, healthy: true }));
   const startedAt = Date.now();
@@ -288,8 +288,8 @@ function assertNotAborted(o) {
  * click count. A floor never pushes the total past `target`.
  */
 function pick(checked, o) {
-  const healthy = checked
-    .filter((entry) => entry.healthy)
+  // Health is diagnostic only: a failed request must never remove a station.
+  const ranked = checked
     .map((entry) => entry.row)
     .sort((a, b) => clickCount(b) - clickCount(a));
 
@@ -304,7 +304,7 @@ function pick(checked, o) {
   let countryHits = 0;
   if (o.countryFloor > 0) {
     const counts = new Map();
-    for (const row of healthy) {
+    for (const row of ranked) {
       const code = countryOf(row);
       if (!code) continue;
       const seen = counts.get(code) ?? 0;
@@ -319,7 +319,7 @@ function pick(checked, o) {
   let genreHits = 0;
   if (o.genreFloor > 0) {
     const counts = new Map();
-    for (const row of healthy) {
+    for (const row of ranked) {
       const genre = classifyGenre(row).id;
       const seen = counts.get(genre) ?? 0;
       if (seen >= o.genreFloor) continue;
@@ -330,7 +330,7 @@ function pick(checked, o) {
     }
   }
 
-  for (const row of healthy) {
+  for (const row of ranked) {
     if (chosen.size >= o.target) break;
     take(row);
   }
@@ -369,7 +369,7 @@ function compact(row) {
 }
 
 /**
- * Fetch, probe and pick one catalogue.
+ * Fetch and pick one catalogue; optional probes only report diagnostics.
  *
  * @param options - overrides for {@link BUILDER_DEFAULTS}
  * @returns {Promise<{snapshot: object, stats: object}>}
@@ -396,7 +396,7 @@ export async function buildCatalog(options = {}) {
   assertNotAborted(o);
   const picked = pick(checked, o);
   const stations = picked.map(compact);
-  const healthy = checked.filter((entry) => entry.healthy).length;
+  const healthy = o.check ? checked.filter((entry) => entry.healthy).length : null;
 
   const countries = new Set(
     stations.map((row) => String(row.countrycode || '').toUpperCase()).filter(Boolean),
@@ -409,6 +409,7 @@ export async function buildCatalog(options = {}) {
 
   const snapshot = {
     v: 1,
+    selectionPolicy: 'no-health-filter',
     builtAt: new Date().toISOString(),
     source: 'radio-browser.info',
     requested,

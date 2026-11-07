@@ -1,15 +1,11 @@
 /**
  * Build the station catalogue the plugin ships.
  *
- * The live repository fetches a few thousand stations at runtime and lets the
- * browser throw away the dead ones as they fail. This script does the same
- * filtering once, ahead of time, so a fresh install starts with a much larger
- * catalogue that is already known to answer:
+ * Fetch a larger directory ahead of time without excluding failed streams:
  *
  *   1. fetch a candidate pool from Radio Browser (paged, parallel, mirrors);
- *   2. probe every candidate's stream URL with a one-byte ranged GET;
- *   3. keep the healthy ones, with a floor per country and per genre so small
- *      countries and niche genres survive a click-count ranking;
+ *   2. optionally probe streams for diagnostic statistics only;
+ *   3. pick by click count with country and genre floors, regardless of health;
  *   4. write `data/catalog.v1.json` plus its gzip twin, and print the stats.
  *
  * The work itself lives in `src/host/catalog-builder.js`, because the Host half
@@ -27,7 +23,7 @@
  *
  *   CATALOG_TARGET=16000        stations kept in the snapshot
  *   CATALOG_FETCH=24000         candidates fetched before probing
- *   CATALOG_CHECK=1             0 skips probing (keeps every candidate)
+ *   CATALOG_CHECK=0             1 enables diagnostic probes, never exclusion
  *   CATALOG_CHECK_CONCURRENCY=12
  *   CATALOG_CHECK_TIMEOUT=3500  ms per probe
  *   CATALOG_COUNTRY_FLOOR=6     guaranteed stations per country
@@ -55,7 +51,7 @@ const envInt = (name, fallback) => {
 const options = {
   target: envInt('CATALOG_TARGET', 12000),
   fetch: envInt('CATALOG_FETCH', 0) || undefined,
-  check: envInt('CATALOG_CHECK', 1) !== 0,
+  check: envInt('CATALOG_CHECK', 0) !== 0,
   concurrency: envInt('CATALOG_CHECK_CONCURRENCY', 12),
   timeoutMs: envInt('CATALOG_CHECK_TIMEOUT', 3500),
   countryFloor: envInt('CATALOG_COUNTRY_FLOOR', 6),
@@ -95,7 +91,7 @@ async function main() {
   if (options.fetch && options.fetch < options.target) {
     console.warn(
       `catalog build: CATALOG_FETCH ${options.fetch} is below CATALOG_TARGET ${options.target}; ` +
-        `the builder raises it to ${options.target}, so that is how many candidates get probed.`,
+        `the builder raises it to ${options.target}, so that is how many candidates get fetched.`,
     );
   }
   console.log(

@@ -245,10 +245,6 @@ export function mapStation(row, getIndex) {
   if (!address) return null;
   const streamUrl = address.url;
 
-  // Radio Browser's own liveness flag. A station that failed its last check is
-  // not streamed in this phase and would only mislead the panel.
-  if (row.lastcheckok !== undefined && Number(row.lastcheckok) !== 1) return null;
-
   const languageCode = codeForLanguage(row);
   const countryCode = codeForCountry(row) || regionForLanguage(languageCode);
   const country = countryName(countryCode);
@@ -295,7 +291,7 @@ export function mapStation(row, getIndex) {
       streamSource: address.source,
       votes: Number(row.votes) || 0,
       clickcount: Number(row.clickcount) || 0,
-      lastCheckOk: true,
+      lastCheckOk: row.lastcheckok === undefined ? null : Number(row.lastcheckok) === 1,
       categoryMatched: classification.matched,
       changeuuid: String(row.changeuuid || '') || null,
     },
