@@ -2,6 +2,14 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。英文版见 [CHANGELOG.en.md](CHANGELOG.en.md)。
 
+## [1.2.7] - 2026-11-08
+
+### 搜索与工程质量
+
+- 电台搜索结果去掉条数上限，改为滚动加载更多（无限滚动）。
+- 将 `tools/` 下原有的 10 个断言/校验脚本全部接入 `npm test`（共 14 个），修正 3 个停留在旧行为的断言（相机帧、stations-dirty 的 `aReturnAlpha`、validate-state 的元素错误与未知收藏）。
+- 新增 GitHub Actions CI（`.github/workflows/ci.yml`）：`npm ci && npm run build && npm test`。
+
 ## [1.2.6] - 2026-11-07
 
 ### 体积与代码整洁（审计优化）

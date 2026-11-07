@@ -2,6 +2,14 @@
 
 Versions follow [Semantic Versioning](https://semver.org/). The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [1.2.7] - 2026-11-08
+
+### Search and engineering quality
+
+- Radio search results drop the fixed count cap and load more on scroll (infinite scroll).
+- Wired all 10 existing assertion/validation scripts under `tools/` into `npm test` (14 total), fixing 3 assertions that were stuck on old behaviour (camera frame, stations-dirty `aReturnAlpha`, validate-state element error and unknown favourite).
+- Added GitHub Actions CI (`.github/workflows/ci.yml`): `npm ci && npm run build && npm test`.
+
 ## [1.2.6] - 2026-11-07
 
 ### Size and code hygiene (audit)
