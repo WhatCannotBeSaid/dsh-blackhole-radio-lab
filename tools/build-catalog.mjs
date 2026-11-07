@@ -21,8 +21,8 @@
  * Every knob is an environment variable so CI can change the size without a
  * code edit:
  *
- *   CATALOG_TARGET=16000        stations kept in the snapshot
- *   CATALOG_FETCH=24000         candidates fetched before probing
+ *   CATALOG_TARGET=65000        stations kept in the snapshot
+ *   CATALOG_FETCH=65000         candidates fetched before probing
  *   CATALOG_CHECK=0             1 enables diagnostic probes, never exclusion
  *   CATALOG_CHECK_CONCURRENCY=12
  *   CATALOG_CHECK_TIMEOUT=3500  ms per probe
@@ -49,8 +49,8 @@ const envInt = (name, fallback) => {
 };
 
 const options = {
-  target: envInt('CATALOG_TARGET', 12000),
-  fetch: envInt('CATALOG_FETCH', 0) || undefined,
+  target: envInt('CATALOG_TARGET', 65000),
+  fetch: envInt('CATALOG_FETCH', 65000) || undefined,
   check: envInt('CATALOG_CHECK', 0) !== 0,
   concurrency: envInt('CATALOG_CHECK_CONCURRENCY', 12),
   timeoutMs: envInt('CATALOG_CHECK_TIMEOUT', 3500),

@@ -6,7 +6,7 @@
 
 一块给网络电台用的 3D 黑洞舞台：两万多台真实电台绕着一颗可以环绕、可以播放的黑洞运行。
 
-[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · [变更日志](CHANGELOG.md) · v1.2.1
+[English](README.en.md) · [MIT 许可](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md) · [变更日志](CHANGELOG.md) · v1.2.6
 
 </div>
 
@@ -47,7 +47,7 @@ DSH（DeepSeek Harness）的插件。装上之后左栏底部多一张电台卡�
 
 ## 安装
 
-先决条件：Node.js ≥ 20，DSH（已验证 0.2.1-rc.2）。
+先决条件：Node.js ≥ 20，DSH（已验证 0.2.1-rc.2 / 0.2.2-rc.1）。
 
 ```bash
 # 从 npm（发布版）
@@ -101,8 +101,8 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
         featuredCount: 18
         catalogAutoRefresh: true
         catalogRefreshDays: 7
-        catalogTarget: 30000
-        catalogFetch: 50000
+        catalogTarget: 65000
+        catalogFetch: 65000
         catalogConcurrency: 48
         catalogTimeoutMs: 2800
 ```
@@ -119,8 +119,8 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 | `featuredCount` | `18` | 4–40 | 内环精选台数 |
 | `catalogAutoRefresh` | `true` | 布尔 | 是否每周在后台刷新目录快照 |
 | `catalogRefreshDays` | `7` | 1–90 | 缓存超过多少天算过期 |
-| `catalogTarget` | `30000` | 1000–60000 | 用户侧快照保留台数 |
-| `catalogFetch` | `50000` | 1000–60000 | 探测前抓取的候选数，须 ≥ `catalogTarget` |
+| `catalogTarget` | `65000` | 1000–65000 | 用户侧快照保留台数 |
+| `catalogFetch` | `65000` | 1000–65000 | 探测前抓取的候选数，须 ≥ `catalogTarget` |
 | `catalogConcurrency` | `48` | 1–64 | 探测并发 |
 | `catalogTimeoutMs` | `2800` | 500–15000 | 单条探测超时 |
 
@@ -133,11 +133,11 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 - 播放时浏览器直接连电台的流地址，曲目信息来自该流的 ICY 元数据块（Host 只取一个块即断开）。这些连接会把你的 IP 暴露给对应电台，作者服务器不参与、也看不到。
 - Host 的曲目查询只发往公网：回环、私网、链路本地地址的任何写法（含 `::ffff:127.0.0.1` 这类 IPv4 映射形式）都拒绝，域名解析结果里出现私网同样拒绝；重定向逐跳校验、最多 5 跳；别的网站发起的查询直接 403。收藏写入同样要求同源来源与 JSON 正文。
 - 收藏、喜欢的歌曲、音量与最后成功播放站保存在本机 `$DSH_HOME/blackhole-radio-lab/library.json`；失效源记录保存在当前浏览器 IndexedDB，不上传。
-- 插件不加载远端脚本，不引 CDN，Three.js 是包内私有依赖。
+- 插件不加载远端脚本，不引 CDN，Three.js 与 hls.js 都是包内私有依赖。
 
 ## 架构
 
-插件分两半：Host 半（`index.js` + `src/host/`）只做配置、静态路由、目录刷新与曲目探测，零运行时依赖；浏览器半被打成两个按需下载的 chunk。
+插件分两半：Host 半（`index.js` + `src/host/`）只做配置、静态路由、目录刷新与曲目探测，零运行时依赖；浏览器半被打成三个按需下载的 chunk（`client.stage.js` / `client.radio.js` / `client.hls.js`，HLS 播放器按需加载）。
 
 | 路径 | 作用 |
 | --- | --- |
@@ -152,9 +152,10 @@ dsh plugin --profile <profile> remove dsh-blackhole-radio-lab
 | `src/nodes/` | 电台微结构层、星团层、2D canvas 标签层 |
 | `src/cluster/` | 星团布局与离线投影测量 |
 | `client.stage.js` / `client.radio.js` | **构建产物**，不要手改 |
+| `client.hls.js` | **构建产物**（内联 hls.js，仅 HLS 电台按需加载），不要手改 |
 | `cordis.patch.yml` | bundle 补丁层，一行 loader 条目 |
 
-两个 chunk 只在需要时才下载：
+三个 chunk 只在需要时才下载：
 
 ```js
 window.__ModuleLoader__.load({
@@ -170,11 +171,11 @@ chunk 的 URL 取自**入口包**的 revision，所以构建脚本会在产物�
 
 ```bash
 npm install      # three + esbuild
-npm run build    # 重建 client.stage.js 与 client.radio.js
+npm run build    # 重建 client.stage.js、client.radio.js 与 client.hls.js
 npm test         # 契约测试：转场、播放器、曲目查询、产物
 ```
 
-- **只改 `src/`，然后 `npm run build`。** 两个 `client.*.js` 是产物。
+- **只改 `src/`，然后 `npm run build`。** 三个 `client.*.js` 是产物。
 - 不要在 `client.js` 里 `import 'three'`：浏览器侧没有 `three` 的基座模块，解析会直接失败。
 - `client.js` 本身不是构建产物，直接改；但改完必须求值一次真实的模块加载路径（`npm test` 会做：在 vm 里提供 `window.__ModuleLoader__.load`，断言 `factory` 返回 `apply` / `inject`）。
 - 重建目录快照：`npm run build:catalog`（`CATALOG_TARGET`、`CATALOG_FETCH`、`CATALOG_CHECK_CONCURRENCY` 等环境变量控制，探测两万台第三方流要几分钟到几十分钟，所以不放进 `npm run build`）。
@@ -188,7 +189,7 @@ npm test         # 契约测试：转场、播放器、曲目查询、产物
 ## 已知限制
 
 - 无账号、无云同步、无歌单：收藏与喜欢只在本机。
-- 部分电台会 404、断流或只在特定地区可用。格式或解码失败的电台隔离 6 小时，下次初始化目录时重新放行；旧的无时间戳黑名单会释放。当前会话不会自动重建目录。
+- 部分电台会 404、断流或只在特定地区可用。播放失败不会把电台从目录剔除或永久拉黑：单台在本会话内最多重试 3 次（间隔 1s、2s），仍失败就跳下一台；连续失败只影响自动换台的冷却（10 分钟 / 1 小时 / 6 小时 / 24 小时分级，证据 7 天过期），手动点播随时可放。当前会话不会自动重建目录。
 - 关闭窗口时 `pagehide` 立即停止播放；最小化但仍出声时每 3 秒探活本机后端，连续 2 次未应答才停，单次探测 2.5 秒超时也算未应答。
 - 系统媒体控制以 metadata 身份避让其他播放器，无法识别只更换 handler 而不更新 metadata 的外部接管。
 - 实时抓取路径每次最多取 5,000 台（分页 + 时间预算），内置快照远大于此；快照过期 30 天或台数骤减时会回落实时抓取。

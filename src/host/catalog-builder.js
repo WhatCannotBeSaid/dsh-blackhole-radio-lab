@@ -20,7 +20,7 @@ export const RADIO_BROWSER_HOSTS = Object.freeze([
   'at1.api.radio-browser.info',
 ]);
 
-export const BUILDER_USER_AGENT =
+const BUILDER_USER_AGENT =
   'dsh-blackhole-radio-lab/1.0 (catalog build; +https://github.com/WhatCannotBeSaid/dsh-blackhole-radio-lab)';
 
 /** Radio Browser caps a search page at 500 rows. */
@@ -28,7 +28,10 @@ const PAGE_SIZE = 500;
 /** Candidate pages are cheap; four in flight keeps the mirrors happy. */
 const FETCH_CONCURRENCY = 4;
 
-export const BUILDER_DEFAULTS = Object.freeze({
+/** Upper bound on how many stations the catalogue will carry. */
+export const MAX_CATALOG = 65000;
+
+const BUILDER_DEFAULTS = Object.freeze({
   target: 12000,
   fetch: 16200,
   check: false,
@@ -68,10 +71,10 @@ function normalize(options) {
     if (!Number.isFinite(n)) return fallback;
     return Math.max(min, Math.min(max, n));
   };
-  const target = integer(input.target, BUILDER_DEFAULTS.target, 200, 60000);
+  const target = integer(input.target, BUILDER_DEFAULTS.target, 200, MAX_CATALOG);
   return {
     target,
-    fetch: Math.max(target, integer(input.fetch, Math.round(target * 1.35), 200, 60000)),
+    fetch: Math.max(target, integer(input.fetch, Math.round(target * 1.35), 200, MAX_CATALOG)),
     check: input.check === true,
     concurrency: integer(input.concurrency, BUILDER_DEFAULTS.concurrency, 1, 64),
     timeoutMs: integer(input.timeoutMs, BUILDER_DEFAULTS.timeoutMs, 500, 30000),
@@ -134,14 +137,17 @@ function createAbort(ms, external) {
   };
 }
 
-/** One page of `/json/stations/search`, trying every mirror in order. */
+/** One page of `/json/stations/search`, trying every mirror twice. */
 async function fetchPage(offset, o) {
   let lastError = null;
-  for (let attempt = 0; attempt < o.hosts.length; attempt += 1) {
+  // Two rounds over the mirror list: a page that misses on every mirror is more
+  // often a burst of resets than a dead host, and a page that gives up is lost
+  // from the catalogue for a whole week (the snapshot is rebuilt from scratch).
+  for (let attempt = 0; attempt < o.hosts.length * 2; attempt += 1) {
     const host = o.hosts[attempt % o.hosts.length];
     const query =
       `https://${host}/json/stations/search?limit=${PAGE_SIZE}&offset=${offset}` +
-      '&order=clickcount&reverse=true&hidebroken=false';
+      '&order=clickcount&reverse=true&hidebroken=true';
     const abort = createAbort(20000, o.signal);
     try {
       const res = await o.fetchImpl(query, {
@@ -153,12 +159,17 @@ async function fetchPage(offset, o) {
         continue;
       }
       const body = await res.json();
-      return Array.isArray(body) ? body : [];
+      if (!Array.isArray(body)) throw new Error('Radio Browser response is not a station array');
+      return body;
     } catch (error) {
       if (o.signal && o.signal.aborted) throw error;
       lastError = error;
     } finally {
       abort.dispose();
+    }
+    // A whole round of mirrors failed: pause instead of hammering the next one.
+    if ((attempt + 1) % o.hosts.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }
   throw lastError ?? new Error('fetch failed');
@@ -174,7 +185,7 @@ async function fetchCandidates(o) {
       return await fetchPage(offset, o);
     } catch (error) {
       if (o.signal && o.signal.aborted) throw error;
-      return [];
+      return null;
     }
   });
 
@@ -182,7 +193,7 @@ async function fetchCandidates(o) {
   const rows = [];
   let failedPages = 0;
   for (const page of batches) {
-    if (!Array.isArray(page) || page.length === 0) failedPages += 1;
+    if (page === null) { failedPages += 1; continue; }
     for (const row of page) {
       const id = idOf(row);
       if (!id || seen.has(id)) continue;
@@ -198,6 +209,9 @@ async function fetchCandidates(o) {
     failedPages,
     elapsedMs: Date.now() - startedAt,
   });
+  if (failedPages > 0) {
+    throw new Error(`Radio Browser failed to fetch ${failedPages}/${pages} pages; refusing to replace catalogue`);
+  }
   return rows;
 }
 

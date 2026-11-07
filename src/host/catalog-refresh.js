@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { buildCatalog } from './catalog-builder.js';
 
 /** Where the Host keeps its own snapshot. */
-export const CACHE_DIR = join(homedir(), '.dsh', 'cache', 'blackhole-radio-lab');
+const CACHE_DIR = join(homedir(), '.dsh', 'cache', 'blackhole-radio-lab');
 export const CACHE_GZ = join(CACHE_DIR, 'catalog.v1.json.gz');
 
 /** How long to wait after start before touching the network. */

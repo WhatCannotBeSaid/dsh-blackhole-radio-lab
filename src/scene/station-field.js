@@ -30,10 +30,10 @@ import { DISK_INNER, DISK_OUTER } from './dimensions.js';
 const TAU = Math.PI * 2;
 
 /** Azimuth resolution. The disc is ~2.4x wider than it is deep, so match that. */
-export const FIELD_WIDTH = 2048;
+const FIELD_WIDTH = 2048;
 
 /** Radial resolution. 512 rows across 9 Rs is ~0.018 Rs per texel. */
-export const FIELD_HEIGHT = 512;
+const FIELD_HEIGHT = 512;
 
 /** Gaussian sigma of one station's footprint, in texels. */
 const CORE_SIGMA = 1.15;
@@ -209,7 +209,7 @@ export function buildStationField(stations, options = {}) {
 
     // Concentration: one station carrying the texel means the peak and the
     // total are close. A crowd makes the total much larger than the peak.
-    const concentration = Math.min(1, best[cell] / Math.max(1e-6, mass));
+    const concentration = Math.min(1, best[cell] / Math.max(1e-6, total[cell]));
 
     const stationIndex = ids[cell];
     let bits = 0;
@@ -247,16 +247,6 @@ function orbitOf(station) {
   const angle = Math.atan2(Number(position.z) || 0, Number(position.x) || 0);
   if (!Number.isFinite(radius) || !Number.isFinite(angle)) return null;
   return { radius, angle };
-}
-
-/** Azimuth of a point on the disc plane, matching the raster's x axis. */
-export function fieldAzimuthUv(angle) {
-  return (((angle % TAU) + TAU) % TAU) / TAU;
-}
-
-/** Radius of a point on the disc plane, as the raster's y coordinate. */
-export function fieldRadiusUv(radius) {
-  return (radius - DISK_INNER) / Math.max(1e-6, DISK_OUTER - DISK_INNER);
 }
 
 /**

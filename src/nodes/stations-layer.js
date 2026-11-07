@@ -41,6 +41,7 @@ import { DISK_INNER, DISK_OUTER, CRITICAL_IMPACT_PARAMETER, RS } from '../scene/
 import { STATION_RADIUS } from '../radio/distribution.js';
 import { NOISE_GLSL } from '../scene/glsl.js';
 import { discReturnPhase, discReturnProgress } from '../scene/disc-transfer.js';
+import { clamp01, smoothstep01 } from '../util/num.js';
 
 const DISK_PARTICLES = 5;
 const FEATURED_PARTICLES = 8;
@@ -719,12 +720,6 @@ export function createStationsLayer(stations, options) {
   const filterClouds = [];
   let filteredCount = 0;
   const scratch = new Vector3();
-
-  /** Smoothstep without allocating. */
-  function smoothstep01(value) {
-    const t = clamp01(value);
-    return t * t * (3 - 2 * t);
-  }
 
   // One allocation-free cubic path for sprites, hit targets, labels and markers.
   // Its departure tangent follows orbital motion; the destination tangent eases
@@ -1503,10 +1498,6 @@ function orbitOf(position) {
 
 function wrapAngle(value) {
   return Math.atan2(Math.sin(value), Math.cos(value));
-}
-
-function clamp01(value) {
-  return Math.min(1, Math.max(0, value));
 }
 
 function smoothstep(edge0, edge1, value) {

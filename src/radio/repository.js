@@ -42,7 +42,7 @@
 import { generateCatalog, normalizeCatalogOptions, categoryText } from './station.js';
 import { assignPositions } from './distribution.js';
 import { CATEGORIES } from './taxonomy.js';
-import { mapStations, streamUrlFor, MAPPING } from './radio-browser.js';
+import { mapStations, streamUrlFor } from './radio-browser.js';
 import { attachGenre, summarizeGenres, displayGenreId, genreLabel, GENRES, GENRE_IDS } from './genres.js';
 
 /**
@@ -89,17 +89,18 @@ export const RADIO_BROWSER_DEFAULTS = Object.freeze({
    * is dominated by a few national broadcasters and a large tag-less block.
    */
   order: 'clickcount',
-  /** Query parameters every station request shares. */
-  hidebroken: false,
+  /**
+   * Ask Radio Browser for stations it still marks as working, matching the
+   * prebuilt catalogue (`src/host/catalog-builder.js` sends hidebroken=true).
+   * A caller can still opt out with `hidebroken: false`.
+   */
+  hidebroken: true,
   /**
    * `curl` / `https` — the API's own preference for identifiable clients.
    * The browser cannot set User-Agent, and the field is only advisory.
    */
   userAgent: 'dsh-blackhole-radio-lab/0.5 (phase 5 data intake)',
 });
-
-/** Fixed 200/202 status causes worth a second look at another mirror. */
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 521, 522, 524]);
 
 function clampNumber(value, fallback, min, max) {
   const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -130,7 +131,7 @@ function normalizeRealOptions(options) {
       clampNumber(source.featuredCount, RADIO_BROWSER_DEFAULTS.featuredCount, 4, Math.min(40, limit)),
     ),
     order: typeof source.order === 'string' && source.order.length > 0 ? source.order : RADIO_BROWSER_DEFAULTS.order,
-    hidebroken: source.hidebroken === true,
+    hidebroken: source.hidebroken !== false,
     concurrency: Math.round(clampNumber(source.concurrency, RADIO_BROWSER_DEFAULTS.concurrency, 1, 8)),
     userAgent: typeof source.userAgent === 'string' && source.userAgent.length > 0
       ? source.userAgent
@@ -156,13 +157,6 @@ function defaultFetch() {
   return null;
 }
 
-/**
- * One HTTP request with a hard timeout.
- *
- * Radio Browser answers `text/plain` without charset on some mirrors, and
- * `response.json()` then guesses; the body is decoded as UTF-8 explicitly so a
- * non-ASCII station name survives.
- */
 /**
  * One HTTP request with a hard timeout.
  *
@@ -204,14 +198,12 @@ async function fetchJson(fetchImpl, url, { signal, timeoutMs, headers }) {
       const status = response ? response.status : 0;
       const error = new Error(`HTTP ${status || 'no response'}`);
       error.status = status;
-      error.retryable = status === 0 || RETRYABLE_STATUS.has(status);
       throw error;
     }
     const text = await response.text();
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed)) {
       const error = new Error('response is not a station array');
-      error.retryable = true;
       throw error;
     }
     return parsed;
@@ -784,4 +776,4 @@ export async function createRadioRepository(options) {
 }
 
 /** Re-exported so callers can describe a station without importing two modules. */
-export { streamUrlFor, MAPPING as STATION_MAPPING };
+export { streamUrlFor };

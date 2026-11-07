@@ -1,14 +1,11 @@
 /**
  * The local catalogue cache.
  *
- * Two facts are worth keeping between sessions, and neither belongs to a
- * server:
+ * These records belong to this browser, not a server:
  *
  *   catalog    the last successful Radio Browser rows, so a cold start paints
  *              the scene before the network answers (or when it does not).
- *   blacklist  the legacy failure record, kept only so one boot can purge it.
- *              Failures now live in memory for the session; nothing is written
- *              here any more.
+ *   health     recent listening evidence, used only to choose automatic retries.
  *
  * IndexedDB is the store because the catalogue is far past `localStorage`'s
  * 5 MB ceiling: 5,000 rows run to roughly 6 MB, and structured cloning is
@@ -29,7 +26,7 @@ const DB_NAME = 'dsh-blackhole-radio-lab';
 const DB_VERSION = 1;
 const STORE = 'kv';
 const CATALOG_KEY = 'catalog:v1';
-const BLACKLIST_KEY = 'blacklist:v1';
+const HEALTH_KEY = 'health:v1';
 
 /**
  * A blocked upgrade (another tab holds an older version open) must not stall
@@ -40,12 +37,7 @@ const OPEN_TIMEOUT_MS = 1500;
 /** One connection per module instance; a second open is never worth a second handle. */
 let dbPromise = null;
 
-/**
- * Blacklist writes are read-modify-write across two transactions. Two failed
- * streams reported at once (or two tabs) would otherwise both read the same
- * set and the later write would drop the earlier id. One queue per module
- * keeps those writes ordered; a rejected task never blocks the next one.
- */
+/** Serialize local health writes; a rejected write never blocks the next one. */
 let writeQueue = Promise.resolve();
 
 function enqueueWrite(task) {
@@ -162,7 +154,8 @@ function writeKey(db, key, value) {
  * @returns {Promise<null | {
  *   readCatalog: () => Promise<null | { rows: object[], fetchedAt: number, version: number }>,
  *   writeCatalog: (rows: object[], fetchedAt?: number) => Promise<boolean>,
- *   clearBlacklistAll: () => Promise<boolean>,
+ *   readHealth: () => Promise<object[]>,
+ *   writeHealth: (rows: object[]) => Promise<boolean>,
  * }>}
  */
 export async function openRadioCache() {
@@ -193,9 +186,14 @@ export async function openRadioCache() {
       return writeKey(db, key || CATALOG_KEY, { rows, fetchedAt: stamp, version: 1 });
     },
 
-    /** Drop the legacy failure record once, when the memory-policy boot adopts it. */
-    async clearBlacklistAll() {
-      return enqueueWrite(async () => writeKey(db, BLACKLIST_KEY, { failures: [] }));
+    async readHealth() {
+      const record = await readKey(db, HEALTH_KEY);
+      return record?.version === 1 && Array.isArray(record.rows) ? record.rows : [];
+    },
+
+    async writeHealth(rows) {
+      // ponytail: one-page snapshot; use per-station keys if concurrent tabs must merge.
+      return enqueueWrite(() => writeKey(db, HEALTH_KEY, { version: 1, rows }));
     },
   };
 }

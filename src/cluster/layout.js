@@ -23,6 +23,7 @@
 
 import { hash32 } from '../radio/random.js';
 import { formOf, sampleForm } from './forms.js';
+import { clamp } from '../util/num.js';
 
 /** Radial power: >1 concentrates matter toward a knot's centre. */
 const RADIAL_POWER = 1.9;
@@ -59,7 +60,7 @@ const SHELL_SPACING = 0.94;
  * nothing at all belongs to Other, which is a real body in the sky and not a
  * dumping ground.
  */
-export function primaryGenreOf(station) {
+function primaryGenreOf(station) {
   if (!station) return 'other';
   if (typeof station.genre === 'string' && station.genre) return station.genre;
   const genres = station.genres;
@@ -81,7 +82,7 @@ export function primaryGenreOf(station) {
  * The renderer and the stage both need this same answer, so it lives here
  * rather than being re-derived in three places.
  */
-export function primaryCategoryOf(station) {
+function primaryCategoryOf(station) {
   if (!station) return '';
   const primary = station.metadata && station.metadata.primaryCategory;
   if (primary) return String(primary);
@@ -284,7 +285,12 @@ export function clusterRadius(n) {
   // A knot has to read as a cloud of stations, not as a bright pixel: at 0.62
   // the whole field looked like dust on a lens, so the same curve runs at a
   // larger scale and the shell grows with it.
-  return clamp(1.5 * Math.pow(members / 520, 0.34), 0.5, 2.2);
+  //
+  // The ceiling used to be 2.2, which every knot already reached at ~2.5k
+  // members — so a catalogue that tripled changed nothing visible. It sits at
+  // 4.0 now so the sky keeps answering the data: a bigger catalogue makes
+  // bigger knots, and the shell radius (buildClusterLayout) spreads to fit.
+  return clamp(1.5 * Math.pow(members / 520, 0.34), 0.5, 4.0);
 }
 
 /**
@@ -305,7 +311,7 @@ export function clusterCamera(radius) {
 }
 
 /** Direction of vocabulary slot `index` on the Fibonacci shell. */
-export function shellDirection(index, total) {
+function shellDirection(index, total) {
   const n = Math.max(1, Number(total) || 1);
   const i = Math.max(0, Math.min(n - 1, Math.round(Number(index) || 0)));
   const y = 1 - ((i + 0.5) * 2) / n;
@@ -316,32 +322,6 @@ export function shellDirection(index, total) {
     y: y * SHELL_FLATTEN,
     z: Math.sin(phi) * ring,
   };
-}
-
-/**
- * Nearest knot under a ray, for the stage's hover and click.
- *
- * The hit radius is the larger of the knot's visual radius and a floor that
- * keeps a sparse, distant knot clickable: a tiny knot four units out is one or
- * two pixels wide, which is not a target.
- *
- * @param layout - as returned by buildClusterLayout.
- * @param origin - { x, y, z } ray origin (the camera).
- * @param direction - { x, y, z } unit ray direction.
- * @param minScreenRadius - world radius equivalent of the hit floor.
- */
-export function pickGroup(layout, origin, direction, minScreenRadius = 0) {
-  const groups = (layout && layout.groups) || [];
-  let best = null;
-  let bestT = Infinity;
-  for (const group of groups) {
-    if (!group.count) continue;
-    const hit = raySphere(origin, direction, group.center, Math.max(group.radius, minScreenRadius));
-    if (hit === null || hit >= bestT) continue;
-    bestT = hit;
-    best = group;
-  }
-  return best;
 }
 
 /** Distance along the ray to the first surface hit, or null. */
@@ -389,8 +369,4 @@ function normalizeVocabulary(vocabulary, stations) {
     out.sort();
   }
   return out;
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
 }

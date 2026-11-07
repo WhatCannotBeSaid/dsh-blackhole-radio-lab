@@ -1,6 +1,6 @@
 {
   "name": "dsh-blackhole-radio-lab",
-  "version": "1.2.4",
+  "version": "1.2.6",
   "description": "A 3D black-hole radio stage for DeepSeek Harness: orbit, zoom and play 24,000+ internet radio stations",
   "type": "module",
   "main": "index.js",
@@ -29,7 +29,6 @@
     "LICENSE-BLACK_HOLE_SHADER",
     "THIRD-PARTY-NOTICES.md",
     "src",
-    "data/catalog.v1.json",
     "data/catalog.v1.json.gz",
     "tools/build-stage.mjs",
     "tools/build-catalog.mjs"

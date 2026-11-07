@@ -18,6 +18,7 @@
 
 import { Vector3 } from 'three';
 import { CAMERA_HOME } from './dimensions.js';
+import { clamp } from '../util/num.js';
 
 /**
  * Absolute rig floors. The active mode's home may narrow these further.
@@ -403,8 +404,4 @@ function sphericalFromVector(v) {
   const phi = Math.acos(clamp(v.y / radius, -1, 1));
   const theta = Math.atan2(v.x, v.z);
   return { radius, phi, theta };
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
 }

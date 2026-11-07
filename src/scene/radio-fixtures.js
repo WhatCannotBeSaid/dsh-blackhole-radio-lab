@@ -113,7 +113,7 @@ export function fixtureWorldPosition(fixture) {
  * The rotation is (x, -z, y) / RS, applied to the centre and to the radius. y is
  * zero for every fixture, so the shader-side centre is a 2-D point on z = 0.
  */
-export function toShaderFixture(fixture) {
+function toShaderFixture(fixture) {
   const world = fixtureWorldPosition(fixture);
   return {
     x: world.x / RS,
@@ -181,7 +181,3 @@ export function fixtureByGpuId(id) {
   return RADIO_FIXTURES.find((fixture) => fixture.gpuId === n) || null;
 }
 
-/** Look a fixture up by its business id. */
-export function fixtureByBusinessId(id) {
-  return RADIO_FIXTURES.find((fixture) => fixture.businessId === id) || null;
-}

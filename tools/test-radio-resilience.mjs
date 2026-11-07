@@ -4,19 +4,27 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createPlaybackCore } from '../src/radio/playback.js';
+import { createStationHealth } from '../src/radio/health.js';
+import { openRadioCache } from '../src/radio/cache.js';
 import { createRadioStore } from '../src/radio/store.js';
 import { bindMediaSession } from '../src/radio/media-session.js';
 import { pollMetadata } from '../src/radio/metadata-poll.js';
 import { createHostWatch } from '../src/radio/host-watch.js';
 import { buildCatalog } from '../src/host/catalog-builder.js';
 import { createRepositoryFromRows } from '../src/radio/repository.js';
-function fixture(play = () => Promise.resolve()) {
+function fixture(play = () => Promise.resolve(), options = {}) {
   const timers = new Map(); let next = 0; const events = new Map(); const delays = [];
-  const audio = { play, pause() {}, addEventListener(k, fn) { events.set(k, fn); }, removeAttribute() {}, load() {} };
-  const core = createPlaybackCore({ createAudio: () => audio, setTimeout(fn, delay) { delays.push(delay); timers.set(++next, fn); return next; }, clearTimeout(id) { timers.delete(id); } });
+  const audio = { currentTime: 0, play, pause() {}, addEventListener(k, fn) { events.set(k, fn); }, removeAttribute() {}, load() {} };
+  const core = createPlaybackCore({ ...options, createAudio: () => audio, setTimeout(fn, delay) { delays.push(delay); timers.set(++next, fn); return next; }, clearTimeout(id) { timers.delete(id); } });
   return { core, audio, timers, delays, emit: (name) => events.get(name)?.(), tick() { const [id, fn] = timers.entries().next().value; timers.delete(id); fn(); } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+function hlsAttacher(shared, requireAsync) {
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  const start = source.indexOf('    const HLS_CHUNK =');
+  const body = source.slice(start, source.indexOf('    const DICT =', start));
+  return vm.runInNewContext(`${body}; makeAttachStream`)(shared, requireAsync);
+}
 function runtime(fetch, extra = {}) {
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
   const body = source.slice(source.indexOf('    function createSharedState() {'), source.indexOf('    function useShared('));
@@ -44,20 +52,16 @@ test('real shared hydration preserves user volume, and ignores old lifetime resp
   resolve({ ok: true, json: async () => ({ playback: { volume: .1 } }) }); await old;
   assert.equal(g.core.getVolume(), .6); assert.equal(shared.libraryHydrated, false); shared.dispose();
 });
-test('startup retries three times with backoff, then finite failure', () => {
+test('startup makes three total attempts with 1s/2s backoff, then surfaces the failure', () => {
   const f = fixture(); f.core.play('a', 'https://test/a');
-  // Each attempt schedules a startup timeout; a retry then waits for its
-  // backoff before the next attempt. Four attempts = three retries, then fail.
   let ticks = 0;
   while (f.timers.size > 0 && ticks < 20) { f.tick(); ticks += 1; }
   assert.equal(f.core.getState().stationId, 'a');
   assert.equal(f.core.getState().status, 'error');
   assert.equal(f.core.getState().error, 'startup-timeout');
   assert.equal(f.timers.size, 0);
-  // Four attempts (three retries): a 15s startup guard each, with 1s / 2s / 4s
-  // waits between them. This fails if the retry count or the backoff changes.
-  assert.equal(f.delays.filter((d) => d === 15000).length, 4);
-  assert.deepEqual(f.delays.filter((d) => d !== 15000), [1000, 2000, 4000]);
+  assert.equal(f.delays.filter((d) => d === 15000).length, 3);
+  assert.deepEqual(f.delays.filter((d) => d !== 15000), [1000, 2000]);
   f.core.dispose();
 });
 test('stall watchdog is bounded and cancelled by progress/pause', () => {
@@ -73,6 +77,92 @@ test('old rejection cannot corrupt a new station; browser block does not retry',
   const g = fixture(() => Promise.reject({ name: 'NotAllowedError' })); g.core.play('a', 'https://test/a'); await flush();
   assert.equal(g.core.getState().error, 'blocked-by-browser'); assert.equal(g.timers.size, 0); g.core.dispose();
 });
+test('attached browser blocks and aborted loads never retry, penalize or switch stations', () => {
+  for (const reason of ['blocked-by-browser', 'play-failed:NotAllowedError', 'load-aborted', 'play-failed:AbortError']) {
+    let report; let failures = 0; let hops = 0;
+    const f = fixture(undefined, {
+      attachStream(_audio, _url, onError) { report = onError; return { detach() {} }; },
+      onFailure() { failures++; }, nextStation() { hops++; },
+    });
+    f.core.play('a', 'https://test/a.m3u8'); report(reason);
+    assert.equal(f.core.getState().status, 'error');
+    assert.equal(f.core.getState().error, reason.includes('Abort') || reason === 'load-aborted' ? 'load-aborted' : 'blocked-by-browser');
+    assert.equal(f.timers.size, 0); assert.equal(failures, 0); assert.equal(hops, 0);
+    f.core.dispose();
+  }
+});
+
+test('the first HLS attempt waits for its chunk, then gets a full startup window without retrying', async () => {
+  let resolve; let loads = 0; let plays = 0; let attaches = 0; let detached = 0;
+  const shared = {};
+  const attachStream = hlsAttacher(shared, () => { loads++; return new Promise(r => { resolve = r; }); });
+  const f = fixture(() => { plays++; return Promise.resolve(); }, { attachStream });
+  f.core.play('a', 'https://test/a.m3u8'); await flush();
+  assert.equal(f.audio.src, undefined); assert.equal(plays, 0); assert.equal(attaches, 0);
+  resolve({ attachHls() { attaches++; return { detach() { detached++; } }; } }); await flush();
+  assert.equal(loads, 1); assert.equal(attaches, 1); assert.equal(plays, 0);
+  assert.equal(f.timers.size, 1);
+  assert.deepEqual(f.delays, [15000, 15000]);
+  f.emit('playing'); assert.equal(f.core.getState().status, 'playing');
+  f.core.dispose(); assert.equal(detached, 1); assert.equal(f.timers.size, 0);
+});
+
+test('late HLS loading cannot play after pause, stop, dispose or a station switch', async () => {
+  for (const action of ['pause', 'stop', 'dispose', 'switch']) {
+    let resolve; let attaches = 0;
+    const attachStream = hlsAttacher({}, () => new Promise(r => { resolve = r; }));
+    const f = fixture(undefined, { attachStream });
+    f.core.play('a', 'https://test/a.m3u8'); await flush();
+    if (action === 'switch') f.core.play('b', 'https://test/b.mp3');
+    else f.core[action]();
+    resolve({ attachHls() { attaches++; return { detach() {} }; } }); await flush();
+    assert.equal(attaches, 0, action);
+    if (action === 'switch') assert.equal(f.audio.src, 'https://test/b.mp3');
+    else assert.equal(f.timers.size, 0, action);
+    if (action === 'pause') {
+      f.core.resume(); assert.equal(attaches, 1); assert.equal(f.core.getState().status, 'loading');
+    }
+    f.core.dispose();
+  }
+});
+
+test('switching between HLS stations shares one load and attaches only the current station', async () => {
+  let resolve; let loads = 0; const attached = [];
+  const attachStream = hlsAttacher({}, () => { loads++; return new Promise(r => { resolve = r; }); });
+  const f = fixture(undefined, { attachStream });
+  f.core.play('a', 'https://test/a.m3u8'); await flush();
+  f.core.play('b', 'https://test/b.m3u8');
+  resolve({ attachHls(_audio, url) { attached.push(url); return { detach() {} }; } }); await flush();
+  assert.equal(loads, 1); assert.deepEqual(attached, ['https://test/b.m3u8']);
+  assert.equal(f.core.getState().stationId, 'b'); assert.deepEqual(f.delays, [15000, 15000, 15000]);
+  f.core.dispose();
+});
+
+test('missing HLS support or a failed chunk load falls back natively in the same attempt', async () => {
+  for (const fails of [false, true]) {
+    let plays = 0;
+    const attachStream = hlsAttacher({}, async () => {
+      if (fails) throw new Error('chunk unavailable');
+      return { attachHls: () => null };
+    });
+    const f = fixture(() => { plays++; return Promise.resolve(); }, { attachStream });
+    f.core.play('a', 'https://test/a.m3u8'); await flush();
+    assert.equal(f.audio.src, 'https://test/a.m3u8'); assert.equal(plays, 1);
+    assert.deepEqual(f.delays, [15000, 15000]); f.core.dispose();
+  }
+});
+
+test('a hanging HLS chunk is bounded without station penalties and cannot attach late', async () => {
+  let resolve; let attaches = 0; let failures = 0; let hops = 0;
+  const attachStream = hlsAttacher({}, () => new Promise(r => { resolve = r; }));
+  const f = fixture(undefined, { attachStream, onFailure() { failures++; }, nextStation() { hops++; } });
+  f.core.play('a', 'https://test/a.m3u8'); await flush(); f.tick();
+  assert.equal(f.core.getState().error, 'hls-load-timeout');
+  assert.equal(f.timers.size, 0); assert.equal(failures, 0); assert.equal(hops, 0);
+  resolve({ attachHls() { attaches++; return { detach() {} }; } }); await flush();
+  assert.equal(attaches, 0); f.core.resume(); assert.equal(attaches, 1); f.core.dispose();
+});
+
 test('volume and last successful station round trip even with no selection', () => {
   const a = { id: 'a', name: 'A', metadata: { source: 'radio-browser' } };
   const s = createRadioStore(); s.index([a]); s.rememberVolume(.2); s.rememberPlayed(a); s.select(null);
@@ -181,7 +271,7 @@ test('an attached source is not written to audio.src and is detached on stop', (
   assert.equal(detached, 1);
   core.dispose();
 });
-test('a fatal attached source fails the attempt, a network one is retried', () => {
+test('decode and network errors in attached sources both use bounded retries', () => {
   const audio = { play: () => Promise.resolve(), pause() {}, addEventListener() {}, removeAttribute() {}, load() {} };
   let report; let attaches = 0;
   const core = createPlaybackCore({
@@ -191,8 +281,8 @@ test('a fatal attached source fails the attempt, a network one is retried', () =
   });
   core.play('a', 'https://test/a.m3u8');
   report('decode');
-  assert.equal(core.getState().status, 'error');
-  assert.equal(core.getState().error, 'decode');
+  assert.equal(core.getState().status, 'loading');
+  assert.equal(core.getState().error, null);
   core.dispose();
   const again = createPlaybackCore({
     createAudio: () => ({ ...audio }),
@@ -207,23 +297,24 @@ test('a fatal attached source fails the attempt, a network one is retried', () =
   assert.equal(attaches, 2);
   again.dispose();
 });
-test('a failed stream stays selected, stays indexed and can be retried immediately', () => {
+test('failed stream cools only automatic selection; index, favourites and manual retry survive', () => {
   const stations = [{ id: 'a' }, { id: 'b' }];
   const shared = runtime(async () => ({ ok: false }), {
-    playablePool: () => stations,
-    streamOf: (station) => `https://test/${station.id}`,
+    playablePool: () => stations, streamOf: (station) => `https://test/${station.id}`,
   });
-  const store = shared.ensureStore(createRadioStore); store.index(stations); store.select('a');
-  const f = fixture(); shared.ensurePlayback(() => f.core);
+  shared.bindEnv({ createStationHealth });
+  const store = shared.ensureStore(createRadioStore); store.index(stations); store.select('a'); store.toggleFavorite('a');
+  shared.autoCandidates = () => [stations[0]];
+  let f; shared.ensurePlayback((options) => (f = fixture(undefined, options)).core);
   try {
     f.core.play('a', 'https://test/a');
-    f.audio.error = { code: 3 }; f.emit('error');
+    for (let n = 0; n < 5; n++) f.tick();
     assert.equal(f.core.getState().status, 'error');
-    assert.equal(f.core.getState().error, 'decode');
-    assert.equal(f.core.getState().stationId, 'a');
     assert.equal(store.getSelected().id, 'a');
     assert.equal(store.getStation('a').id, 'a');
+    assert.equal(store.isFavorite('a'), true);
     assert.equal('blacklist' in shared, false);
+    assert.equal(shared.health.save()[0].failures, 1);
     assert.equal(f.timers.size, 0);
     f.core.play('a', 'https://test/a'); f.emit('playing');
     assert.equal(f.core.getState().status, 'playing');
@@ -303,4 +394,152 @@ test('resuming an attached source asks the element to play again', () => {
   assert.equal(plays, 1);
   assert.equal(core.getState().status, 'loading');
   core.dispose();
+});
+
+test('health round-trips locally, expires after seven days and caps its cooldown ladder', () => {
+  let now = 1000000;
+  const stations = [{ id: 'b' }, { id: 'a' }];
+  const make = () => createStationHealth({ now: () => now, random: () => 0 });
+  let health = make(); health.success('a');
+  assert.equal(health.pick(stations).id, 'a');
+  const restored = make(); restored.load(health.save()); health = restored;
+  for (const delay of [600000, 3600000, 21600000, 86400000, 86400000]) {
+    health.failure('a');
+    const row = health.save().find(row => row.id === 'a');
+    assert.equal(row.cooldownUntil - now, delay);
+    assert.equal(health.pick(stations).id, 'b');
+    assert.equal(health.pick([stations[1]]), null);
+    now += delay;
+  }
+  health.success('a'); assert.equal(health.save()[0].failures, 0);
+  now += 7 * 86400000;
+  assert.equal(health.pick(stations).id, 'b');
+  assert.equal(health.save().length, 0);
+  health.load([{ id: 'bad', successAt: now + 1, failedAt: 0, failures: 0, cooldownUntil: 0 }]);
+  assert.equal(health.save().length, 0);
+});
+
+test('automatic recovery stops at three exhausted stations and manual play opens a new round', () => {
+  const stations = ['a', 'b', 'c', 'd'].map(id => ({ id }));
+  const shared = runtime(async () => ({ ok: false }), {
+    playablePool: () => stations, streamOf: station => `https://test/${station.id}`,
+  });
+  shared.bindEnv({ createStationHealth: () => createStationHealth({ random: () => 0 }) });
+  const store = shared.ensureStore(createRadioStore); store.index(stations); store.select('a');
+  let f; shared.ensurePlayback(options => (f = fixture(undefined, options)).core);
+  f.core.play('a', 'https://test/a');
+  let ticks = 0; while (f.timers.size && ticks++ < 30) f.tick();
+  assert.equal(f.core.getState().stationId, 'c');
+  // Out of stations: the failure stays visible instead of masquerading as a pause.
+  assert.equal(f.core.getState().status, 'error');
+  assert.equal(f.core.getState().error, 'startup-timeout');
+  assert.equal(store.getSelected().id, 'c');
+  assert.equal(f.delays.filter(delay => delay === 15000).length, 9);
+  assert.deepEqual(shared.health.save().map(row => row.id), ['a', 'b', 'c']);
+  assert.equal(store.stations().length, 4);
+  f.core.resume(); assert.equal(f.core.getState().status, 'loading');
+  for (let n = 0; n < 5; n++) f.tick();
+  assert.equal(f.core.getState().stationId, 'd');
+  shared.dispose(); assert.equal(f.timers.size, 0);
+});
+
+test('stable success needs ten seconds of advancing media, not merely a playing event', () => {
+  let now = 100000; let successes = 0;
+  const f = fixture(undefined, { now: () => now, onStable() { successes++; } });
+  f.core.play('a', 'https://test/a'); f.emit('playing');
+  now += 10000; f.emit('timeupdate'); assert.equal(successes, 0);
+  f.audio.currentTime = 9; f.emit('timeupdate'); assert.equal(successes, 0);
+  f.emit('waiting');
+  f.audio.currentTime = 10; f.emit('timeupdate');
+  now += 9000; f.audio.currentTime = 19; f.emit('timeupdate'); assert.equal(successes, 0);
+  now += 1000; f.audio.currentTime = 20; f.emit('timeupdate'); assert.equal(successes, 1);
+  now += 10000; f.audio.currentTime = 30; f.emit('timeupdate'); assert.equal(successes, 1);
+  f.core.dispose();
+});
+
+test('offline: short blips stay failed, real outages resume on return', () => {
+  let online = true; let failures = 0; let clock = 0; const events = new Map();
+  const target = { addEventListener(name, fn) { events.set(name, fn); }, removeEventListener(name) { events.delete(name); } };
+  const f = fixture(undefined, { isOnline: () => online, eventTarget: target, now: () => clock, onFailure() { failures++; } });
+  f.core.play('a', 'https://test/a'); f.tick();
+  // A sub-second blip: shown as a failure, never charged to the station, not auto-resumed.
+  online = false; events.get('offline')();
+  assert.equal(f.core.getState().status, 'error'); assert.equal(f.core.getState().error, 'offline');
+  assert.equal(f.timers.size, 0); assert.equal(failures, 0);
+  clock += 400; online = true; events.get('online')();
+  assert.equal(f.core.getState().status, 'error'); assert.equal(f.timers.size, 0);
+  // A real outage: the link was gone past the 1500 ms threshold, so it resumes on return.
+  online = false; events.get('offline')();
+  clock += 5000; online = true; events.get('online')();
+  assert.equal(f.core.getState().status, 'loading');
+  assert.equal(f.core.getState().stationId, 'a');
+  assert.equal(f.timers.size, 1);
+  f.core.play('b', 'https://test/b'); f.core.pause();
+  assert.equal(failures, 0); assert.equal(f.timers.size, 0);
+  f.core.dispose(); assert.equal(events.size, 0);
+});
+
+test('duplicate errors cannot consume retry slots or let a late playing event cancel backoff', () => {
+  const f = fixture(); f.core.play('a', 'https://test/a');
+  f.audio.error = { code: 3 }; f.emit('error'); f.emit('error'); f.emit('playing'); f.emit('timeupdate');
+  assert.equal(f.delays.filter(delay => delay === 1000).length, 1);
+  assert.equal(f.timers.size, 1); assert.equal(f.core.getState().status, 'loading');
+  f.tick(); assert.equal(f.delays.filter(delay => delay === 15000).length, 2);
+  f.core.play('b', 'https://test/b');
+  assert.equal(f.core.getState().stationId, 'b'); f.core.dispose(); assert.equal(f.timers.size, 0);
+});
+
+test('a playing subscriber can pause or dispose without leaving a watchdog behind', () => {
+  for (const action of ['pause', 'dispose']) {
+    const f = fixture();
+    f.core.subscribe(state => { if (state.status === 'playing') f.core[action](); });
+    f.core.play('a', 'https://test/a'); f.emit('playing');
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.core.getState().status, action === 'pause' ? 'paused' : 'idle');
+    f.core.dispose();
+  }
+});
+
+test('real panel scope intersects category, full search results and favourites without widening', () => {
+  const stations = [{ id: 'outside', genre: 'rock' }, { id: 'a', genre: 'jazz' }, { id: 'b', genre: 'jazz' }];
+  const shared = {}; let cleanup;
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  const effect = source.slice(source.indexOf('      // Automatic recovery stays'), source.indexOf('      /** The one-line place a result'));
+  const scope = { shared, store: { isFavorite: station => station.id === 'a' }, playablePool: () => stations,
+    modeState: { categoryId: 'jazz' }, favMenu: {}, searchOpen: true, searchText: 'match', streamOf: () => 'stream',
+    repository: { search(query, limit) { assert.equal(query, 'match'); assert.equal(limit, 3); return stations.slice(0, limit); } },
+    useEffect(fn) { cleanup = fn(); },
+  };
+  vm.runInNewContext(effect, scope);
+  assert.deepEqual(Array.from(shared.autoCandidates(), station => station.id), ['a']);
+  scope.modeState.categoryId = 'missing'; assert.equal(shared.autoCandidates().length, 0);
+  cleanup(); assert.equal(shared.autoCandidates, null);
+});
+
+test('IndexedDB health survives reopening without changing catalogue rows', async () => {
+  const values = new Map();
+  const db = { transaction() {
+    const tx = { objectStore: () => ({
+      get(key) { const request = {}; queueMicrotask(() => { request.result = values.get(key); request.onsuccess(); }); return request; },
+      put(value, key) { values.set(key, structuredClone(value)); queueMicrotask(() => tx.oncomplete()); },
+    }) };
+    return tx;
+  } };
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: { open() {
+    const request = {}; queueMicrotask(() => { request.result = db; request.onsuccess(); }); return request;
+  } } });
+  try {
+    const cache = await openRadioCache();
+    await cache.writeCatalog([{ id: 'a' }], 123);
+    const health = createStationHealth(); health.failure('a');
+    assert.equal(await cache.writeHealth(health.save()), true);
+    const reopened = await openRadioCache();
+    const restored = createStationHealth(); restored.load(await reopened.readHealth());
+    assert.equal(restored.save()[0].failures, 1);
+    assert.deepEqual((await reopened.readCatalog()).rows, [{ id: 'a' }]);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'indexedDB', descriptor);
+    else Reflect.deleteProperty(globalThis, 'indexedDB');
+  }
 });

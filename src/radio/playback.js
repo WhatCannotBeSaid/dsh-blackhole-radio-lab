@@ -37,10 +37,9 @@ export const SLOW_LOAD_MS = 10000;
  * @param options.createAudio - () => audio-like object (tests inject a fake)
  * @param options.now         - clock, injected for tests
  * @param options.slowLoadMs  - threshold for the "slow load" notice
- * @param options.attachStream - (audio, url, onError) => { detach() } | null.
- *   An attacher that owns the source itself (hls.js needs MediaSource, so it
- *   cannot go through `audio.src`). Returning a handle means "the source is
- *   mine"; returning null keeps the native path, which is the default.
+ * @param options.attachStream - (audio, url, onError) => { detach(), ready? } | null.
+ *   A handle owns the source; null keeps the native path. An optional `ready`
+ *   promise resolves to the final handle (or null) after a cancellable chunk load.
  */
 export function createPlaybackCore(options) {
   const opts = options || {};
@@ -55,6 +54,7 @@ export function createPlaybackCore(options) {
   let audio = null;
   /** The attacher's handle while it owns the element's source (HLS). */
   let streamHandle = null;
+  let sourceNeedsReload = true;
   let created = 0;
   let status = 'idle';
   let stationId = null;
@@ -70,14 +70,21 @@ export function createPlaybackCore(options) {
   const schedule = opts.setTimeout || setTimeout;
   const cancel = opts.clearTimeout || clearTimeout;
   const startupMs = Number.isFinite(opts.startupMs) ? opts.startupMs : 15000;
+  // A link that flapped for less than this is noise, not an outage worth reopening for.
+  const resumeAfterOnlineMs = 1500;
   const stallMs = Number.isFinite(opts.stallMs) ? opts.stallMs : 15000;
-  // Reconnection waits instead of hammering the moment a stream drops: 1s, 2s,
-  // then 4s between attempts. The default is three retries, matching
-  // `retryDelays`; a caller may override either the count or the schedule.
-  const retryDelays = Array.isArray(opts.retryDelays) && opts.retryDelays.length > 0
-    ? opts.retryDelays.map((n) => (Number.isFinite(n) ? Math.max(0, n) : 0))
-    : [1000, 2000, 4000];
-  const maxRetries = Number.isFinite(opts.maxRetries) ? Math.max(0, opts.maxRetries) : retryDelays.length;
+  // Three attempts total: the initial connection plus retries after 1s and 2s.
+  const retryDelays = [1000, 2000];
+  const maxRetries = retryDelays.length;
+  const online = opts.isOnline || (() => globalThis.navigator?.onLine !== false);
+  const eventTarget = opts.eventTarget || globalThis.window;
+  let retryPending = false;
+  let offlineAt = null;
+  let stableAt = null;
+  let stableMediaTime = 0;
+  let stableReported = false;
+  let lastTime = null;
+  const failedStations = new Set();
 
   function clearTimer() {
     if (timer !== null) cancel(timer);
@@ -86,6 +93,7 @@ export function createPlaybackCore(options) {
 
   /** Let go of a source the attacher owns before the element is reused. */
   function detachStream() {
+    sourceNeedsReload = true;
     const handle = streamHandle;
     streamHandle = null;
     if (handle && typeof handle.detach === 'function') {
@@ -97,10 +105,44 @@ export function createPlaybackCore(options) {
     }
   }
 
-  function fail(reason) {
+  /**
+   * Offline is a failure the user can see, not a pause. It never counts
+   * against the station: the network dropped, the stream did not.
+   */
+  function failOffline() {
     clearTimer();
     generation += 1;
+    retryPending = false;
+    stableAt = null;
     detachStream();
+    status = 'error';
+    error = 'offline';
+    try { if (audio) audio.pause(); } catch { /* detached */ }
+    emit();
+  }
+
+  function fail(reason, exhausted = false) {
+    clearTimer();
+    generation += 1;
+    retryPending = false;
+    stableAt = null;
+    detachStream();
+    if (!online()) return failOffline();
+    if (exhausted) {
+      const id = stationId;
+      const token = generation;
+      failedStations.add(String(id));
+      try { opts.onFailure?.(id); } catch { /* evidence is optional */ }
+      let next = null;
+      if (failedStations.size < 3) {
+        try { next = opts.nextStation?.(new Set(failedStations)); } catch { /* no eligible station */ }
+      }
+      if (token !== generation || disposed) return;
+      if (next && next.id && next.url) return core.play(next.id, next.url, true);
+      // Nothing left to hop to: fall through and keep the failure visible. A
+      // bare pause here looks exactly like the user pressing pause, so the card
+      // would say "paused" for a stream that never played.
+    }
     status = 'error';
     error = reason;
     try { if (audio) audio.pause(); } catch { /* detached */ }
@@ -108,22 +150,23 @@ export function createPlaybackCore(options) {
   }
 
   function recover(reason) {
-    if (disposed || !url || (status !== 'loading' && status !== 'playing')) return;
+    if (disposed || retryPending || !url || (status !== 'loading' && status !== 'playing')) return;
+    if (!online()) return failOffline();
     clearTimer();
-    if (retries >= maxRetries) return fail(reason);
+    if (retries >= maxRetries) return fail(reason, true);
     const delay = retryDelays[Math.min(retries, retryDelays.length - 1)] || 0;
     retries += 1;
-    if (delay <= 0) {
-      startAttempt(true);
-      return;
-    }
-    // Hold the slot while waiting so a stray `stalled` cannot arm a second
-    // retry, and let any user action (a generation bump) cancel the attempt.
-    const token = generation;
+    retryPending = true;
+    stableAt = null;
+    status = 'loading';
+    const token = ++generation;
+    try { audio.pause(); } catch { /* detached */ }
+    detachStream();
     timer = schedule(() => {
       timer = null;
       if (token === generation && !disposed) startAttempt(true);
     }, delay);
+    emit();
   }
 
   function arm(delay, reason) {
@@ -136,50 +179,69 @@ export function createPlaybackCore(options) {
   }
 
   function startAttempt(reload) {
+    if (!online()) return failOffline();
     clearTimer();
     const token = ++generation;
+    retryPending = false;
+    stableAt = null;
+    stableReported = false;
+    lastTime = null;
     status = 'loading';
     error = null;
     startedAt = now();
-    if (reload) {
-      try { audio.pause(); } catch { /* detached */ }
-      detachStream();
-      let attached = null;
-      if (attachStream) {
-        try {
-          attached = attachStream(audio, url, (reason) => {
-            if (disposed || token !== generation) return;
-            if (reason === 'network') recover(reason);
-            else fail(String(reason || 'attach-failed'));
-          });
-        } catch {
-          return fail('bad-url');
-        }
+    const reject = (cause) => {
+      if (disposed || token !== generation) return;
+      const reason = typeof cause === 'string' ? cause : `play-failed:${cause?.name || 'unknown'}`;
+      if (reason === 'blocked-by-browser' || reason === 'play-failed:NotAllowedError') return fail('blocked-by-browser');
+      if (reason === 'load-aborted' || reason === 'play-failed:AbortError') return fail('load-aborted');
+      recover(reason);
+    };
+    const startPlayback = () => {
+      sourceNeedsReload = false;
+      emit();
+      if (token !== generation || disposed) return;
+      arm(startupMs, 'startup-timeout');
+      // Attached sources play from their manifest handler; a resume still
+      // needs an explicit play because that manifest event already happened.
+      if (!streamHandle || !reload) {
+        try { Promise.resolve(audio.play()).catch(reject); } catch (reason) { reject(reason); }
       }
-      streamHandle = attached && typeof attached === 'object' ? attached : null;
-      // A handle means the attacher owns the source now (hls.js feeds the
-      // element through MediaSource and starts it itself). Without one the
-      // element takes the URL directly, exactly as it always did.
+    };
+    if (!reload) { startPlayback(); return; }
+    try { audio.pause(); } catch { /* detached */ }
+    detachStream();
+    let attached = null;
+    try {
+      attached = attachStream?.(audio, url, (reason) => reject(reason || 'attach-failed'));
+    } catch {
+      return fail('bad-url');
+    }
+    if (token !== generation || disposed) {
+      try { attached?.detach?.(); } catch { /* superseded source */ }
+      return;
+    }
+    const finishAttachment = (handle) => {
+      streamHandle = handle && typeof handle === 'object' ? handle : null;
       if (!streamHandle) {
         try { audio.src = url; } catch { return fail('bad-url'); }
       }
-    }
-    emit();
-    arm(startupMs, 'startup-timeout');
-    const reject = (reason) => {
-      if (disposed || token !== generation) return;
-      const name = (reason && reason.name) || 'unknown';
-      if (name === 'NotAllowedError') return fail('blocked-by-browser');
-      if (name === 'AbortError') return fail('load-aborted');
-      if (name === 'NotSupportedError') return fail('play-failed:NotSupportedError');
-      recover(`play-failed:${name}`);
+      startPlayback();
     };
-    // An attached source starts playing from its own manifest handler, so the
-    // element must not be asked a second time. A resume (reload === false)
-    // reuses the attachment as-is and still needs the call.
-    if (!streamHandle || !reload) {
-      try { Promise.resolve(audio.play()).catch(reject); } catch (reason) { reject(reason); }
+    if (attached?.ready) {
+      streamHandle = attached;
+      Promise.resolve(attached.ready).then((handle) => {
+        if (!disposed && token === generation) finishAttachment(handle);
+      }, reject);
+      emit();
+      if (token !== generation || disposed) return;
+      // Loading player code is bounded separately and never penalizes a station.
+      timer = schedule(() => {
+        timer = null;
+        if (token === generation && !disposed) fail('hls-load-timeout');
+      }, startupMs);
+      return;
     }
+    finishAttachment(attached);
   }
   /**
    * 0..1. It lives here, beside the element, because it is a property of the
@@ -252,10 +314,16 @@ export function createPlaybackCore(options) {
     if (!boundHandlers && typeof audio.addEventListener === 'function') {
       boundHandlers = true;
       audio.addEventListener('playing', () => {
-        if (disposed) return;
+        if (disposed || retryPending) return;
         if (status === 'loading' || status === 'playing') {
           clearTimer();
+          if (stableAt === null) {
+            stableAt = now();
+            stableMediaTime = Number(audio.currentTime) || 0;
+          }
+          const token = generation;
           transition('playing', { error: null });
+          if (token === generation && status === 'playing' && !disposed) arm(stallMs, 'stall-timeout');
         } else {
           try { audio.pause(); } catch { /* cancelled playback */ }
         }
@@ -274,19 +342,29 @@ export function createPlaybackCore(options) {
         if (disposed) return;
         if (status !== 'loading' && status !== 'playing') return;
         const reason = describeMediaError(audio);
-        if (reason === 'network' || reason === 'unknown') recover(reason);
-        else fail(reason);
+        if (reason === 'load-aborted') fail(reason);
+        else recover(reason);
       });
       const stalled = () => {
-        if (!disposed && status === 'playing' && timer === null) arm(stallMs, 'stall-timeout');
+        if (!disposed && status === 'playing') {
+          stableAt = null;
+          // Repeated waiting events must not postpone the existing deadline.
+          if (timer === null) arm(stallMs, 'stall-timeout');
+        }
       };
       audio.addEventListener('stalled', stalled);
       audio.addEventListener('waiting', stalled);
-      let lastTime = null;
       audio.addEventListener('timeupdate', () => {
-        if (status === 'playing' && audio.currentTime !== lastTime) {
-          lastTime = audio.currentTime;
-          clearTimer();
+        const time = Number(audio.currentTime);
+        if (disposed || status !== 'playing' || !Number.isFinite(time) || (lastTime !== null && time <= lastTime)) return;
+        lastTime = time;
+        arm(stallMs, 'stall-timeout');
+        if (stableAt === null) { stableAt = now(); stableMediaTime = time; }
+        if (!stableReported && now() - stableAt >= 10000 && time - stableMediaTime >= 10) {
+          stableReported = true;
+          retries = 0;
+          failedStations.clear();
+          try { opts.onStable?.(stationId); } catch { /* evidence is optional */ }
         }
       });
     }
@@ -320,10 +398,11 @@ export function createPlaybackCore(options) {
      * station it belongs to is exactly how the two owners of "what is playing"
      * drift apart.
      */
-    play(nextStationId, nextUrl) {
+    play(nextStationId, nextUrl, automatic = false) {
       if (disposed) return core;
       const id = nextStationId === null || nextStationId === undefined ? '' : String(nextStationId);
       if (!id) return core;
+      if (!automatic) failedStations.clear();
 
       const element = ensureAudio();
       if (!element) {
@@ -360,8 +439,11 @@ export function createPlaybackCore(options) {
       if (disposed || !audio) return core;
       clearTimer();
       generation += 1;
+      retryPending = false;
+      stableAt = null;
       const active = status === 'playing' || status === 'loading';
       if (active) status = 'paused';
+      if (streamHandle?.ready) detachStream();
       try { audio.pause(); } catch { /* already detached */ }
       if (active) emit();
       return core;
@@ -371,7 +453,8 @@ export function createPlaybackCore(options) {
       if (disposed || !audio || !stationId) return core;
       if (!url || status === 'playing' || status === 'loading') return core;
       retries = 0;
-      startAttempt(false);
+      failedStations.clear();
+      startAttempt(sourceNeedsReload);
       return core;
     },
 
@@ -471,6 +554,8 @@ export function createPlaybackCore(options) {
     dispose() {
       if (disposed) return;
       disposed = true;
+      eventTarget?.removeEventListener?.('offline', onOffline);
+      eventTarget?.removeEventListener?.('online', onOnline);
       generation += 1;
       clearTimer();
       detachStream();
@@ -500,5 +585,22 @@ export function createPlaybackCore(options) {
     },
   };
 
+  const onOffline = () => {
+    if (disposed || !stationId) return;
+    offlineAt = now();
+    if (status === 'playing' || status === 'loading') failOffline();
+  };
+  // The user asked for that station; when the link returns, keep the promise.
+  // Debounced so a flapping link settles before the stream is reopened.
+  const onOnline = () => {
+    const since = offlineAt;
+    offlineAt = null;
+    if (disposed || status !== 'error' || error !== 'offline' || !stationId || !url) return;
+    // A brief flap is noise: leave it failed and let the user decide.
+    if (since !== null && now() - since < resumeAfterOnlineMs) return;
+    if (online()) core.resume();
+  };
+  eventTarget?.addEventListener?.('offline', onOffline);
+  eventTarget?.addEventListener?.('online', onOnline);
   return core;
 }

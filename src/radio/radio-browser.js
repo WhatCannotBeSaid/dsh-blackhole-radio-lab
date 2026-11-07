@@ -332,5 +332,3 @@ export const MAPPING = Object.freeze({
   buckets: Array.from(VALID_IDS),
   rules: RULES.map((rule) => ({ id: rule.id, tags: rule.tags.length, names: rule.names.length })),
 });
-
-export { RULES_BY_ID as CATEGORY_RULES };

@@ -22,9 +22,10 @@
  */
 
 import { GENRE_IDS } from '../radio/genres.js';
+import { clamp01 } from '../util/num.js';
 
 /** Fixed genre -> form table. Unknown ids fall back to the irregular galaxy. */
-export const GENRE_FORMS = Object.freeze({
+const GENRE_FORMS = Object.freeze({
   jazz: 'barred-spiral',
   rock: 'supernova-remnant',
   pop: 'spiral',
@@ -41,7 +42,7 @@ export const GENRE_FORMS = Object.freeze({
 });
 
 /** Fixed genre -> main colour table (phase 6, agreed and written down). */
-export const GENRE_COLORS = Object.freeze({
+const GENRE_COLORS = Object.freeze({
   rock: 0xff6a45,
   'hip-hop': 0xffa03d,
   classical: 0xf5d75a,
@@ -55,23 +56,6 @@ export const GENRE_COLORS = Object.freeze({
   talk: 0xd47aff,
   ambient: 0xff7ad9,
   pop: 0xff6fa8,
-});
-
-/** Human-readable form names, for the labels and the offline report. */
-export const FORM_LABELS = Object.freeze({
-  'barred-spiral': 'Barred spiral',
-  'supernova-remnant': 'Supernova remnant',
-  spiral: 'Spiral galaxy',
-  elliptical: 'Elliptical galaxy',
-  planetary: 'Planetary nebula',
-  globular: 'Globular cluster',
-  emission: 'Emission nebula',
-  'open-cluster': 'Open cluster',
-  reflection: 'Reflection nebula',
-  'galaxy-cluster': 'Galaxy cluster',
-  'bipolar-jet': 'Bipolar jet',
-  'edge-on': 'Edge-on spiral',
-  irregular: 'Irregular galaxy',
 });
 
 const TAU = Math.PI * 2;
@@ -97,13 +81,10 @@ export function formOf(genreId) {
   return GENRE_FORMS[String(genreId)] || GENRE_FORMS.other;
 }
 
-export function colorOf(genreId) {
+function colorOf(genreId) {
   const hex = GENRE_COLORS[String(genreId)];
   return hex === undefined ? GENRE_COLORS.other : hex;
 }
-
-/** Genre ids in the fixed ring order (the colour table's own order). */
-export const FORM_GENRE_ORDER = Object.freeze(GENRE_IDS.slice());
 
 /**
  * One point of one form, inside the unit ball.
@@ -334,11 +315,6 @@ export function colorRgbOf(genreId) {
   return [((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255];
 }
 
-/** CSS colour for a genre's main colour. */
-export function colorCssOf(genreId) {
-  return `#${colorOf(genreId).toString(16).padStart(6, '0')}`;
-}
-
 /**
  * Country and language modulate a genre tint without moving its hue.
  *
@@ -364,31 +340,4 @@ export function modulateTint(rgb, country, language) {
     clamp01(rgb[1] * brightness * wg),
     clamp01(rgb[2] * brightness * wb),
   ];
-}
-
-/**
- * Tag tint: a small hue rotation around the genre's own colour.
- *
- * The agreed layer is +-25 degrees, which keeps nine tag groups inside one
- * genre's colour family: they separate from each other, and none of them drifts
- * into a neighbouring genre's hue.
- */
-export function tagTintRgb(rgb, amount) {
-  const a = Math.max(-1, Math.min(1, Number(amount) || 0));
-  const angle = (a * 25 * Math.PI) / 180;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  // Rotate around the grey axis (the luminance-preserving hue rotation).
-  const r = rgb[0];
-  const g = rgb[1];
-  const b = rgb[2];
-  return [
-    clamp01(r * (0.213 + 0.787 * cos - 0.213 * sin) + g * (0.715 - 0.715 * cos - 0.715 * sin) + b * (0.072 - 0.072 * cos + 0.928 * sin)),
-    clamp01(r * (0.213 - 0.213 * cos + 0.143 * sin) + g * (0.715 + 0.285 * cos + 0.140 * sin) + b * (0.072 - 0.072 * cos - 0.283 * sin)),
-    clamp01(r * (0.213 - 0.213 * cos - 0.787 * sin) + g * (0.715 - 0.715 * cos + 0.715 * sin) + b * (0.072 + 0.928 * cos + 0.072 * sin)),
-  ];
-}
-
-function clamp01(value) {
-  return Math.min(1, Math.max(0, Number(value) || 0));
 }

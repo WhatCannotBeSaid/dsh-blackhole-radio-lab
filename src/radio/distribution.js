@@ -26,6 +26,7 @@
 import { DISK_INNER, DISK_OUTER } from '../scene/dimensions.js';
 import { centered, hash32, streamFor } from './random.js';
 import { CATEGORIES } from './taxonomy.js';
+import { clamp } from '../util/num.js';
 
 export const REGION = Object.freeze({ DISK: 'disk', FEATURED: 'featured' });
 
@@ -318,8 +319,4 @@ export function buildAnchors(seed) {
       position: { x: Math.cos(angle) * radius, y: 0, z: Math.sin(angle) * radius },
     };
   });
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
 }

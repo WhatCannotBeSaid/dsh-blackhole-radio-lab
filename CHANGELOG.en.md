@@ -2,6 +2,36 @@
 
 Versions follow [Semantic Versioning](https://semver.org/). The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [1.2.6] - 2026-11-07
+
+### Size and code hygiene (audit)
+
+- Removed the raw `data/catalog.v1.json` from the `package.json` `files` allowlist, keeping only `data/catalog.v1.json.gz`: the npm package drops from ~27.9 MB to 9.8 MB. When the raw JSON is missing, `readSnapshotPair` in `index.js` rebuilds it from the gz in memory, so behaviour is unchanged; the raw JSON stays in the repo for dev/CI.
+- Removed dead exports with no external references (12 declarations + 16 redundant `export`s); `src/` exports drop from 238 to 211.
+- Extracted duplicated helpers into `src/util/num.js` (`clamp`, `clamp01`, `smoothstep01`), collapsing 8 duplicates.
+- Deleted the unused `maxOrbitRadiusForShadow` (and the now-unreferenced `shadowScreenFraction`).
+
+## [1.2.5] - 2026-11-05
+
+- No effective code change: this version number exists only on npm (published by mistake from an old commit); skipped locally, with the real changes folded into 1.2.6.
+
+## [1.2.4] - 2026-11-07
+
+### Radio playback resilience
+
+- Reconnect with backoff after a stream drops, skipping repeatedly failing stations; a failed station cools down for 10 minutes within the session.
+- Fixed stale state when stopping fails: drop the failed entry and restore the original `gotanno` station.
+
+## [1.2.3] - 2026-11-05
+
+- Version release, no functional change (maintenance release).
+
+## [1.2.2] - 2026-11-05
+
+### Compatibility
+
+- Added the `0.2.2-rc.1` compatibility entry to `dshReleases`.
+
 ## [1.2.1] - 2026-11-04
 
 ### Security: a track probe can no longer reach the local network

@@ -14,11 +14,6 @@
 
 import Hls from 'hls.js';
 
-/** True for a URL whose payload is an HLS playlist. */
-export function isHlsUrl(url) {
-  return typeof url === 'string' && /\.m3u8(\?|#|$)/i.test(url);
-}
-
 /**
  * Attach `url` to an audio element through MediaSource.
  *

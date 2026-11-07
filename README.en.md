@@ -6,7 +6,7 @@
 
 A 3-D black-hole stage for internet radio: over twenty thousand real stations orbit a hole you can orbit, zoom into and play.
 
-[中文](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Changelog](CHANGELOG.en.md) · v1.2.1
+[中文](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Changelog](CHANGELOG.en.md) · v1.2.6
 
 </div>
 
@@ -47,7 +47,7 @@ There is no permanent search bar, category sidebar or readout panel. Search and 
 
 ## Install
 
-Requirements: Node.js ≥ 20, DSH (verified on 0.2.1-rc.2).
+Requirements: Node.js ≥ 20, DSH (verified on 0.2.1-rc.2 / 0.2.2-rc.1).
 
 ```bash
 # from npm (published release)
@@ -101,8 +101,8 @@ Mount `config` on the `cordis.patch.yml` entry:
         featuredCount: 18
         catalogAutoRefresh: true
         catalogRefreshDays: 7
-        catalogTarget: 30000
-        catalogFetch: 50000
+        catalogTarget: 65000
+        catalogFetch: 65000
         catalogConcurrency: 48
         catalogTimeoutMs: 2800
 ```
@@ -119,8 +119,8 @@ Mount `config` on the `cordis.patch.yml` entry:
 | `featuredCount` | `18` | 4–40 | Featured stations on the inner rim |
 | `catalogAutoRefresh` | `true` | boolean | Rebuild the catalogue in the background every week |
 | `catalogRefreshDays` | `7` | 1–90 | Age at which the cache counts as stale |
-| `catalogTarget` | `30000` | 1000–60000 | Stations kept in the user-side snapshot |
-| `catalogFetch` | `50000` | 1000–60000 | Candidates fetched before probing; must be ≥ `catalogTarget` |
+| `catalogTarget` | `65000` | 1000–65000 | Stations kept in the user-side snapshot |
+| `catalogFetch` | `65000` | 1000–65000 | Candidates fetched before probing; must be ≥ `catalogTarget` |
 | `catalogConcurrency` | `48` | 1–64 | Probe concurrency |
 | `catalogTimeoutMs` | `2800` | 500–15000 | Per-stream probe timeout |
 
@@ -133,11 +133,11 @@ Anything omitted falls back to `DEFAULTS` in `index.js`. For debugging you can a
 - Playback connects the browser straight to the station's stream, and the track title comes from that stream's ICY block (the host reads exactly one block and disconnects). Those connections expose your IP to the station; the author's server is not involved and sees nothing.
 - The host's track probe only leaves for public hosts: loopback, private and link-local addresses are refused in every spelling (including IPv4-mapped forms such as `::ffff:127.0.0.1`), and so is any name whose lookup answers with one of them. Redirects are checked hop by hop, at most five deep, and a probe started by another site is answered with 403. Library writes likewise require a same-origin request with a JSON body.
 - Favourites, liked songs, volume and the last successful station are written only to `$DSH_HOME/blackhole-radio-lab/library.json`; failed-stream records live in this browser's IndexedDB. Nothing is uploaded.
-- No remote scripts, no CDN: Three.js is the plugin's own private dependency.
+- No remote scripts, no CDN: Three.js and hls.js are the plugin's own private dependencies.
 
 ## Architecture
 
-The plugin has two halves: a dependency-free Host half (`index.js` + `src/host/`) that serves config, a static route, the catalogue refresh and track probing, and a browser half shipped as two on-demand chunks.
+The plugin has two halves: a dependency-free Host half (`index.js` + `src/host/`) that serves config, a static route, the catalogue refresh and track probing, and a browser half shipped as three on-demand chunks (`client.stage.js` / `client.radio.js` / `client.hls.js`, the HLS player loaded on demand).
 
 | Path | Role |
 | --- | --- |
@@ -152,9 +152,10 @@ The plugin has two halves: a dependency-free Host half (`index.js` + `src/host/`
 | `src/nodes/` | Station micro-structure layer, cluster layer, 2-D canvas labels |
 | `src/cluster/` | Cluster layout and offline projection measurements |
 | `client.stage.js` / `client.radio.js` | **Build artifacts** — never hand-edited |
+| `client.hls.js` | **Build artifact** (hls.js inlined, loaded only for HLS stations) — never hand-edited |
 | `cordis.patch.yml` | Bundle patch layer, one loader entry |
 
-Both chunks are downloaded only when needed:
+All three chunks are downloaded only when needed:
 
 ```js
 window.__ModuleLoader__.load({
@@ -170,11 +171,11 @@ A chunk's URL derives from the **entry bundle's** revision, so the build bumps `
 
 ```bash
 npm install      # three + esbuild
-npm run build    # rebuild client.stage.js and client.radio.js
+npm run build    # rebuild client.stage.js, client.radio.js and client.hls.js
 npm test         # contract tests: transitions, player, track probe, artifacts
 ```
 
-- **Edit `src/` only, then `npm run build`.** The two `client.*.js` files are artifacts.
+- **Edit `src/` only, then `npm run build`.** The three `client.*.js` files are artifacts.
 - Never `import 'three'` in `client.js`: the browser side has no base module for it and resolution fails outright.
 - `client.js` is hand-written, not generated — but after editing it you must evaluate the real module-loading path (`npm test` does: it stubs `window.__ModuleLoader__.load` in a vm and asserts `factory` returns `apply` / `inject`).
 - Rebuilding the catalogue snapshot: `npm run build:catalog` (`CATALOG_TARGET`, `CATALOG_FETCH`, `CATALOG_CHECK_CONCURRENCY` … override the defaults). Probing twenty thousand third-party streams takes minutes to tens of minutes, which is why it is not part of `npm run build`.
@@ -188,7 +189,7 @@ It does **not** cover the GPU or the browser: shader compilation, real frame rat
 ## Known limitations
 
 - No accounts, no cloud sync, no playlists: favourites and likes stay on the machine.
-- Some stations 404, drop the stream, or are region-locked. A station that fails on format or decoding is quarantined for six hours and offered again on the next catalogue load; legacy blacklist entries without a timestamp are released. The catalogue is not rebuilt mid-session.
+- Some stations 404, drop the stream, or are region-locked. A playback failure never removes a station from the catalogue or blacklists it: a station is retried up to 3 times per session (1 s, 2 s delays) and then skipped; repeated failures only lengthen the cooldown used for automatic hopping (graded 10 min / 1 h / 6 h / 24 h, evidence expires after 7 days), and manual play always works. The catalogue is not rebuilt mid-session.
 - Closing the window silences playback on `pagehide`. While the window stays hidden and audible, the page probes the local host every three seconds and stops after two unanswered probes; a probe that times out at two and a half seconds counts as unanswered.
 - System media controls step aside for another player by metadata identity; an external takeover that only replaces handlers and leaves the metadata alone cannot be detected.
 - The live-fetch path takes at most 5,000 stations per run (paging plus a time budget); the bundled snapshot is far larger. A snapshot older than 30 days, or one that suddenly shrinks, falls back to live fetching.

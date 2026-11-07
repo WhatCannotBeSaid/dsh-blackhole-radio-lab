@@ -78,6 +78,7 @@ import {
 } from './scene/radio-fixtures.js';
 import { buildClusterLayout, projectedDiameter, scatterStations } from './cluster/layout.js';
 import { GENRE_IDS } from './radio/genres.js';
+import { clamp01, smoothstep01 } from './util/num.js';
 
 /** Surface this module's phase honestly, in one place. */
 export const STAGE_PHASE = 'phase-5';
@@ -3906,15 +3907,6 @@ function summarizeStations(stations) {
 function clampRatio(value) {
   const n = typeof value === 'number' && Number.isFinite(value) ? value : 2;
   return Math.min(4, Math.max(1, n));
-}
-
-function clamp01(value) {
-  return Math.min(1, Math.max(0, value));
-}
-
-function smoothstep01(value) {
-  const t = clamp01(value);
-  return t * t * (3 - 2 * t);
 }
 
 /**

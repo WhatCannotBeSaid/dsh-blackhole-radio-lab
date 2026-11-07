@@ -380,7 +380,7 @@ check('requests are GET', init && init.method === 'GET');
 const api = probe.calls[0] ? probe.calls[0].url : '';
 check('requests use https', api.startsWith('https://'));
 check('requests ask for json', /\/json\/stations\/search\?/.test(api), api);
-check('requests keep broken stations (hidebroken=false)', /hidebroken=false/.test(api));
+check('requests ask only for working stations (hidebroken=true)', /hidebroken=true/.test(api));
 check('requests send no credentials', init && init.credentials === 'omit');
 
 // j. host list sanity: official mirrors only.

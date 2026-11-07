@@ -23,6 +23,7 @@
 
 import { createNowPlayingResolver, parseStreamUrl } from './src/host/now-playing.js';
 import { CACHE_GZ, scheduleCatalogRefresh } from './src/host/catalog-refresh.js';
+import { MAX_CATALOG } from './src/host/catalog-builder.js';
 import { LIBRARY_MAX_BYTES, libraryFilePath, readLibrary, writeLibrary } from './src/host/library.js';
 import { readFileSync, statSync } from 'node:fs';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -170,8 +171,8 @@ const DEFAULTS = Object.freeze({
   // catalogue than the one they already have.
   catalogAutoRefresh: true,
   catalogRefreshDays: 7,
-  catalogTarget: 30000,
-  catalogFetch: 50000,
+  catalogTarget: MAX_CATALOG,
+  catalogFetch: MAX_CATALOG,
   catalogConcurrency: 48,
   catalogTimeoutMs: 2800,
 });
@@ -232,8 +233,8 @@ export const Config = {
       integer('seed', 0, 4294967295);
       integer('featuredCount', 4, 40);
       integer('catalogRefreshDays', 1, 90);
-      integer('catalogTarget', 1000, 60000);
-      integer('catalogFetch', 1000, 60000);
+      integer('catalogTarget', 1000, MAX_CATALOG);
+      integer('catalogFetch', 1000, MAX_CATALOG);
       integer('catalogConcurrency', 1, 64);
       integer('catalogTimeoutMs', 500, 15000);
 

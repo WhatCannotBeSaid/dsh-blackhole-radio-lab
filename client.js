@@ -142,36 +142,38 @@ window.__ModuleLoader__.load({
     /**
      * Build the stream attacher the playback core asks before every attempt.
      *
-     * m3u8 goes through hls.js, lazily: the chunk is fetched the first time a
-     * station needs one and kept on `shared` afterwards. Until it has arrived
-     * the URL is left to the element itself, which plays simple HLS on Chromium
-     * and fails safely elsewhere — the behaviour that existed before this
-     * change, so a slow chunk can never make playback worse.
+     * m3u8 goes through hls.js, lazily. A cancellable pending handle lets the
+     * first attempt wait for the shared chunk instead of failing natively first.
      */
     function makeAttachStream(shared, requireAsync) {
       const load = () => {
-        if (shared.hlsChunk || shared.hlsLoading || typeof requireAsync !== 'function') return;
-        shared.hlsLoading = true;
-        Promise.resolve()
-          .then(() => requireAsync(HLS_CHUNK))
-          .then((chunk) => {
-            if (chunk && typeof chunk.attachHls === 'function') shared.hlsChunk = chunk;
-          })
-          .catch(() => {
-            /* the native element stays the fallback */
-          })
-          .then(() => {
-            shared.hlsLoading = false;
-          });
+        if (!shared.hlsLoading) {
+          shared.hlsLoading = Promise.resolve()
+            .then(() => requireAsync(HLS_CHUNK))
+            .then((chunk) => {
+              if (chunk && typeof chunk.attachHls === 'function') shared.hlsChunk = chunk;
+              return shared.hlsChunk;
+            })
+            .catch(() => null)
+            .finally(() => { shared.hlsLoading = null; });
+        }
+        return shared.hlsLoading;
       };
       return (audio, url, onError) => {
         if (typeof url !== 'string' || !HLS_URL.test(url)) return null;
-        const chunk = shared.hlsChunk;
-        if (!chunk) {
-          load();
-          return null;
-        }
-        return chunk.attachHls(audio, url, onError);
+        if (shared.hlsChunk) return shared.hlsChunk.attachHls(audio, url, onError);
+        if (typeof requireAsync !== 'function') return null;
+        let disposed = false;
+        let handle = null;
+        return {
+          ready: load().then((chunk) => {
+            if (disposed) return null;
+            handle = chunk ? chunk.attachHls(audio, url, onError) : null;
+            if (disposed) { handle?.detach?.(); return null; }
+            return handle;
+          }),
+          detach() { disposed = true; handle?.detach?.(); },
+        };
       };
     }
 
@@ -484,6 +486,13 @@ window.__ModuleLoader__.load({
         playback: null,
         /** The IndexedDB handle, or null when this browser has no cache. */
         cache: null,
+        health: null,
+        autoCandidates: null,
+        persistHealth() {
+          if (shared.cache && shared.health && typeof shared.cache.writeHealth === 'function') {
+            shared.cache.writeHealth(shared.health.save()).catch(() => { /* local evidence is optional */ });
+          }
+        },
         /** The radio chunk, once loaded: it owns the host-liveness logic. */
         radioChunk: null,
         /** "Is the host still there?" watch, or null until the chunk arrives. */
@@ -531,16 +540,13 @@ window.__ModuleLoader__.load({
               const cache = typeof radio.openRadioCache === 'function' ? await radio.openRadioCache() : null;
               if (token !== shared.lifecycle) return null;
               shared.cache = cache;
-              // Purge the legacy on-disk blacklist once, so stations wrongly
-              // quarantined by the old rule can come back. Nothing is written
-              // to it afterwards: failures never exclude stations.
-              if (cache && typeof cache.clearBlacklistAll === 'function') {
+              shared.bindEnv(radio);
+              if (cache && shared.health && typeof cache.readHealth === 'function') {
                 try {
-                  await cache.clearBlacklistAll();
-                } catch {
-                  /* a failed purge must not block the catalogue */
-                }
-                if (token !== shared.lifecycle) return null;
+                  const evidence = await cache.readHealth();
+                  if (token !== shared.lifecycle) return null;
+                  shared.health.load(evidence);
+                } catch { /* unreadable evidence is unverified, never a missing station */ }
               }
               const repoOptions = {
                 count: conf.stationCount,
@@ -784,10 +790,24 @@ window.__ModuleLoader__.load({
         },
         ensurePlayback(createPlayback, options) {
           if (!shared.playback && typeof createPlayback === 'function') {
-            shared.playback = options ? createPlayback(options) : createPlayback();
+            shared.playback = createPlayback(Object.assign({}, options, {
+              onStable(id) {
+                if (shared.health) { shared.health.success(id); shared.persistHealth(); }
+              },
+              onFailure(id) {
+                if (shared.health) { shared.health.failure(id); shared.persistHealth(); }
+              },
+              nextStation(excluded) {
+                if (!shared.health) return null;
+                const pool = shared.autoCandidates ? shared.autoCandidates() : playablePool(shared.radio);
+                const next = shared.health.pick(pool, excluded);
+                if (!next) return null;
+                if (shared.radio) shared.radio.select(next);
+                return { id: next.id, url: streamOf(next) };
+              },
+            }));
             if (shared.radio && shared.libraryHydrated) shared.playback.setVolume(shared.radio.playbackMemory().volume);
-            // Failures stay on the selected station as errors. Never blacklist
-            // or switch stations automatically; a manual retry remains available.
+            // Listening evidence never changes the index, favourites or manual access.
             if (shared.playback && typeof shared.playback.subscribe === 'function') {
               shared.playback.subscribe((state) => {
                 if (!state) return;
@@ -806,8 +826,8 @@ window.__ModuleLoader__.load({
         },
         /** The hls.js chunk, once fetched. Null while no station needs it. */
         hlsChunk: null,
-        /** True while that fetch is in flight, so one failure does not stack loads. */
-        hlsLoading: false,
+        /** Shared in-flight chunk promise, so concurrent requests load it once. */
+        hlsLoading: null,
         /**
          * The small amount of the data chunk the panel itself needs: genre
          * labels and colours for list headers, and the station-key function so
@@ -817,6 +837,7 @@ window.__ModuleLoader__.load({
         env: null,
         bindEnv(chunk) {
           if (shared.env || !chunk) return shared.env;
+          if (!shared.health && typeof chunk.createStationHealth === 'function') shared.health = chunk.createStationHealth();
           // The chunk owns the host-liveness logic; the shared state owns the
           // page and the audio. Hand it over as soon as it exists.
           shared.armHostWatch(chunk);
@@ -951,8 +972,10 @@ window.__ModuleLoader__.load({
           shared.radio = null;
           shared.data = null;
           shared.env = null;
-          // The cache handle belongs to this session's data path.
+          // The cache handle and listening scope belong to this lifetime.
           shared.cache = null;
+          shared.health = null;
+          shared.autoCandidates = null;
         },
       };
 
@@ -3049,6 +3072,28 @@ window.__ModuleLoader__.load({
           return [];
         }
       }, [searchText, repository]);
+
+      // Automatic recovery stays in the currently visible library/category/query.
+      // This is not a catalogue filter: searches and manual plays still see every station.
+      useEffect(() => {
+        if (!shared) return;
+        const candidates = () => {
+          let pool = playablePool(store);
+          const searchLimit = pool.length;
+          if (favMenu && store) pool = pool.filter((station) => store.isFavorite(station));
+          const category = modeState.categoryId;
+          if (category) pool = pool.filter((station) => station.genre === category || (station.categories || []).includes(category));
+          const query = searchOpen ? searchText.trim() : '';
+          if (query) {
+            if (!repository || typeof repository.search !== 'function') return [];
+            const ids = new Set(repository.search(query, searchLimit).map((station) => String(station.id)));
+            pool = pool.filter((station) => ids.has(String(station.id)));
+          }
+          return pool;
+        };
+        shared.autoCandidates = candidates;
+        return () => { if (shared.autoCandidates === candidates) shared.autoCandidates = null; };
+      }, [shared, store, repository, favMenu, modeState.categoryId, searchOpen, searchText]);
 
       /** The one-line place a result belongs to, in the current language. */
       const stationPlace = useCallback(

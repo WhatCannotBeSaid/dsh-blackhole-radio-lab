@@ -28,10 +28,10 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 /** Give up on a stream that has not produced a metadata block by then. */
-export const NOW_PLAYING_TIMEOUT_MS = 6000;
+const NOW_PLAYING_TIMEOUT_MS = 6000;
 
 /** One URL is not re-read more often than this, however many cards ask. */
-export const NOW_PLAYING_TTL_MS = 15000;
+const NOW_PLAYING_TTL_MS = 15000;
 
 /** Hard cap on a single read: the audio before one metadata block is bounded. */
 const MAX_READ_BYTES = 96 * 1024;
@@ -268,7 +268,7 @@ function decodeMetadata(bytes) {
  * Pull `StreamTitle='…'` out of a metadata block.
  * @returns the title, or `''` when the block carries none.
  */
-export function extractStreamTitle(bytes) {
+function extractStreamTitle(bytes) {
   const text = decodeMetadata(bytes);
   const match = /StreamTitle\s*=\s*'([^']*)'/.exec(text);
   return match ? match[1].trim() : '';

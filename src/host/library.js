@@ -63,7 +63,7 @@ export function libraryFilePath(env) {
  *
  * @returns a clean record, or `null` when the input is not a record at all.
  */
-export function sanitizeLibrary(input) {
+function sanitizeLibrary(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const slice = (value, limit) => (typeof value === 'string' ? value.slice(0, limit) : '');
   // A key is matched against the catalogue, never shown, so an over-long one is

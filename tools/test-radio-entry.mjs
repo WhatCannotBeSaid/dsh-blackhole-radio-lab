@@ -13,7 +13,18 @@ assert.deepEqual(Object.keys(plugin).sort(), ['apply', 'inject']);
 let chunk;
 vm.runInNewContext(readFileSync(new URL('../client.radio.js', import.meta.url), 'utf8'), { window: { __ModuleLoader__: { load(value) { chunk = value; } } }, console, setTimeout, clearTimeout, AbortController });
 const exports = chunk.factory(requireStub);
-for (const name of ['createPlaybackCore', 'createRadioStore', 'bindMediaSession', 'pollMetadata', 'createHostWatch']) assert.equal(typeof exports[name], 'function', name);
+for (const name of ['createPlaybackCore', 'createRadioStore', 'bindMediaSession', 'pollMetadata', 'createHostWatch', 'createStationHealth']) assert.equal(typeof exports[name], 'function', name);
+const jobs = new Map(); let sequence = 0; let attempts = 0;
+const core = exports.createPlaybackCore({
+  createAudio: () => ({ play() { attempts++; return Promise.resolve(); }, pause() {}, addEventListener() {} }),
+  setTimeout(fn) { jobs.set(++sequence, fn); return sequence; }, clearTimeout(id) { jobs.delete(id); },
+});
+core.play('built-check', 'https://example.test/stream');
+for (let n = 0; jobs.size && n < 20; n++) { const [id, fn] = jobs.entries().next().value; jobs.delete(id); fn(); }
+assert.equal(attempts, 3);
+assert.equal(core.getState().status, 'error');
+assert.equal(core.getState().error, 'startup-timeout');
+core.dispose();
 const failedRow = { stationuuid: 'failed-check', name: 'Failed check FM', url_resolved: 'https://example.test/stream', lastcheckok: 0 };
 const repository = exports.createRepositoryFromRows([failedRow]);
 assert.equal(repository.search('Failed check FM')[0]?.id, failedRow.stationuuid);
