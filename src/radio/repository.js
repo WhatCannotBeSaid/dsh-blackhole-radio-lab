@@ -420,7 +420,10 @@ function buildRepository({ stations, catalog, layout, extra }) {
     const text = String(query || '').trim().toLowerCase();
     if (text.length === 0) return [];
     const tokens = text.split(/\s+/).filter(Boolean).slice(0, 6);
-    const max = Math.max(1, Math.min(60, limit));
+    // No upper ceiling: the panel pages the list and only mounts a screenful at
+    // a time, so a broad query may return every match (the whole catalogue for a
+    // one-letter query) without rendering them all at once.
+    const max = Math.max(1, limit);
     const hits = [];
 
     for (let index = 0; index < stations.length; index += 1) {

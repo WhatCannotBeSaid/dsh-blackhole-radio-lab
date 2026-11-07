@@ -188,6 +188,8 @@ window.__ModuleLoader__.load({
         searchLabel: '搜索',
         searchPlaceholder: '搜索电台、国家、语言或分类',
         searchHint: '回车定位 · Esc 关闭',
+        searchMore: '向下滚动加载更多',
+        searchTooMany: '结果过多，仅显示前 2000 条，请输入更精确的关键词',
         noResults: '这里还没有电台',
         categories: '分类',
         clusterStations: '个电台',
@@ -279,6 +281,8 @@ window.__ModuleLoader__.load({
         searchLabel: 'Search',
         searchPlaceholder: 'Search stations, countries, languages or categories',
         searchHint: 'Enter to locate · Esc to close',
+        searchMore: 'Scroll for more',
+        searchTooMany: 'Too many results — showing the first 2000. Refine your search.',
         noResults: 'No stations here yet',
         categories: 'Categories',
         clusterStations: 'stations',
@@ -3059,19 +3063,36 @@ window.__ModuleLoader__.load({
        * The search box's own results.
        *
        * The repository already ranks by name and features, so the panel only
-       * asks and draws. Eight rows is a glance, not a list: a search that
-       * returns more is a query that wants another word.
+       * asks and draws. The ranked list is now rendered lazily — one page at a
+       * time, appended as the list scrolls to the bottom — so a country or
+       * language query (hundreds of stations) is browsable instead of capped
+       * at eight rows.
        */
+      const SEARCH_PAGE = 12;
+      const SEARCH_MAX = Number.POSITIVE_INFINITY;
       const searchResults = useMemo(() => {
         const query = searchText.trim();
         if (!query || !repository || typeof repository.search !== 'function') return [];
         try {
-          const list = repository.search(query, 8);
+          const list = repository.search(query, SEARCH_MAX);
           return Array.isArray(list) ? list : [];
         } catch {
           return [];
         }
       }, [searchText, repository]);
+      // How many of `searchResults` are currently mounted. Reset on a new query
+      // so a fresh search always starts at one page.
+      const [searchShown, setSearchShown] = useState(SEARCH_PAGE);
+      useEffect(() => {
+        setSearchShown(SEARCH_PAGE);
+      }, [searchText]);
+      const searchVisible = searchResults.slice(0, searchShown);
+      const onSearchScroll = (event) => {
+        const el = event.currentTarget;
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) {
+          setSearchShown((n) => Math.min(searchResults.length, n + SEARCH_PAGE));
+        }
+      };
 
       // Automatic recovery stays in the currently visible library/category/query.
       // This is not a catalogue filter: searches and manual plays still see every station.
@@ -3086,7 +3107,10 @@ window.__ModuleLoader__.load({
           const query = searchOpen ? searchText.trim() : '';
           if (query) {
             if (!repository || typeof repository.search !== 'function') return [];
-            const ids = new Set(repository.search(query, searchLimit).map((station) => String(station.id)));
+            // Recovery is best-effort: cap the id set so a one-letter query does
+            // not build a ~60k-entry Set on every keystroke. The visible search
+            // list is paged separately and is unaffected.
+            const ids = new Set(repository.search(query, Math.min(searchLimit, 5000)).map((station) => String(station.id)));
             pool = pool.filter((station) => ids.has(String(station.id)));
           }
           return pool;
@@ -3497,8 +3521,8 @@ window.__ModuleLoader__.load({
                 searchResults.length
                   ? h(
                       'ul',
-                      { className: 'bhrl-search__list' },
-                      searchResults.map((station) =>
+                      { className: 'bhrl-search__list', onScroll: onSearchScroll },
+                      searchVisible.map((station) =>
                         h(
                           'li',
                           { key: String(station.id), className: 'bhrl-search__row' },
@@ -3522,6 +3546,9 @@ window.__ModuleLoader__.load({
                           ),
                         ),
                       ),
+                      searchShown < searchResults.length
+                        ? h('li', { className: 'bhrl-search__more', 'aria-hidden': 'true' }, t('searchMore'))
+                        : null,
                     )
                   : searchText.trim()
                     ? h('p', { className: 'bhrl-search__empty' }, t('searchHint'))
@@ -3665,7 +3692,8 @@ window.__ModuleLoader__.load({
   border-radius: 13px; border: 1px solid rgba(255, 168, 110, 0.16);
   background: rgba(8, 7, 9, 0.90); backdrop-filter: blur(10px) saturate(120%);
   box-shadow: 0 22px 48px -20px rgba(0, 0, 0, 0.86);
-  max-height: min(300px, 46vh); overflow-y: auto;
+  max-height: min(340px, 52vh); overflow-y: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
 }
 .bhrl-search__hit {
   width: 100%; padding: 7px 9px;
@@ -3689,6 +3717,10 @@ window.__ModuleLoader__.load({
   border-radius: 11px; border: 1px solid rgba(255, 168, 110, 0.14);
   background: rgba(8, 7, 9, 0.86);
   font-size: 11px; color: var(--bhrl-ink-faint);
+}
+.bhrl-search__more {
+  padding: 8px 9px 3px; text-align: center;
+  font-size: 10px; color: var(--bhrl-ink-faint);
 }
 
 /* The disk hover card: a floating label, not a panel. It sits above the canvas
