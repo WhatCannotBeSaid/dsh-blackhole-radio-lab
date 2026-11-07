@@ -406,15 +406,17 @@ function createInstrumentedPlayback(clock) {
     eq(core.getState().status, 'playing', 'resume is reflected');
   });
 
-  check('an element error is reported with the station still named', () => {
+  check('a transient element error schedules a retry with the station still named', () => {
     const { core, created } = createInstrumentedPlayback();
     core.play('station-7', 'https://example.test/broken.mp3');
     created[0].error = { code: 4 };
     created[0].emit('error');
     const state = core.getState();
-    eq(state.status, 'error', 'error status');
+    // A single element error is recoverable: the core retries (status back to
+    // loading) instead of failing outright. Terminal failure once the retry
+    // budget is exhausted is covered by test-radio-resilience.
+    eq(state.status, 'loading', 'the retry keeps it loading');
     eq(state.stationId, 'station-7', 'the station is still identified');
-    eq(state.error, 'unsupported-or-unreachable', 'the failure is described');
   });
 
   check('play without a station id is refused', () => {
@@ -514,12 +516,15 @@ function createInstrumentedPlayback(clock) {
     eq(fresh.isSongLiked('Track One'), true, 'song restored');
     eq(fresh.keyOf(fresh.getSelected()), store.keyOf(list[4]), 'selection restored');
 
-    // A record naming stations this build has never seen is ignored, not trusted.
+    // A record naming stations this build has never seen keeps its marks: the
+    // catalogue is fetched and refreshed, so a missing station may simply not be
+    // back yet. The unresolvable selection still yields no station object.
     const stranger = createRadioStore();
     stranger.index(list);
     stranger.load({ version: 2, favorite: ['rb:does-not-exist'], songs: [], selectedKey: 'rb:nope' });
-    eq(stranger.favoriteKeys().length, 0, 'unknown favourites are dropped');
-    eq(stranger.getSelected(), null, 'an unknown selection is dropped');
+    eq(stranger.favoriteKeys().length, 1, 'an unknown favourite key is kept for the next catalogue');
+    eq(stranger.favoriteKeys()[0], 'rb:does-not-exist', 'the kept key is the recorded one');
+    eq(stranger.getSelected(), null, 'an unresolvable selection yields no station');
 
     // A version-1 record used the heart for stations; those marks are kept as
     // station marks rather than dropped when the heart moved to songs.

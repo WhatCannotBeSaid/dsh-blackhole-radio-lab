@@ -35,38 +35,38 @@ function settle() {
 }
 try {
   uploaded('initial idle', () => frame(), []);
-  uploaded('charge changes positions only', () => { layer.setCharge(0.8); frame(); }, ['position']);
-  uploaded('continuing charge', () => frame(), ['position']);
+  uploaded('charge changes positions and return alpha', () => { layer.setCharge(0.8); frame(); }, ['aReturnAlpha', 'position']);
+  uploaded('continuing charge', () => frame(), ['aReturnAlpha', 'position']);
   settle();
   uploaded('settled charge', () => frame(), []);
-  uploaded('charge cancellation', () => { layer.setCharge(0); frame(); }, ['position']);
+  uploaded('charge cancellation', () => { layer.setCharge(0); frame(); }, ['aReturnAlpha', 'position']);
   settle();
-  uploaded('filter changes matches and dependent positions', () => { layer.setFilter(['jazz']); frame(); }, ['position', 'aMatch']);
+  uploaded('filter changes matches and dependent positions', () => { layer.setFilter(['jazz']); frame(); }, ['aReturnAlpha', 'position', 'aMatch']);
   settle();
-  uploaded('filter clear', () => { layer.setFilter([]); frame(); }, ['position', 'aMatch']);
+  uploaded('filter clear', () => { layer.setFilter([]); frame(); }, ['aReturnAlpha', 'position', 'aMatch']);
   settle();
   layer.setCluster(layout); frame();
   assert.equal(attributes.aMember.version, 1, 'membership must upload on install');
   const installedMembers = attributes.aMember.version;
   settle();
   assert.equal(attributes.aMember.version, installedMembers, 'cluster easing re-uploaded static membership');
-  uploaded('flow changes blend and positions only', () => { layer.setFlow(0.4); frame(); }, ['position', 'aCluster']);
+  uploaded('flow changes blend, positions and return alpha', () => { layer.setFlow(0.4); frame(); }, ['aReturnAlpha', 'position', 'aCluster']);
   const flowLayout = layer.layoutVersion();
   uploaded('constant flow does not upload unchanged data', () => frame(), []);
   assert.ok(layer.isAnimating, 'timeline scheduling changed');
   assert.ok(layer.layoutVersion() > flowLayout, 'pick-cache refresh timing changed');
-  uploaded('reverse flow', () => { layer.setFlow(0.2); frame(); }, ['position', 'aCluster']);
+  uploaded('reverse flow', () => { layer.setFlow(0.2); frame(); }, ['aReturnAlpha', 'position', 'aCluster']);
   uploaded('layout replacement at constant blend', () => {
     layer.setCluster({ ...layout, radius: 4, positions: Float32Array.from(positions, (v) => v + 0.2) }); frame();
-  }, ['position']);
-  uploaded('filter during held flow', () => { layer.setFilter(['jazz']); frame(); }, ['position', 'aMatch']);
+  }, ['aReturnAlpha', 'position']);
+  uploaded('filter during held flow', () => { layer.setFilter(['jazz']); frame(); }, ['aReturnAlpha', 'position', 'aMatch']);
   settleFilterDuringFlow();
   uploaded('zero dt preserves pending setter', () => { layer.setCharge(0.5); frame(0); }, []);
   assert.equal(layer.isAnimating, true);
-  uploaded('next positive dt applies pending charge', () => frame(), ['position']);
+  uploaded('next positive dt applies pending charge', () => frame(), ['aReturnAlpha', 'position']);
   layer.setFlow(-1); settle();
   // The legacy final snap is not flushed until this next requested refresh.
-  uploaded('cluster exit flushes pending snap but preserves members', () => { layer.setCluster(null); frame(); }, ['position', 'aCluster']);
+  uploaded('cluster exit flushes pending snap but preserves members', () => { layer.setCluster(null); frame(); }, ['aReturnAlpha', 'position', 'aCluster']);
   settle();
   assert.equal(attributes.aMember.version, installedMembers, 'null cluster unexpectedly cleared membership');
   layer.setCluster({ ...layout, members: new Uint8Array(stations.length) }); layer.setFlow(0); frame();

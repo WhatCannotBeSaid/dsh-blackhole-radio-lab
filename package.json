@@ -36,7 +36,7 @@
   "scripts": {
     "build": "node tools/build-stage.mjs",
     "build:catalog": "node tools/build-catalog.mjs",
-    "test": "node --test tools/test-now-playing.mjs && node tools/test-transition.mjs && node --test tools/test-radio-resilience.mjs && node tools/test-radio-entry.mjs"
+    "test": "node --test tools/test-now-playing.mjs && node tools/test-transition.mjs && node --test tools/test-radio-resilience.mjs && node tools/test-radio-entry.mjs && node tools/test-camera-frame.mjs && node --test tools/test-catalog-retry.mjs && node --test tools/test-station-field.mjs && node tools/test-stations-dirty.mjs && node tools/test-stations-idle.mjs && node tools/validate-state.mjs && node tools/validate-genres.mjs && node tools/validate-imaging.mjs && node tools/validate-radio-data.mjs --offline-only && node tools/validate-radio-imaging.mjs"
   },
   "keywords": [
     "deepseek-harness",

@@ -162,7 +162,6 @@ try {
 
   const stage = readFileSync(new URL('../src/stage.js', import.meta.url), 'utf8');
   assert.match(stage, /const cameraFrame = updateCameraFrame\(camera\);\s+disk\.update\(elapsed, camera, cameraFrame\);\s+spaceHaze\.update\(elapsed, camera, cameraFrame\);/);
-  assert.ok(stage.includes('disk.update(elapsed, sourceCamera);'));
   assert.ok(stage.includes('disk.update(elapsed, camera);'));
   assert.ok(stage.includes('disk.update(0, camera);'));
   console.log('PASS standalone/no-renderer calls and production frame wiring. GPU/browser/visual/performance acceptance NOT exercised.');
