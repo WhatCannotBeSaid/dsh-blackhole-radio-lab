@@ -2,6 +2,14 @@
 
 Versions follow [Semantic Versioning](https://semver.org/). The Chinese edition is [CHANGELOG.md](CHANGELOG.md).
 
+## [1.2.8] - 2026-11-13
+
+### Left-column station card layout
+
+- Uniform 7px padding on all four sides (was 8px left/right); the gap between the card's bottom edge and the sidebar bottom drops from 0.5px to 0.
+- Transport controls now align on the visible glyph's bottom edge (the volume slider on its thumb's bottom edge, with the track raised 3px), making the top and bottom gaps equal at 7px, with 7px left and right.
+- Card height drops from 93px to 83px and the play button box from 34px to 24px (glyph stays 15px, hit area follows to 24px), shrinking the ~25px gap between the name/track block and the transport row to ~15px.
+
 ## [1.2.7] - 2026-11-08
 
 ### Search and engineering quality

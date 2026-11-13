@@ -1,4 +1,4 @@
-/*! dsh-blackhole-radio-lab v1.2.6 — MIT License, © 2026 WhatCannotBeSaid
+/*! dsh-blackhole-radio-lab v1.2.8 — MIT License, © 2026 WhatCannotBeSaid
  * Includes three.js (MIT); see THIRD-PARTY-NOTICES.md.
  *
  * Portions copyright (c) 2020 Eric Bruneton, BSD-3-Clause.

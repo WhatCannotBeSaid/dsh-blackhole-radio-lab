@@ -3958,8 +3958,8 @@ window.__ModuleLoader__.load({
   color: inherit;
 }
 .bhrl-foot *, .bhrl-foot *::before, .bhrl-foot *::after { box-sizing: border-box; }
-/* Compensate the host sidebar's bottom padding; leave a 0.5px outer gap. */
-.bhrl-foot.is-wide { padding: 8px 0 0; margin-inline: 0; margin-bottom: calc(0.5px - 6px); }
+/* Compensate the host sidebar's bottom padding; leave no outer gap. */
+.bhrl-foot.is-wide { padding: 8px 0 0; margin-inline: 0; margin-bottom: -6px; }
 .bhrl-foot.is-rail { display: flex; align-items: center; justify-content: center; padding: 2px 0; }
 
 /* ---- the station card ----------------------------------------------- *
@@ -3982,11 +3982,11 @@ window.__ModuleLoader__.load({
   /* The card is the station: one size in every state. Content centres inside
    * it rather than deciding how tall it is. */
   grid-template-rows: minmax(0, 1fr) auto;
-  height: 93px;
+  height: 83px;
   align-items: center;
   column-gap: 6px;
   row-gap: 6px;
-  padding: 7px 8px;
+  padding: 7px;
 }
 /* The two lines are one block, and the only space between them is this gap:
  * 8px. Two pixels read as one smudged line; this is what makes the station
@@ -4085,7 +4085,7 @@ window.__ModuleLoader__.load({
 .bhrl-fcard.is-empty .bhrl-fcard__name { color: color-mix(in srgb, currentColor 74%, transparent); }
 .bhrl-fcard.is-empty .bhrl-fcard__track { color: var(--bhrl-ink-faint); }
 
-.bhrl-fcard__acts { grid-area: acts; display: flex; align-items: center; gap: 4px; }
+.bhrl-fcard__acts { grid-area: acts; display: flex; align-items: flex-end; gap: 4px; }
 
 /* Transport: bare glyphs. Previous, play and next are the mark and nothing
  * else — no ring, no fill, no shadow, and nothing appears on hover either; the
@@ -4093,22 +4093,30 @@ window.__ModuleLoader__.load({
 .bhrl-foot .bhrl-fcard__acts .bhrl-act,
 .bhrl-foot .bhrl-fcard__acts .bhrl-act:hover:not(:disabled) {
   border: 0; background: none; box-shadow: none;
+  /* The transport row measures its lower edge by the glyph, not the 24px
+   * hit box: every mark sits on the card's inner bottom line (7px above the
+   * card edge), which is also the name line's top padding. */
+  align-items: flex-end;
 }
 .bhrl-foot .bhrl-fcard__acts .bhrl-act:hover:not(:disabled) { color: var(--bhrl-ink); }
 .bhrl-foot .bhrl-fcard__acts .bhrl-act-play {
-  width: 34px; height: 34px; flex: none;
+  width: 24px; height: 24px; flex: none;
   color: var(--bhrl-ink);
 }
 .bhrl-foot .bhrl-fcard__acts .bhrl-act-play:hover:not(:disabled) { color: var(--bhrl-ink); background: none; }
 /* No colour here on purpose: the slider lives inside and paints itself from
  * currentColor, so a faint tint on the wrapper would dim the whole bar. The
  * icon asks for the faint tint itself. */
-.bhrl-fcard__vol { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 42px; margin-left: 2px; }
+.bhrl-fcard__vol { display: inline-flex; align-items: flex-end; gap: 4px; flex: 1 1 auto; min-width: 42px; margin-left: 2px; }
 .bhrl-fcard__range { color: var(--bhrl-ink); }
 .bhrl-fcard__volicon { display: inline-flex; flex: none; color: var(--bhrl-ink-faint); }
 .bhrl-fcard__range {
   -webkit-appearance: none; appearance: none;
   width: 100%; min-width: 0; height: 3px; border-radius: 999px;
+  /* The thumb is 9px on a 3px track, so 3px of it hangs below the track box.
+   * Lifting the input 3px puts the thumb's round bottom on the same inner
+   * bottom line as the transport glyphs. */
+  margin-bottom: 3px;
   /* Two colours, not one: what is set is filled with ink and what is left is
    * the faint rail, so the level is read from the bar instead of being guessed
    * from where the thumb sits. The custom property --bhrl-vol is written from
